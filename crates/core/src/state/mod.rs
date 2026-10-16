@@ -1,0 +1,273 @@
+use crate::actions::{
+    Action, DatasetProcessingState, PendingCanvasSizeEdit, PendingInspectorEdit,
+    PendingPageLayoutEdit, PendingProcessingEdit, PendingSeriesPresentationEdit,
+    PendingViewportEdit,
+};
+use crate::export::{ExportDialogState, ExportFormat, ExportSettings};
+use crate::{
+    DosyInvocation, DosyMethod, DosyResultProvenance, IltParams, Integral2D, IntegralResult,
+    PseudoDisplay, apply_peak_labels, build_dosy_figure, build_ilt_figure,
+    build_processed_1d_figure, build_stack_figure, extract_region_series,
+};
+use plotium_analysis::diffusion::{DiffusionMap, diffusion_map};
+use plotium_analysis::ilt::{IltResult, ilt_map, log_grid};
+use plotium_figure::{Axis, Color, Figure};
+use plotium_io::{AfmData, Domain, ElectricalQuantity, ElectricalUnit, ElectrophysiologyData};
+use plotium_processing::{
+    AxisPipeline, DisplayMode, Params2D, PhaseParams, Preset2D, Processed1D, Processed2D, Spectrum,
+    StepId, StepKind, recommend_preset,
+};
+
+mod afm;
+mod app_impl;
+mod app_impl_align;
+mod app_impl_analysis;
+mod app_impl_analysis_tables;
+#[cfg(test)]
+mod app_impl_analysis_tests;
+mod app_impl_arithmetic;
+mod app_impl_compute;
+#[cfg(test)]
+mod app_impl_compute_tests;
+mod app_impl_craft_canvas;
+mod app_impl_figures;
+mod app_impl_interaction;
+mod app_impl_io;
+mod app_impl_linefit;
+mod app_impl_multiplet;
+mod app_impl_peaks;
+mod app_impl_project;
+mod app_impl_selection;
+mod app_impl_slice;
+mod app_impl_statistics;
+#[cfg(test)]
+mod app_impl_statistics_tests;
+mod app_impl_symmetry;
+mod app_impl_xps;
+mod app_state;
+mod status_history;
+pub use status_history::{StatusHistory, StatusMessage};
+mod axis_overrides;
+mod board;
+mod charts;
+mod compute;
+mod content;
+mod craft;
+mod craft_fields;
+mod cursors;
+mod data_import;
+mod dataset_identity;
+pub use data_import::DataImports;
+mod dataset_trace;
+mod datasets;
+mod datasets_2d_figure;
+mod datasets_2d_maps;
+mod datasets_dispatch;
+mod derived_axes;
+mod document;
+mod document_identity;
+mod document_lifecycle;
+mod document_objects;
+mod electrophysiology;
+mod field;
+mod field_cache;
+mod field_catalog;
+mod field_defaults;
+mod field_payload;
+mod field_runtime;
+mod fit_selection;
+mod identity;
+mod interaction;
+mod lineage;
+mod linefit;
+mod mass_spec;
+mod mass_spec_app;
+mod mass_spec_channels;
+mod mass_spec_ranges;
+mod mass_spec_tic;
+mod mass_spec_xic;
+mod multiplet;
+mod nmr_integrals;
+mod nmr_integrals_2d;
+mod page_fit;
+mod panel;
+mod panel_label;
+mod peaks;
+mod peaks2d;
+mod plot_interaction;
+mod plot_object;
+mod pseudo_map_field;
+mod reference_pick;
+mod region;
+mod reports;
+mod scientific_summary;
+mod selection;
+mod series_binding;
+mod size_presets;
+mod stack;
+mod statistics;
+mod statistics_prepare;
+mod statistics_report;
+mod symmetry;
+mod table;
+mod table_charts;
+mod table_edit;
+mod table_execution;
+mod table_execution_job;
+mod table_fit;
+mod table_native;
+mod table_numeric;
+mod tile_drop;
+mod trace_alignment;
+mod trace_composer;
+mod trace_provider;
+#[cfg(test)]
+#[path = "trace_provider_tests.rs"]
+mod trace_provider_tests;
+mod ui_drag;
+mod ui_state;
+mod units;
+mod viewport;
+mod workflow_tab;
+mod xps;
+mod xrd;
+
+pub use afm::*;
+pub use app_impl::*;
+pub use app_impl_align::*;
+pub use app_impl_analysis::validate_ilt_params;
+pub use app_impl_linefit::LineFitJob;
+pub use app_impl_xps::{XpsFitJob, estimate_xps_charge_shift, xps_input_sha256, xps_template};
+pub use app_state::*;
+pub use axis_overrides::*;
+pub use board::*;
+pub use charts::*;
+pub use compute::*;
+pub use content::*;
+pub use craft::*;
+pub(crate) use craft_fields::*;
+pub use cursors::*;
+pub use datasets::*;
+pub(crate) use datasets_2d_figure::build_processed_figure;
+pub(crate) use datasets_2d_maps::{
+    MONO_EXP_SNR_FRAC, dosy_data_fingerprint, ilt_provenance, mono_exp_provenance,
+};
+pub use derived_axes::*;
+pub use document::*;
+pub use document_lifecycle::*;
+pub use document_objects::*;
+pub use electrophysiology::*;
+pub use field::*;
+pub(crate) use field_cache::FieldRuntime;
+pub use field_catalog::FieldCatalog;
+#[cfg(test)]
+pub(crate) use field_catalog::{
+    afm_channel_key, afm_channel_key_computations, afm_field_catalog,
+    reset_afm_channel_key_computations,
+};
+pub(crate) use field_catalog::{
+    afm_channel_keys, afm_field_catalog_for_keys, attach_electrophysiology_trace_collections,
+    attach_pseudo_trace_collection, electrophysiology_channel_key, electrophysiology_channel_keys,
+    electrophysiology_field_catalog_for_keys, nmr_field_catalog, nmr2d_field_catalog,
+    table_field_catalog,
+};
+pub use field_defaults::*;
+pub(crate) use field_payload::nmr_scalar_grid;
+pub use field_runtime::*;
+pub use identity::*;
+pub use interaction::*;
+pub use lineage::*;
+pub use linefit::*;
+pub use mass_spec::*;
+pub use mass_spec_app::MassSpecRangeSelection;
+pub(crate) use mass_spec_ranges::point_ranges;
+pub use mass_spec_xic::*;
+pub use multiplet::*;
+pub use page_fit::*;
+pub use panel::*;
+pub use panel_label::*;
+pub use peaks::*;
+pub use peaks2d::*;
+pub use plot_interaction::*;
+pub use plot_object::*;
+pub(crate) use pseudo_map_field::{DOSY_GRID_COLS, DOSY_GRID_ROWS, dosy_scalar_grid};
+pub use reference_pick::*;
+pub use region::*;
+pub use reports::*;
+pub use scientific_summary::*;
+pub use selection::*;
+pub use series_binding::*;
+pub use size_presets::*;
+pub use statistics::*;
+pub use statistics_report::{
+    detail_lines, fmt_level, fmt_num, fmt_p, headline, outcome_table, report_text,
+};
+pub use symmetry::*;
+pub use table::*;
+pub use table_edit::*;
+pub use table_execution::*;
+pub use table_execution_job::*;
+pub use table_native::*;
+pub use tile_drop::*;
+pub use trace_alignment::*;
+pub use ui_drag::*;
+pub use ui_state::*;
+pub use units::*;
+pub use viewport::*;
+pub use workflow_tab::WorkflowTab;
+pub use xps::*;
+pub use xrd::*;
+
+/// Points per millimetre (72 pt/inch ÷ 25.4 mm/inch), for sizing print figures.
+pub const MM_TO_PT: f32 = 72.0 / 25.4;
+/// A fresh single-dataset canvas defaults to single-column width: one plot
+/// spanning it carries the journal font-to-panel ratio by construction, and
+/// figures are composited onto wider pages later at their natural size.
+pub const DEFAULT_CANVAS_SIZE_MM: [f32; 2] = NATURE_SINGLE_COLUMN.size_mm();
+const PX_PER_IN: f32 = 96.0;
+const MM_PER_IN: f32 = 25.4;
+
+pub type GroupId = u64;
+
+mod phase_preview;
+
+#[cfg(test)]
+mod phase_preview_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plotium_figure::Series;
+
+    #[test]
+    fn selection_multi_reports_primary_and_membership() {
+        let ids = [3, 7, 9].map(ObjectId::new);
+        let sel = Selection::Objects(ids.to_vec());
+        assert_eq!(sel.object(), Some(ObjectId::new(3)));
+        assert_eq!(sel.objects(), &ids);
+        assert!(sel.contains(ObjectId::new(7)));
+        assert!(!sel.contains(ObjectId::new(4)));
+        assert_eq!(
+            Selection::single(ObjectId::new(5)).objects(),
+            &[ObjectId::new(5)]
+        );
+    }
+
+    #[test]
+    fn zoom_keeps_anchor_stable() {
+        let full = AxisRange::new(0.0, 10.0);
+        let zoomed = full.zoom_around(full, 2.0, 0.5);
+        assert_eq!(zoomed, AxisRange::new(1.0, 6.0));
+    }
+
+    #[test]
+    fn auto_y_uses_visible_x_window() {
+        let fig =
+            Figure::new("t", Axis::new("x", 0.0, 10.0), Axis::new("y", 0.0, 100.0)).with_series(
+                Series::line("s", vec![[0.0, 1.0], [2.0, 10.0], [8.0, 80.0]]),
+            );
+
+        let y = visible_y_range(&fig, AxisRange::new(0.0, 3.0)).unwrap();
+        assert!(y.max < 12.0);
+    }
+}

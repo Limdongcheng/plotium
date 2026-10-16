@@ -1,0 +1,30 @@
+use plotium_core::settings::Settings;
+use plotium_core::state::{PlotiumApp, StoredCraftRun};
+use plotium_processing::craft::{CraftInvocation, CraftParams, process_craft_cancellable};
+
+pub(super) fn setup(app: &mut PlotiumApp, ctx: &egui::Context) -> Result<(), String> {
+    *app = PlotiumApp::new_with_settings(Settings::default());
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1500.0, 920.0)));
+    super::setup(app);
+    let data = app.doc.datasets[0]
+        .as_nmr()
+        .expect("the screenshot setup creates an NMR dataset")
+        .data
+        .clone();
+    let mut params = CraftParams::conventional();
+    params.maximum_model_order = 8;
+    let fid = data.craft_fid().map_err(|error| error.to_string())?;
+    let invocation = CraftInvocation::acquisition(&fid, params);
+    let result = process_craft_cancellable(&fid, &invocation, &|| false)
+        .map_err(|error| format!("CRAFT screenshot analysis failed: {error}"))?;
+    let nmr = app.doc.datasets[0]
+        .as_nmr_mut()
+        .expect("the screenshot NMR dataset remains available");
+    let run = nmr.allocate_craft_run_id();
+    nmr.store_craft_run(StoredCraftRun::from_result(
+        run, &data, invocation, None, result,
+    ));
+    app.session.ui.craft_selected_run = Some(run);
+    crate::ui::tools::open_craft_task_for_active(app);
+    Ok(())
+}

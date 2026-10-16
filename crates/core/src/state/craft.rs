@@ -1,0 +1,326 @@
+use super::{FloatSeries, NmrDataset, TableDataset, materialized_float_series_table};
+use plotium_io::nmr_view::NmrSource;
+use plotium_processing::craft::{
+    CRAFT_ALGORITHM, CRAFT_ALGORITHM_VERSION, CraftAmplitudeReport, CraftComponent,
+    CraftDiagnostics, CraftInvocation, CraftReference, CraftRegionRatio, CraftRegionSummary,
+    CraftReportDefinition, CraftResult, calculate_craft_report,
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CraftRunId(pub u64);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CraftProvenance {
+    pub algorithm: String,
+    pub version: u32,
+    pub input_sha256: String,
+    pub invocation: CraftInvocation,
+    pub parent_run: Option<CraftRunId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StoredCraftRun {
+    pub id: CraftRunId,
+    pub provenance: CraftProvenance,
+    pub components: Vec<CraftComponent>,
+    pub region_summaries: Vec<CraftRegionSummary>,
+    pub region_ratio: Option<CraftRegionRatio>,
+    pub diagnostics: CraftDiagnostics,
+    /// Materialized full component data, when the user has requested it.
+    pub component_table: Option<crate::state::DatasetId>,
+}
+
+impl StoredCraftRun {
+    pub fn amplitude_report(
+        &self,
+        definition: CraftReportDefinition,
+    ) -> Result<CraftAmplitudeReport, String> {
+        if self.diagnostics.status != plotium_processing::craft::CraftRunStatus::Complete
+            || !self.diagnostics.stability.passed
+        {
+            return Err("CRAFT run is marked NeedsReview; quantitative amplitude reports are unavailable until stability checks pass.".to_owned());
+        }
+        calculate_craft_report(&self.components, definition).map_err(|e| e.to_string())
+    }
+    pub fn from_result(
+        id: CraftRunId,
+        data: &NmrSource,
+        invocation: CraftInvocation,
+        parent_run: Option<CraftRunId>,
+        result: CraftResult,
+    ) -> Self {
+        Self {
+            id,
+            provenance: CraftProvenance {
+                algorithm: CRAFT_ALGORITHM.to_owned(),
+                version: CRAFT_ALGORITHM_VERSION,
+                input_sha256: craft_input_sha256(data),
+                invocation,
+                parent_run,
+            },
+            components: result.components,
+            region_summaries: result.region_summaries,
+            region_ratio: result.region_ratio,
+            diagnostics: result.diagnostics,
+            component_table: None,
+        }
+    }
+
+    pub fn is_stale_for(&self, data: &NmrSource, reference: Option<CraftReference>) -> bool {
+        self.provenance.input_sha256 != craft_input_sha256(data)
+            || Some(self.provenance.invocation.reference) != reference
+    }
+}
+
+impl NmrDataset {
+    /// Reference context used by analyses that fit the original FID but report
+    /// chemical shifts on the processed spectrum's visible axis.
+    pub fn craft_reference(&self) -> Option<CraftReference> {
+        let raw = self.data.dataset().as_raw()?;
+        let reference = raw
+            .descriptor()
+            .axes()
+            .first()?
+            .chemical_shift_reference()?;
+        Some(CraftReference::new(
+            reference.carrier_ppm(),
+            reference.reference_frequency_mhz(),
+            self.pipeline.chemical_shift_reference_offset_ppm(),
+        ))
+    }
+
+    pub fn allocate_craft_run_id(&mut self) -> CraftRunId {
+        let id = CraftRunId(self.next_craft_run_id);
+        self.next_craft_run_id = self
+            .next_craft_run_id
+            .checked_add(1)
+            .expect("CRAFT run id overflow");
+        id
+    }
+
+    pub fn repair_craft_run_allocator(&mut self) {
+        let required = self
+            .craft_runs
+            .iter()
+            .map(|run| run.id.0.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+        self.next_craft_run_id = self.next_craft_run_id.max(required);
+    }
+
+    pub fn craft_run(&self, id: CraftRunId) -> Option<&StoredCraftRun> {
+        self.craft_runs.iter().find(|run| run.id == id)
+    }
+
+    pub fn store_craft_run(&mut self, run: StoredCraftRun) {
+        self.craft_runs.push(run);
+        self.clear_craft_spectrum_cache();
+        self.reconcile_craft_fields();
+    }
+}
+
+pub fn craft_input_sha256(data: &NmrSource) -> String {
+    data.dataset()
+        .canonical_digests()
+        .dataset()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn craft_component_table(run: &StoredCraftRun) -> Result<TableDataset, String> {
+    let rows = run.components.len();
+    let column = |name: &str,
+                  unit: &str,
+                  values: Vec<Option<f64>>,
+                  uncertainty: Option<Vec<Option<f64>>>| FloatSeries {
+        name: name.to_owned(),
+        unit: unit.to_owned(),
+        values,
+        uncertainty,
+        fit: None,
+    };
+    let values = |read: fn(&CraftComponent) -> f64| {
+        run.components
+            .iter()
+            .map(|component| Some(read(component)))
+            .collect::<Vec<_>>()
+    };
+    let uncertainties = |read: fn(&CraftComponent) -> Option<f64>| {
+        run.components.iter().map(read).collect::<Vec<_>>()
+    };
+    let region_numbers = run
+        .components
+        .iter()
+        .map(|component| {
+            run.region_summaries
+                .iter()
+                .position(|summary| summary.region == component.region)
+                .map(|position| (position + 1) as f64)
+        })
+        .collect();
+    let group_values = |read: fn(&plotium_processing::craft::CraftRegionSummary) -> f64| {
+        run.components
+            .iter()
+            .map(|component| {
+                run.region_summaries
+                    .iter()
+                    .find(|summary| summary.region == component.region)
+                    .map(read)
+            })
+            .collect::<Vec<_>>()
+    };
+    materialized_float_series_table(
+        (
+            "component".into(),
+            "".into(),
+            (1..=rows).map(|row| Some(row as f64)).collect(),
+        ),
+        vec![
+            column(
+                "chemical shift",
+                "ppm",
+                values(|c| c.chemical_shift_ppm),
+                None,
+            ),
+            column(
+                "frequency",
+                "Hz",
+                values(|c| c.frequency_hz),
+                Some(uncertainties(|c| c.frequency_std_hz)),
+            ),
+            column(
+                "amplitude at t0",
+                "",
+                values(|c| c.amplitude_t0),
+                Some(uncertainties(|c| c.amplitude_std)),
+            ),
+            column(
+                "phase",
+                "rad",
+                values(|c| c.phase_rad),
+                Some(uncertainties(|c| c.phase_std_rad)),
+            ),
+            column(
+                "linewidth",
+                "Hz",
+                values(|c| c.linewidth_hz),
+                Some(uncertainties(|c| c.linewidth_std_hz)),
+            ),
+            column("decay rate", "s^-1", values(|c| c.decay_rate_s_inv), None),
+            column(
+                "amplitude / noise",
+                "",
+                values(|c| c.amplitude_to_noise),
+                None,
+            ),
+            column("signal group", "", region_numbers, None),
+            column(
+                "signal group start",
+                "ppm",
+                group_values(|summary| summary.start_ppm),
+                None,
+            ),
+            column(
+                "signal group end",
+                "ppm",
+                group_values(|summary| summary.end_ppm),
+                None,
+            ),
+            column(
+                "signal group coherent amplitude",
+                "",
+                group_values(|summary| summary.coherent_amplitude_t0),
+                None,
+            ),
+            column(
+                "run normalized residual",
+                "",
+                vec![Some(run.diagnostics.normalized_residual); rows],
+                None,
+            ),
+        ],
+        "plotium.analysis.craft-component-table.v1",
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub fn craft_amplitude_report_table(report: &CraftAmplitudeReport) -> Result<TableDataset, String> {
+    let rows = report.segments.len();
+    let values = |read: fn(&plotium_processing::craft::CraftReportSegment) -> f64| {
+        report
+            .segments
+            .iter()
+            .map(|segment| Some(read(segment)))
+            .collect()
+    };
+    materialized_float_series_table(
+        (
+            "segment".into(),
+            "".into(),
+            (1..=rows).map(|i| Some(i as f64)).collect(),
+        ),
+        vec![
+            FloatSeries {
+                name: "report threshold A/N".into(),
+                unit: "".into(),
+                values: vec![Some(report.definition.threshold_an); rows],
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "segment width".into(),
+                unit: "Hz".into(),
+                values: vec![Some(report.definition.segment_width_hz); rows],
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "center".into(),
+                unit: "Hz".into(),
+                values: values(|s| s.center_hz),
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "start".into(),
+                unit: "Hz".into(),
+                values: values(|s| s.start_hz),
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "end".into(),
+                unit: "Hz".into(),
+                values: values(|s| s.end_hz),
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "component count".into(),
+                unit: "".into(),
+                values: values(|s| s.component_count as f64),
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "scalar amplitude sum t0".into(),
+                unit: "".into(),
+                values: values(|s| s.scalar_amplitude_sum_t0),
+                uncertainty: None,
+                fit: None,
+            },
+            FloatSeries {
+                name: "coherent amplitude t0".into(),
+                unit: "".into(),
+                values: values(|s| s.coherent_amplitude_t0),
+                uncertainty: None,
+                fit: None,
+            },
+        ],
+        "plotium.analysis.craft-amplitude-report.v1",
+    )
+    .map_err(|error| error.to_string())
+}

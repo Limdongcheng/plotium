@@ -1,0 +1,28 @@
+[package]
+name = "plotium-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rendering layer for Plotium: screen painting and vector export from a shared figure model."
+
+[lib]
+name = "plotium_render"
+path = "src/lib.rs"
+
+[features]
+default = ["screen"]
+# SVG export is always available. Gate egui screen rendering so headless and
+# export-only builds do not depend on egui; EMF export is available on Windows.
+screen = ["dep:egui"]
+emf = ["dep:windows-sys"]
+
+[dependencies]
+plotium-figure.workspace = true
+unicode-width.workspace = true
+base64.workspace = true
+egui = { workspace = true, optional = true }
+image.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }

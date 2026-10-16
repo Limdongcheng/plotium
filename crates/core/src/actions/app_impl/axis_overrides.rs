@@ -1,0 +1,232 @@
+use super::*;
+
+impl PlotiumApp {
+    pub(super) fn set_object_viewport(
+        &mut self,
+        canvas: usize,
+        object: ObjectId,
+        viewport: &CanvasViewport,
+    ) {
+        let Some(plot) = self
+            .doc
+            .canvases
+            .get_mut(canvas)
+            .and_then(|canvas| canvas.object_mut(object))
+            .and_then(|object| object.plot_mut())
+        else {
+            return;
+        };
+        plot.viewport = viewport.clone();
+        plot.apply_viewport();
+    }
+
+    /// Finish a live Inspector edit before another command can change its target
+    /// or history position.
+    pub fn finish_axis_overrides_edit(&mut self) {
+        let Some((canvas, object, before)) = self.session.ui.axis_overrides_before.take() else {
+            return;
+        };
+        let Some(after) = self
+            .doc
+            .canvases
+            .get(canvas)
+            .and_then(|canvas| canvas.object(object))
+            .and_then(|object| object.plot())
+            .map(|plot| plot.axis_overrides.clone())
+        else {
+            return;
+        };
+        self.execute_action(Action::set_axis_overrides(canvas, object, before, after));
+    }
+
+    /// Record a viewport command only after applying plot-specific invariants,
+    /// so the action payload exactly matches the state that apply/undo stores.
+    pub fn commit_object_viewport(
+        &mut self,
+        canvas: usize,
+        object: ObjectId,
+        mut before: CanvasViewport,
+        mut after: CanvasViewport,
+    ) {
+        if let Some(plot) = self
+            .doc
+            .canvases
+            .get(canvas)
+            .and_then(|canvas| canvas.object(object))
+            .and_then(|object| object.plot())
+        {
+            plot.normalize_viewport(&mut before);
+            plot.normalize_viewport(&mut after);
+        }
+        let linked = self
+            .doc
+            .canvases
+            .get(canvas)
+            .map(|page| page.linked_x_members(object).to_vec())
+            .unwrap_or_default();
+        if linked.len() < 2 {
+            self.execute_action(Action::set_object_viewport(canvas, object, before, after));
+            return;
+        }
+        let mut actions = Vec::with_capacity(linked.len());
+        for member in linked {
+            if member == object {
+                actions.push(Action::set_object_viewport(
+                    canvas,
+                    member,
+                    before.clone(),
+                    after.clone(),
+                ));
+                continue;
+            }
+            let Some(plot) = self.doc.canvases[canvas]
+                .object(member)
+                .and_then(|object| object.plot())
+            else {
+                continue;
+            };
+            let figure = plot.figure();
+            let mut member_before = plot.viewport.clone();
+            let mut member_after = plot.viewport.clone();
+            if member_after.view_x == after.view_x {
+                member_before.set_linked_x(figure, before.view_x);
+            }
+            member_after.set_linked_x(figure, after.view_x);
+            actions.push(Action::set_object_viewport(
+                canvas,
+                member,
+                member_before,
+                member_after,
+            ));
+        }
+        self.execute_action(Action::Composite(actions));
+    }
+
+    /// Mirror the source plot's live horizontal viewport into its linked peers.
+    /// Gesture completion records the same peers as one composite undo action.
+    pub fn sync_linked_x_viewports(&mut self, canvas: usize, object: ObjectId) {
+        let Some((range, members)) = self.doc.canvases.get(canvas).and_then(|page| {
+            let range = page.object(object)?.plot()?.viewport.view_x;
+            Some((range, page.linked_x_members(object).to_vec()))
+        }) else {
+            return;
+        };
+        for member in members {
+            if member == object {
+                continue;
+            }
+            let Some(plot) = self.doc.canvases[canvas]
+                .object_mut(member)
+                .and_then(|object| object.plot_mut())
+            else {
+                continue;
+            };
+            let figure = plot.figure().clone();
+            plot.viewport.set_linked_x(&figure, range);
+            plot.apply_viewport();
+        }
+    }
+
+    /// Apply a live Inspector value. Transitions back to `None` rebuild once to
+    /// recover data-derived labels/ranges; edits among manual values only touch
+    /// the presentation model and viewport, avoiding expensive data rebuilds.
+    pub fn set_axis_overrides_value(
+        &mut self,
+        canvas: usize,
+        object: ObjectId,
+        after: &AxisOverrides,
+    ) {
+        let after = after.clone().normalized();
+        let Some((before, owner, binding, chart, stack, projections, frame)) = self
+            .doc
+            .canvases
+            .get(canvas)
+            .and_then(|canvas| canvas.object(object))
+            .and_then(|object| {
+                object.plot().map(|plot| {
+                    (
+                        plot.axis_overrides.clone(),
+                        plot.display_owner,
+                        plot.binding.clone(),
+                        plot.chart.clone(),
+                        plot.stack,
+                        plot.projections.clone(),
+                        object.frame,
+                    )
+                })
+            })
+        else {
+            return;
+        };
+        if before == after {
+            return;
+        }
+
+        let x_range_changed = before.x_range != after.x_range;
+        let y_range_changed = before.y_range != after.y_range;
+        let needs_automatic_rebuild = cleared(&before.x_label, &after.x_label)
+            || cleared(&before.y_label, &after.y_label)
+            || cleared(&before.x_range, &after.x_range)
+            || cleared(&before.y_range, &after.y_range)
+            || cleared(&before.lock_aspect, &after.lock_aspect)
+            || cleared(&before.x_show_tick_labels, &after.x_show_tick_labels)
+            || cleared(&before.x_show_label, &after.x_show_label)
+            || cleared(&before.y_show_tick_labels, &after.y_show_tick_labels)
+            || cleared(&before.y_show_label, &after.y_show_label)
+            || cleared(&before.guide_visibility, &after.guide_visibility)
+            || cleared(&before.guide_placement, &after.guide_placement)
+            || cleared(&before.guide_layout, &after.guide_layout)
+            || cleared(&before.guide_title, &after.guide_title)
+            || cleared(&before.legend_position, &after.legend_position);
+
+        let rebuilt = needs_automatic_rebuild.then(|| {
+            let size = [
+                frame.width / crate::state::MM_TO_PT,
+                frame.height / crate::state::MM_TO_PT,
+            ];
+            self.build_object_figure(owner, &binding, &chart, &stack, &projections, size)
+        });
+
+        let Some(plot) = self
+            .doc
+            .canvases
+            .get_mut(canvas)
+            .and_then(|canvas| canvas.object_mut(object))
+            .and_then(|object| object.plot_mut())
+        else {
+            return;
+        };
+        plot.axis_overrides = after;
+
+        if let Some(figure) = rebuilt {
+            plot.rebuild_for_axis_overrides(figure, x_range_changed, y_range_changed);
+            return;
+        }
+
+        plot.apply_axis_overrides();
+        if x_range_changed
+            && plot.figure().x.categories.is_none()
+            && let Some(range) = plot.axis_overrides.x_range
+        {
+            plot.viewport.full_x = range;
+            plot.viewport.view_x = range;
+            if plot.viewport.auto_y {
+                let figure = plot.figure().clone();
+                plot.viewport.reset_x(&figure);
+            }
+        }
+        if y_range_changed
+            && plot.figure().y.categories.is_none()
+            && let Some(range) = plot.axis_overrides.y_range
+        {
+            plot.viewport.full_y = range;
+            plot.viewport.view_y = range;
+            plot.viewport.auto_y = false;
+        }
+        plot.apply_viewport();
+    }
+}
+
+fn cleared<T>(before: &Option<T>, after: &Option<T>) -> bool {
+    before.is_some() && after.is_none()
+}

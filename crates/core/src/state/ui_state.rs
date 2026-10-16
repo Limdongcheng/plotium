@@ -1,0 +1,750 @@
+use super::*;
+#[path = "ui_state_nmr_import.rs"]
+mod nmr_import;
+use crate::actions::PendingWheelPropertyEdit;
+use crate::operation::{OperationHistory, OperationId, OperationReport};
+pub use nmr_import::NmrImportDraft;
+use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+#[path = "ui_state_xps.rs"]
+mod xps;
+pub use xps::{PropertyTextEditState, XpsWorkbenchTab};
+mod task_dock;
+pub use task_dock::TaskDockTab;
+#[path = "ui_state_craft.rs"]
+mod craft;
+pub use craft::{
+    CraftAnalysisIntent, CraftComponentSort, CraftResolutionCache, CraftResultTab,
+    CraftRunFeedback, CraftSpectrumChannel, CraftTaskPage,
+};
+#[path = "ui_layout_drag.rs"]
+mod layout_drag;
+pub use layout_drag::*;
+mod trace_composer;
+pub use trace_composer::{TraceComposerItem, TraceComposerState};
+mod trace_alignment;
+pub use trace_alignment::TraceAlignmentDialogState;
+#[path = "ui_state_dialogs.rs"]
+mod dialogs;
+pub use dialogs::{
+    AlignSpectraDialogState, CommandPaletteState, ProcessingSchemeDialogState,
+    ProcessingTemplateDialogState, SpectrumArithmeticDialogState, SpectrumArithmeticOp,
+    TemplateBrowserEntry,
+};
+#[path = "ui_state_rename.rs"]
+mod rename;
+pub use rename::{RenameState, RenameTarget};
+#[path = "ui_state_text.rs"]
+mod text_edit;
+pub use text_edit::{PanelNoteEditState, TextEditState};
+/// In-progress rubber-band while a shape Author tool draws a new object. `start`
+/// and `current` are page-space (pt) pointer positions.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthorDrag {
+    pub canvas: usize,
+    pub start: [f32; 2],
+    pub current: [f32; 2],
+}
+
+/// A rail row in the Preferences panel, mapping 1:1 to a `Settings` sub-struct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SettingsCategory {
+    #[default]
+    General,
+    Appearance,
+    Processing,
+    Export,
+    Recent,
+}
+
+impl SettingsCategory {
+    pub const ALL: [SettingsCategory; 5] = [
+        SettingsCategory::General,
+        SettingsCategory::Appearance,
+        SettingsCategory::Processing,
+        SettingsCategory::Export,
+        SettingsCategory::Recent,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SettingsCategory::General => "General",
+            SettingsCategory::Appearance => "Appearance",
+            SettingsCategory::Processing => "Processing",
+            SettingsCategory::Export => "Export",
+            SettingsCategory::Recent => "Recent",
+        }
+    }
+
+    pub const fn section_id(self) -> &'static str {
+        match self {
+            SettingsCategory::General => "preferences.general",
+            SettingsCategory::Appearance => "preferences.appearance",
+            SettingsCategory::Processing => "preferences.processing",
+            SettingsCategory::Export => "preferences.export",
+            SettingsCategory::Recent => "preferences.recent",
+        }
+    }
+}
+
+/// The Preferences window's working state: the draft [`Settings`] every widget
+/// edits, the selected rail category, a scheduled debounced-flush time, and the
+/// last non-fatal save error. The draft is applied to the live app on every edit
+/// and persisted on the debounce or on close; the on-disk file is only ever
+/// replaced wholesale by a valid draft.
+pub struct SettingsDialog {
+    pub category: SettingsCategory,
+    pub draft: crate::settings::Settings,
+    pub flush_at: Option<f64>,
+    pub last_error: Option<String>,
+}
+
+impl SettingsDialog {
+    pub fn new(settings: crate::settings::Settings) -> Self {
+        Self {
+            category: SettingsCategory::default(),
+            draft: settings,
+            flush_at: None,
+            last_error: None,
+        }
+    }
+}
+
+/// Cached model-editor validation: the parsed definition plus its
+/// unclassified symbols on success, or the parse/compile error text.
+#[derive(Clone)]
+pub struct FitEditorValidation {
+    pub source: String,
+    pub result: Result<(plotium_analysis::fit_model::FitModelDefinition, Vec<String>), String>,
+}
+
+/// A search hit that has to be revealed: open the property's home panel, expand
+/// its section, scroll the row into view and highlight it briefly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PropertyFocus {
+    pub property: crate::properties::PropertyId,
+    /// Still waiting for its panel to expand and scroll to it.
+    pub pending: bool,
+    /// UI-clock time at which the highlight stops being painted.
+    pub highlight_until: f64,
+}
+
+impl PropertyFocus {
+    /// Long enough to catch the eye after a scroll, short enough not to linger
+    /// as an apparent selection.
+    pub const HIGHLIGHT_SECONDS: f64 = 0.8;
+
+    pub fn request(property: crate::properties::PropertyId, now: f64) -> Self {
+        Self {
+            property,
+            pending: true,
+            highlight_until: now + Self::HIGHLIGHT_SECONDS,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RasterProxy {
+    pub hash: [u8; 32],
+    pub page_index: u32,
+    pub pixel_size: [u32; 2],
+    pub rgba8: std::sync::Arc<[u8]>,
+}
+
+/// Rows × columns the Arrange tab's grid popover proposes. The last size used
+/// carries over, so arranging a second canvas the same way needs no retyping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArrangeGridDraft {
+    pub rows: u32,
+    pub cols: u32,
+}
+
+impl Default for ArrangeGridDraft {
+    fn default() -> Self {
+        Self { rows: 2, cols: 2 }
+    }
+}
+
+pub struct UiState {
+    /// The single in-flight direct-manipulation gesture; see [`Interaction`].
+    pub interaction: Interaction,
+    /// 2D axis targeted by the Phase panel and canvas drag; re-clamped when rendered.
+    pub phase_axis: PhaseAxis,
+    pub analysis_selection: Option<AnalysisSelection>,
+    pub xps_workbench_tab: XpsWorkbenchTab,
+    /// Which table column the Peaks tool targets (ignored by single-trace domains).
+    pub peak_column: Option<plotium_data::ColumnId>,
+    pub wheel_zoom: Option<PendingViewportEdit>,
+    pub wheel_property: Option<PendingWheelPropertyEdit>,
+    pub canvas_size_edit: Option<PendingCanvasSizeEdit>,
+    pub page_layout_edit: Option<PendingPageLayoutEdit>,
+    pub processing_session: Option<PendingProcessingEdit>,
+    /// The continuous property-catalog control currently being dragged, if any.
+    pub property_gesture: Option<crate::actions::PendingPropertyGesture>,
+    pub property_text_edits: Vec<PropertyTextEditState>,
+    pub inspector_edit: Option<PendingInspectorEdit>,
+    pub series_presentation_edit: Option<PendingSeriesPresentationEdit>,
+    /// Pre-edit snapshot for a plot-local axis text/range gesture.
+    pub axis_overrides_before: Option<(usize, ObjectId, AxisOverrides)>,
+    pub canvas_settings: Option<usize>,
+    /// Whether the document-level Figure Typography window is open.
+    pub figure_typography_open: bool,
+    /// Pre-edit snapshot for an in-progress typography drag, coalescing one
+    /// slider gesture into one undo step.
+    pub figure_typography_before: Option<plotium_figure::FigureTypography>,
+    /// Pre-edit snapshot for an in-progress caption text edit in canvas settings
+    /// (canvas index, caption, visibility), coalescing a typing run into one undo
+    /// step committed on focus loss.
+    pub caption_edit_before: Option<(usize, String, bool)>,
+    /// Pre-edit panel note, coalescing a typing run into one undo step.
+    pub note_edit_before: Option<(usize, ObjectId, PanelMeta)>,
+    pub sheet_open: Option<usize>,
+    pub rename: Option<RenameState>,
+    pub save_project_options: bool,
+    pub pending_project_save: Option<PendingProjectSave>,
+    pub project_save_in_progress: bool,
+    pub project_transition: Option<PendingProjectTransition>,
+    pub export_options: Option<ExportDialogState>,
+    pub data_export: Option<crate::data_export::DataExportDialogState>,
+    pub table_import_preview: Option<TableImportPreviewState>,
+    pub nmr_import: Option<NmrImportDraft>,
+    pub settings_dialog: Option<SettingsDialog>,
+    pub command_palette: Option<CommandPaletteState>,
+    pub ribbon_tab: WorkflowTab,
+    pub ribbon_expanded: bool,
+    pub arrange_grid_draft: ArrangeGridDraft,
+    pub about_open: bool,
+    pub diagnostics_open: bool,
+    /// Feedback-banner watermark: every warning/failure reported at or before
+    /// this completion order is acknowledged. It is independent of operation
+    /// IDs because background work can receive an ID before it completes.
+    pub dismissed_feedback_order: Option<u64>,
+    pub processing_scheme_dialog: Option<ProcessingSchemeDialogState>,
+    pub processing_template_dialog: Option<ProcessingTemplateDialogState>,
+    pub spectrum_arithmetic_dialog: Option<SpectrumArithmeticDialogState>,
+    pub align_spectra_dialog: Option<AlignSpectraDialogState>,
+    pub trace_alignment_dialog: Option<TraceAlignmentDialogState>,
+    pub trace_composer: Option<TraceComposerState>,
+    pub selection: Selection,
+    pub hierarchical_selection: HierarchicalSelection,
+    pub raster_proxies: Vec<RasterProxy>,
+    pub selection_scope: SelectionScope,
+    pub selection_anchors: SelectionAnchors,
+    /// A panel-letter sub-selection (canvas index, object id): its own page-space
+    /// selection scope, distinct from the whole-object `selection`.
+    pub panel_label_selection: Option<(usize, ObjectId)>,
+    /// Panel currently highlighted as a same-page drop destination.
+    pub panel_drop_target: Option<PanelId>,
+    /// Content row being dragged in the Layers tree.
+    pub layers_drag_content: Option<ContentId>,
+    /// Live auto-tiling preview while a single-plot move drag hovers a different
+    /// canvas: the target's resulting layout, painted as ghost rects and committed
+    /// on release. `None` when the drag is not over a tiling target. Derived from
+    /// an `Interaction::Object` drag, so it is cleared alongside it.
+    pub tile_drop: Option<TileDropPreview>,
+    /// Multi-frame board selection (pages and/or sheets) built with Shift/Ctrl
+    /// click, used by zoom-to-selection. Transient; a plain click resets it.
+    pub frame_selection: Vec<BoardFrameId>,
+    /// Multi-selection of datasets in the Data list (Shift/Ctrl click), the input
+    /// to the "Stack selected data" command. Transient; a plain click resets it.
+    pub data_selection: Vec<usize>,
+    /// Transient Data-browser state. Dataset and Derived-data branches default
+    /// open, so only explicit collapses are recorded; Analysis defaults closed.
+    pub data_browser_filter: String,
+    pub data_browser_collapsed_datasets: HashSet<usize>,
+    pub data_browser_collapsed_derived: HashSet<usize>,
+    pub data_browser_expanded_analysis: HashSet<usize>,
+    pub data_browser_selected_node: Option<String>,
+    pub data_browser_last_active: Option<usize>,
+    /// One-shot request from navigation (for example a double-click in the data
+    /// browser) to reveal a contextual group in the Secondary Side Bar.
+    pub requested_tool_group: Option<ToolGroup>,
+    /// One visible page in the top-right task dock. Other open task states stay
+    /// alive and appear as labelled tabs.
+    pub task_dock_active: Option<TaskDockTab>,
+    /// Dataset whose processing recipe is open in the task dock.
+    pub processing_task_dataset: Option<DatasetId>,
+    pub processing_task_collapsed: bool,
+    /// Last sorting or domain-reconciliation feedback for Processing. It remains beside
+    /// the pipeline as well as in the status bar, so the reason is not separated
+    /// from the control that produced it.
+    pub processing_surface_feedback: Option<(DatasetId, String)>,
+    /// One-shot section jump requested by the inspector's icon-and-label
+    /// navigation. A string keeps app presentation ids out of core state.
+    pub requested_inspector_section: Option<String>,
+    /// A property the unified search asked the panels to reveal. Navigation
+    /// state, so it is deliberately absent from the property catalog itself.
+    pub property_focus: Option<PropertyFocus>,
+    /// Source dataset whose Regions workflow is shown in the canvas task card.
+    pub region_task_dataset: Option<DatasetId>,
+    /// Whether the Regions task card is reduced to its one-line summary.
+    pub region_task_collapsed: bool,
+    /// Data table whose Curve Fit workflow is shown in the canvas task card.
+    pub curve_fit_task_dataset: Option<usize>,
+    /// Whether the Curve Fit task card is reduced to its one-line summary.
+    pub curve_fit_task_collapsed: bool,
+    /// Data table whose Statistics workflow is shown in the canvas task card.
+    pub stat_task_dataset: Option<usize>,
+    /// Whether the Statistics task card is reduced to its one-line summary.
+    pub stat_task_collapsed: bool,
+    /// In-progress statistics configuration, rebuilt for a different table.
+    pub stat_draft: Option<StatDraft>,
+    pub craft_task_dataset: Option<DatasetId>,
+    pub craft_task_collapsed: bool,
+    pub craft_overrides_dataset: Option<DatasetId>,
+    pub craft_overrides: plotium_processing::craft::CraftParamOverrides,
+    pub craft_feedback: HashMap<DatasetId, CraftRunFeedback>,
+    pub craft_resolution_cache: Option<CraftResolutionCache>,
+    pub craft_base_run: Option<CraftRunId>,
+    pub craft_analysis_intent: CraftAnalysisIntent,
+    pub craft_spectrum_channel: CraftSpectrumChannel,
+    pub craft_selected_run: Option<CraftRunId>,
+    pub craft_task_page: CraftTaskPage,
+    pub craft_result_tab: CraftResultTab,
+    pub craft_selected_report: Option<crate::state::ReportId>,
+    pub craft_component_sort: CraftComponentSort,
+    pub craft_component_region: Option<plotium_processing::craft::CraftRegionId>,
+    pub craft_selected_component: Option<plotium_processing::craft::CraftComponentId>,
+    pub craft_selected_region: Option<plotium_processing::craft::CraftRegionId>,
+    pub craft_normalize_groups: bool,
+    /// Draft name for the next saved board view (the bookmarks section's input).
+    pub board_view_name: String,
+    pub canvas_size_unit: CanvasSizeUnit,
+    pub panel_note_inline_edit: Option<PanelNoteEditState>,
+    pub panel_note_edit: Option<PanelNoteEditState>,
+    pub text_edit: Option<TextEditState>,
+    /// Snap guide previews painted during an `Interaction::Object` drag; cleared
+    /// alongside it.
+    pub snap_guides: Vec<crate::layout::SnapGuide>,
+    /// The selected region band and its owning dataset.
+    pub selected_region: Option<RegionSelection>,
+    /// The selected 1D integral band's id (shows handles + the context menu target).
+    pub selected_integral: Option<u64>,
+    /// The selected hand-placed peak's mark id (drives Delete and the label editor).
+    pub selected_peak: Option<u64>,
+    /// Selected cross peak and its owning dataset while the Symmetry tool is active.
+    pub selected_peak_2d: Option<Peak2DSelection>,
+    /// Click-pinned symmetry comparison. Hover readings remain frame-local.
+    pub symmetry_pin: Option<SymmetryCursorReading>,
+    /// Click-pinned Inspect reading. Hover readings remain frame-local.
+    pub inspect_cursor_pin: Option<CursorPoint>,
+    /// First click of an in-progress Delta measurement.
+    pub delta_cursor_anchor: Option<CursorPoint>,
+    /// Completed two-point Delta measurement.
+    pub delta_cursor_pin: Option<CursorDelta>,
+    /// Completed audit for the exact current processed spectrum.
+    pub symmetry_audit: Option<SymmetryAuditState>,
+    /// Exact processed spectrum for which an automatic audit was already
+    /// attempted, including failed attempts (prevents a failure loop per frame).
+    pub symmetry_attempted_spectrum: Option<Arc<plotium_processing::Spectrum2D>>,
+    /// Whether cursor positions snap without holding Shift.
+    pub symmetry_snap: bool,
+    pub symmetry_filter: SymmetryAuditFilter,
+    /// Dataset-bound pre-edit snapshot for an in-progress region rename, so a
+    /// typing run commits as one undo step without crossing dataset switches.
+    pub region_edit_before: Option<(DatasetId, Vec<Region>)>,
+    /// Curve-fit tool state for a `Dataset::Table`: chosen preset id (empty =
+    /// pick a default from the table's meta), whether to fit all columns or one,
+    /// and the selected column index. Scoped to `fit_dataset`.
+    pub fit_dataset: Option<usize>,
+    pub fit_model: String,
+    pub fit_all_columns: bool,
+    pub fit_column: Option<plotium_data::ColumnId>,
+    pub fit_global_parameters: bool,
+    pub fit_options: plotium_analysis::fit_model::FitOptions,
+    pub fit_custom_models: Vec<plotium_analysis::fit_model::FitModelDefinition>,
+    pub fit_model_editor: Option<String>,
+    pub fit_model_editor_status: String,
+    /// Parse/compile result for the exact editor source, so the DSL is not
+    /// recompiled every frame while the text is unchanged.
+    pub fit_model_editor_validation: Option<FitEditorValidation>,
+    /// The ILT/CONTIN parameters the user explicitly entered for the next build,
+    /// or `None` when they have not overridden anything. `None` is the load-bearing
+    /// state: it is what lets a build fall through to the target's stored result
+    /// provenance and then to the application default, so the three lifecycle
+    /// stages stay reachable on every entry point rather than only in the panel.
+    pub ilt_params: Option<IltParams>,
+    /// The dataset `ilt_params` was entered for. An explicit input belongs to one
+    /// target; without this, focusing another dataset would silently inherit it.
+    pub ilt_params_dataset: Option<DatasetId>,
+    /// The live position of the Slice tool, or `None` before it is placed.
+    pub slice: Option<SliceCursor>,
+    /// The chosen slice orientation for a true-2D spectrum (ignored for a stack,
+    /// whose slices are always increments).
+    pub slice_kind: plotium_processing::SliceKind,
+    /// The processing step whose inline editor is expanded, if any. `StepId` is
+    /// owner-local — every dataset numbers its steps from zero — so the owning
+    /// dataset is stored alongside it; without it, expanding a row on one
+    /// dataset would light up the same-numbered row on every other one.
+    pub proc_expanded_step: Option<(DatasetId, StepId)>,
+    /// The armed one-shot request to pick a Reference step's source position on
+    /// the plot. Armed by the step editor's pick button; disarmed by the pick
+    /// click, Escape, or going stale (see `PlotiumApp::sync_reference_pick`).
+    pub reference_pick: Option<ReferencePick>,
+    /// Latched result of the last phase-editing sync: `true` while the canvas is
+    /// held in on-plot phase mode because a Phase step's editor is open. Edge-
+    /// detected so a manual tool switch mid-phasing isn't fought each frame.
+    pub phase_edit_active: bool,
+    /// When set, processing edits mutate the recipe but defer the recompute until
+    /// the user presses Apply, keeping heavy transforms out of a rapid edit run.
+    pub proc_paused: bool,
+    /// While paused, the earliest pre-edit snapshot (dataset + state) so all
+    /// staged edits commit as one undoable step on Apply.
+    pub proc_pending: Option<(DatasetId, DatasetProcessingState)>,
+}
+
+impl UiState {
+    /// True while any direct-manipulation gesture is mid-flight (object/marquee
+    /// drag, ROI select/zoom, data pan, title drag). The board's auto-fit and
+    /// zoom-to-fit animators must not run in this state: a gesture re-samples the
+    /// page↔screen transform every frame, so letting the animator move the board
+    /// would read as phantom pointer travel and drag content the user never
+    /// touched. Gesture starts freeze the board (see `freeze_board_for_gesture`);
+    /// this predicate is the standing guard that keeps it frozen.
+    pub fn gesture_active(&self) -> bool {
+        matches!(
+            self.interaction,
+            Interaction::Object(_)
+                | Interaction::Panel(_)
+                | Interaction::Marquee(_)
+                | Interaction::Selection(_)
+                | Interaction::Zoom(_)
+                | Interaction::PanelLabel(_)
+                | Interaction::Pan(_)
+        )
+    }
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            interaction: Interaction::Idle,
+            phase_axis: PhaseAxis::F2,
+            analysis_selection: None,
+            xps_workbench_tab: XpsWorkbenchTab::default(),
+            peak_column: None,
+            wheel_zoom: None,
+            wheel_property: None,
+            canvas_size_edit: None,
+            page_layout_edit: None,
+            processing_session: None,
+            property_gesture: None,
+            property_text_edits: Vec::new(),
+            inspector_edit: None,
+            series_presentation_edit: None,
+            axis_overrides_before: None,
+            canvas_settings: None,
+            figure_typography_open: false,
+            figure_typography_before: None,
+            caption_edit_before: None,
+            note_edit_before: None,
+            sheet_open: None,
+            rename: None,
+            save_project_options: false,
+            pending_project_save: None,
+            project_save_in_progress: false,
+            project_transition: None,
+            export_options: None,
+            data_export: None,
+            table_import_preview: None,
+            nmr_import: None,
+            settings_dialog: None,
+            command_palette: None,
+            ribbon_tab: WorkflowTab::default(),
+            ribbon_expanded: true,
+            arrange_grid_draft: ArrangeGridDraft::default(),
+            about_open: false,
+            diagnostics_open: false,
+            dismissed_feedback_order: None,
+            processing_scheme_dialog: None,
+            processing_template_dialog: None,
+            spectrum_arithmetic_dialog: None,
+            align_spectra_dialog: None,
+            trace_alignment_dialog: None,
+            trace_composer: None,
+            selection: Selection::None,
+            hierarchical_selection: HierarchicalSelection::default(),
+            raster_proxies: Vec::new(),
+            selection_scope: SelectionScope::default(),
+            selection_anchors: SelectionAnchors::default(),
+            panel_label_selection: None,
+            panel_drop_target: None,
+            layers_drag_content: None,
+            tile_drop: None,
+            frame_selection: Vec::new(),
+            data_selection: Vec::new(),
+            data_browser_filter: String::new(),
+            data_browser_collapsed_datasets: HashSet::new(),
+            data_browser_collapsed_derived: HashSet::new(),
+            data_browser_expanded_analysis: HashSet::new(),
+            data_browser_selected_node: None,
+            data_browser_last_active: None,
+            requested_tool_group: None,
+            task_dock_active: None,
+            processing_task_dataset: None,
+            processing_task_collapsed: false,
+            processing_surface_feedback: None,
+            requested_inspector_section: None,
+            property_focus: None,
+            region_task_dataset: None,
+            region_task_collapsed: false,
+            curve_fit_task_dataset: None,
+            curve_fit_task_collapsed: false,
+            stat_task_dataset: None,
+            stat_task_collapsed: false,
+            stat_draft: None,
+            craft_task_dataset: None,
+            craft_task_collapsed: false,
+            craft_overrides_dataset: None,
+            craft_overrides: plotium_processing::craft::CraftParamOverrides::default(),
+            craft_feedback: HashMap::new(),
+            craft_resolution_cache: None,
+            craft_base_run: None,
+            craft_analysis_intent: CraftAnalysisIntent::default(),
+            craft_spectrum_channel: CraftSpectrumChannel::default(),
+            craft_selected_run: None,
+            craft_task_page: CraftTaskPage::Setup,
+            craft_result_tab: CraftResultTab::Overview,
+            craft_selected_report: None,
+            craft_component_sort: CraftComponentSort::ChemicalShift,
+            craft_component_region: None,
+            craft_selected_component: None,
+            craft_selected_region: None,
+            craft_normalize_groups: false,
+            board_view_name: String::new(),
+            canvas_size_unit: CanvasSizeUnit::Mm,
+            panel_note_inline_edit: None,
+            panel_note_edit: None,
+            text_edit: None,
+            snap_guides: Vec::new(),
+            selected_region: None,
+            selected_integral: None,
+            selected_peak: None,
+            selected_peak_2d: None,
+            symmetry_pin: None,
+            inspect_cursor_pin: None,
+            delta_cursor_anchor: None,
+            delta_cursor_pin: None,
+            symmetry_audit: None,
+            symmetry_attempted_spectrum: None,
+            symmetry_snap: false,
+            symmetry_filter: SymmetryAuditFilter::All,
+            region_edit_before: None,
+            fit_dataset: None,
+            fit_model: String::new(),
+            fit_all_columns: true,
+            fit_column: None,
+            fit_global_parameters: false,
+            fit_options: plotium_analysis::fit_model::FitOptions::default(),
+            fit_custom_models: Vec::new(),
+            fit_model_editor: None,
+            fit_model_editor_status: String::new(),
+            fit_model_editor_validation: None,
+            ilt_params: None,
+            ilt_params_dataset: None,
+            slice: None,
+            slice_kind: plotium_processing::SliceKind::Row,
+            proc_expanded_step: None,
+            reference_pick: None,
+            phase_edit_active: false,
+            proc_paused: false,
+            proc_pending: None,
+        }
+    }
+}
+
+/// Scientific project content and on-disk identity, persisted across sessions.
+#[derive(Clone)]
+pub struct Document {
+    pub datasets: Vec<Dataset>,
+    pub canvases: Vec<CanvasDocument>,
+    pub assets: std::collections::BTreeMap<AssetId, AssetRecord>,
+    /// Per-kind default styles fed to the authoring create-tools.
+    pub style_library: StyleLibrary,
+    pub project_path: Option<std::path::PathBuf>,
+    /// Revision recorded by the last loaded or successful project save. Recovery
+    /// snapshots bind to this value so a later manual save makes them stale.
+    pub project_revision: Option<String>,
+    pub automation_revision: u64,
+    pub automation_runs: Vec<crate::automation::RunManifest>,
+    pub reports: Vec<AnalysisReportRecord>,
+    pub next_report_id: u64,
+    /// Incremented for every persisted edit. Background save completion uses
+    /// this token instead of clearing `dirty` unconditionally.
+    pub edit_generation: u64,
+    pub dirty: bool,
+    pub save_include_view_snapshots: bool,
+}
+
+/// Copy-on-write ownership for the project document. Recovery workers can hold
+/// an immutable snapshot with only an `Arc` clone; normal editing stays
+/// allocation-free while the document is uniquely owned.
+#[derive(Clone)]
+pub struct SharedDocument(Arc<Document>);
+
+impl SharedDocument {
+    pub fn new(document: Document) -> Self {
+        Self(Arc::new(document))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Deref for SharedDocument {
+    type Target = Document;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for SharedDocument {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+/// Window/UI chrome and transient interaction state: viewports, tool selection,
+/// sidebars, the undo history, and in-flight gestures. Not the document itself.
+pub struct Session {
+    /// Distinguishes the welcome state from an intentionally created, still
+    /// empty untitled project.
+    pub project_present: bool,
+    pub active_canvas: Option<usize>,
+    /// Pan/zoom of the board that holds every page-frame.
+    pub board: BoardViewport,
+    /// Saved board bookmarks (named viewports) the user can jump back to.
+    pub board_views: Vec<NamedView>,
+    /// Whether the user owns the camera or a persistent fit intent does.
+    pub viewport_mode: ViewportMode,
+    /// One-shot core-to-UI request to animate toward a newly created frame.
+    pub board_reveal: Option<BoardFrameId>,
+    pub view: PrimaryView,
+    pub tool: Tool,
+    pub primary_sidebar_width: f32,
+    pub primary_sidebar_visible: bool,
+    pub secondary_sidebar_width: f32,
+    pub secondary_sidebar_visible: bool,
+    pub status: String,
+    pub operation_history: OperationHistory,
+    pub status_history: super::StatusHistory,
+    /// Non-fatal resource failures collected while opening the current project.
+    pub project_load_warnings: Vec<String>,
+    /// Runtime cache of the persisted recent-files list (newest first), seeded
+    /// from settings at construction and kept in sync by `note_recent_file` /
+    /// `clear_recent_files` / `apply_settings`. Not serialized with projects.
+    pub recent_files: Vec<std::path::PathBuf>,
+    pub ui: UiState,
+    /// Off-thread runner for the heaviest button-triggered DOSY computations.
+    /// Not serialized; rebuilt fresh whenever a `PlotiumApp` is constructed.
+    pub compute: ComputeService,
+    pub(crate) phase_preview: super::phase_preview::PhasePreview,
+    pub data_imports: super::DataImports,
+    /// Background update checker/downloader. Not serialized.
+    pub updates: crate::update::UpdateService,
+    pub line_fit_job: Option<crate::state::LineFitJob>,
+    pub xps_fit_job: Option<crate::state::XpsFitJob>,
+    pub symmetry_audit_job: Option<crate::state::SymmetryAuditJob>,
+    pub table_transform_job: Option<crate::state::TableTransformJob>,
+    pub table_refresh_job: Option<crate::state::TableRefreshJob>,
+    /// Unified numerical export worker. Serialization and file I/O stay off the UI thread.
+    pub data_export_job: Option<crate::data_export::DataExportJob>,
+    pub data_export_operation: Option<OperationId>,
+    /// Bumped whenever a dataset index may now address a different dataset than
+    /// it did when a background job captured it, so index-addressed results can
+    /// be rejected. Only removal does that: datasets are always appended, so an
+    /// insertion leaves every existing index pointing at the same dataset and must
+    /// not invalidate work in flight.
+    pub dataset_epoch: u64,
+    /// Latched once the user has confirmed (Save or Discard) a close on a dirty
+    /// project, so the re-issued close request passes through instead of looping
+    /// back into the confirm dialog.
+    pub allow_close: bool,
+    pub undo_stack: Vec<Action>,
+    pub redo_stack: Vec<Action>,
+    pub history_limit: usize,
+    /// Transient slideshow mode: hides all editing chrome and renders one canvas
+    /// full screen. Not part of the document and never serialized.
+    pub present_mode: bool,
+    /// The canvas shown in present mode (page index into `canvases`).
+    pub present_page: usize,
+    /// Whether the window is currently held full screen for present mode, so the
+    /// fullscreen viewport command is only sent on the mode's rising/falling edge.
+    pub present_fullscreen_on: bool,
+    /// The monitor currently under the window and its UI scale, maintained by
+    /// the app shell's scale driver. `None` until the first probe (or when the
+    /// window handle is unavailable). Not serialized.
+    pub monitor: Option<MonitorScaleStatus>,
+}
+
+impl Session {
+    pub fn begin_operation(&mut self) -> OperationId {
+        self.operation_history.next_id()
+    }
+
+    /// Stores the report and makes its summary the current activity message.
+    pub fn record_operation<T>(&mut self, report: OperationReport<T>) -> Option<T> {
+        let (record, value) = report.into_parts();
+        self.status = record.summary.clone();
+        self.status_history.observe(&self.status);
+        self.operation_history.push(record);
+        value
+    }
+
+    pub fn clear_operation_history(&mut self) {
+        self.operation_history.clear();
+        self.status_history.clear();
+    }
+
+    pub fn sanitized_diagnostics_text(&self) -> String {
+        self.operation_history.sanitized_text()
+    }
+}
+
+/// In-progress drag of a whole frame (page or sheet) across the board by its
+/// header strip. `before` is the frame's `board_pos` (pt) at grab time and
+/// `start_world` the board-world (pt) pointer position then, so the live position
+/// is recomputed absolutely each frame (grid snapping never accumulates drift).
+#[derive(Clone, Debug)]
+pub struct FrameDrag {
+    pub frame: BoardFrameId,
+    pub before: Vec<(BoardFrameId, [f32; 2])>,
+    pub start_world: [f32; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BoardMarqueeDrag {
+    pub start: [f32; 2],
+    pub current: [f32; 2],
+    pub additive: bool,
+    pub toggle: bool,
+}
+
+/// In-progress rubber-band selecting objects on empty page area. `start` and
+/// `current` are page-space (pt) pointer positions; `additive` keeps the prior
+/// selection (Shift+marquee) instead of replacing it.
+#[derive(Clone, Copy, Debug)]
+pub struct MarqueeDrag {
+    pub canvas: usize,
+    pub start: [f32; 2],
+    pub current: [f32; 2],
+    pub additive: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectDragKind {
+    Move,
+    Resize(ResizeHandle),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeHandle {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}

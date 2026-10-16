@@ -1,0 +1,20 @@
+[package]
+name = "plotium-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Analysis layer for Plotium: detection, quantitative extraction, scientific fitting, and deconvolution."
+
+[lib]
+name = "plotium_analysis"
+path = "src/lib.rs"
+
+[dependencies]
+plotium-io.workspace = true
+num-complex.workspace = true
+nalgebra.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+statrs.workspace = true
+tukey_test.workspace = true

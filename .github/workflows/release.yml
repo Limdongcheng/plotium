@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Build the selected ref for a rehearsal, without creating a release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        id: version
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          metadata = json.loads(subprocess.check_output([
+              'cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1',
+          ]))
+          version = next(p['version'] for p in metadata['packages'] if p['name'] == 'plotium')
+          number = r'(?:0|[1-9][0-9]*)'
+          match = re.fullmatch(rf'{number}\.{number}\.{number}(?:-(alpha|beta)\.{number})?', version)
+          if not match:
+              raise SystemExit('Use X.Y.Z, X.Y.Z-alpha.N, or X.Y.Z-beta.N; these match the updater channels.')
+          if os.environ['TAG'] and os.environ['TAG'] != f'v{version}':
+              raise SystemExit(f'Tag must match Cargo.toml: expected v{version}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\nchannel={match[1] or "stable"}\n')
+          PY
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLOTIUM_RELEASE_CHANNEL: ${{ needs.version.outputs.channel }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Update Rust toolchain
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup target add "$TARGET"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        if: matrix.target != 'x86_64-apple-darwin'
+        with:
+          tool: cargo-about@0.9.1
+      - name: Install cargo-about on Intel macOS
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: cargo install cargo-about --version 0.9.1 --locked --features cli
+      - name: Build default frontends
+        run: cargo build --locked --release --target "$TARGET" -p plotium -p plotium-cli
+      - name: Collect license notices
+        run: |
+          mkdir -p dist/package
+          cargo about generate --locked --fail --target "$TARGET" \
+            --manifest-path crates/app/Cargo.toml -c xtask/about.toml \
+            xtask/about.hbs -o dist/package/THIRD-PARTY-LICENSES.html
+          cargo about generate --locked --fail --target "$TARGET" \
+            --manifest-path crates/cli/Cargo.toml -c xtask/about.toml \
+            xtask/about.hbs -o dist/package/CLI-THIRD-PARTY-LICENSES.html
+      - name: Package and smoke-test
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          package = Path('dist/package')
+          suffix = '.exe' if os.environ['PLATFORM'].startswith('windows-') else ''
+          for name in ('plotium', 'plotium-cli'):
+              shutil.copy2(Path('target') / os.environ['TARGET'] / 'release' / (name + suffix), package)
+          for name in ('LICENSE', 'COPYRIGHT.md', 'README.md'):
+              shutil.copy2(name, package)
+          shutil.copy2('crates/cli/README.md', package / 'CLI-README.md')
+          archive = Path('dist') / f'plotium-{os.environ["VERSION"]}-{os.environ["PLATFORM"]}.zip'
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
+              for path in sorted(package.iterdir()):
+                  output.write(path, path.name)
+          with zipfile.ZipFile(archive) as output:
+              if output.testzip() is not None:
+                  raise SystemExit('Release archive failed its CRC check')
+              output.extractall('dist/smoke')
+          cli = Path('dist/smoke') / ('plotium-cli' + suffix)
+          cli.chmod(0o755)
+          subprocess.run([str(cli.resolve()), '--help'], check=True)
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/plotium-*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  draft:
+    if: github.event_name == 'push'
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.version.outputs.version }}
+      CHANNEL: ${{ needs.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Add matching source and checksums
+        run: |
+          test "$(find dist -maxdepth 1 -name '*.zip' | wc -l)" -eq 4
+          git archive --format=tar.gz --prefix="plotium-$VERSION/" \
+            --output="dist/plotium-$VERSION-source.tar.gz" HEAD
+          cd dist
+          sha256sum *.zip *.tar.gz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Create or update release draft
+        run: |
+          if gh release view "$TAG" --json isDraft > release.json; then
+            jq -e '.isDraft == true' release.json
+          else
+            flags=()
+            if [ "$CHANNEL" != stable ]; then flags+=(--prerelease); fi
+            gh release create "$TAG" --verify-tag --draft --title "Plotium $VERSION" \
+              --generate-notes "${flags[@]}"
+          fi
+          gh release upload "$TAG" dist/*.zip dist/*.tar.gz dist/SHA256SUMS --clobber

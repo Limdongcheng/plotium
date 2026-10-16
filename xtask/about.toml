@@ -1,0 +1,32 @@
+# Third-party license notices for the GPL-3.0-or-later Plotium distribution.
+# This list selects licenses for notice generation, not a CI compatibility
+# policy. Update it when release dependencies need additional license texts.
+# Keep this list to exactly the licenses in the resolved tree; no "just in
+# case" entries.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "OFL-1.1",
+    "LicenseRef-UFL-1.0",
+    # Data-only license of the bundled Mozilla CA root store (webpki-roots);
+    # retained under its own license.
+    "CDLA-Permissive-2.0",
+]
+
+[private]
+ignore = true
+
+[epaint_default_fonts.clarify]
+license = "(Apache-2.0 OR MIT) AND OFL-1.1 AND LicenseRef-UFL-1.0"
+[[epaint_default_fonts.clarify.files]]
+path = "fonts/UFL.txt"
+license = "LicenseRef-UFL-1.0"
+checksum = "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"

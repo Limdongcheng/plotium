@@ -1,0 +1,98 @@
+# Repository instructions for AI agents
+
+These instructions apply to the entire repository.
+
+## Working principles
+
+- Preserve user changes and keep edits focused on the requested task.
+- Do not add adjacent features, abstractions, or cleanup unless they are needed
+  for the requested change.
+- Do not commit generated directories such as `target/`, `dist/`,
+  `docs/dist/`, or `docs/node_modules/`.
+- Keep public documentation and user-visible behavior in sync.
+- Never add credentials or confidential or proprietary data.
+- Until the first stable release, persisted formats remain fixed at v1. Do not
+  add migrations, legacy readers, compatibility fallbacks, old serialization
+  adapters, or development-draft format handling. Framework-native default
+  filling such as Serde `#[serde(default)]` is sufficient.
+
+## Product name
+
+- The brand name is **Plotium** (capital P). Write it that way in every
+  human-readable string: UI text, window titles, About, docs prose, README, and
+  legal files. English sentences that begin with the name still use Plotium.
+- Machine identifiers use lowercase `plotium`: crate names (`plotium-core`), the
+  binary and `-p plotium`, the repository and documentation URLs, the
+  `.plotium`/`.plotiumproc` extensions, and the app bundle
+  id (`space.nmrtist.plotium`). Environment variables and constants use
+  uppercase `PLOTIUM` (for example `PLOTIUM_SHOT`). Never rewrite these to
+  the brand form, and never brand-case a code block.
+- The Rust application type is `PlotiumApp`; brand type fragments use `Plotium`.
+- Rule of thumb: if a human reads it as the product name, write Plotium; if a
+  machine parses it, keep plotium.
+
+## Code quality
+
+- Prioritize correctness and clarity. Optimize only when requirements,
+  profiling, or known numerical workloads justify it.
+- Comments should explain non-obvious reasons, invariants, numerical choices,
+  or safety constraints rather than restating the code.
+- Never silently discard a fallible result. Propagate it, handle it explicitly,
+  or deliberately log it when continuing is safe.
+- Do not panic on external input or recoverable runtime failures. `unwrap()` and
+  indexing are acceptable only where an invariant is local and evident, or in
+  tests where failure is the intended outcome.
+- Errors from background work must reach application state and produce useful
+  user-visible feedback when the operation was initiated by the user.
+
+## Rust workspace
+
+- Stable resources and components use typed IDs. Collection indices are
+  one-shot lookup positions only; they must not cross action, job, frame, or
+  persistence boundaries.
+- Encoding applicability is attached to field rendering capabilities, never to
+  a data-domain enum. New domains gain an encoding by exposing its capability;
+  do not add domain branches or domain names to encoding/property registries.
+- Scientific summaries take identity from importers, observation from field
+  descriptors, and context from active bindings; panel notes are user-authored.
+- A persisted default, an invocation input, and result provenance are lifecycle
+  copies of one value, not parallel sources of state. Resolve them in priority
+  order: explicit input, target provenance, then default.
+- Respect crate boundaries: parsing in `plotium-io`, scientific algorithms in
+  `plotium-analysis`, spectral transforms in `plotium-processing`, presentation
+  models in `plotium-figure`, rendering in `plotium-render`, application state in
+  `plotium-core`, DataFusion execution in `plotium-datafusion`, Substrait interop in
+  `plotium-substrait`, and desktop UI in the `plotium` application crate.
+- `plotium-data` stays engine-free: never add datafusion, datafusion-substrait or
+  sqlparser to it. Backend adapters reach its internals through the
+  `#[doc(hidden)] pub` seams; keep that set minimal instead of widening the API.
+- The app, CLI, and shipping builds use the reference table executor. DataFusion
+  remains available through the opt-in `datafusion` feature and the
+  `cargo datafusion-build` maintenance alias, but default PR checks and CI do
+  not compile or validate DataFusion or Substrait.
+- Keep Rust source files below the repository's 800-line limit; prefer cohesive
+  modules over large files. Extract tests to a sibling `*_tests.rs` referenced
+  with `#[path]` when a file approaches it.
+- Run `cargo pr-check` before completing code changes. It checks formatting,
+  source sizes, dependency advisories, duplicate versions and sources,
+  a default-configuration build of both frontends, Clippy with warnings denied,
+  and the reference-backend test suite. It requires `cargo-deny`.
+
+## Documentation
+
+- The user manual lives in `docs/`, uses Astro/Starlight, and is published at
+  <https://plotium.nmrtist.space/>.
+- English pages are canonical. Keep matching Simplified Chinese pages aligned
+  when changing translated content.
+- Validate documentation changes with `npm run build` from `docs/`.
+
+## Rules hygiene
+
+- Keep this file high-signal. Add a rule only when the behavior is non-obvious,
+  repeatedly relevant, and specific enough to act on.
+- Prefer documenting traps and invariants over architecture that can be
+  discovered by reading the code.
+- Put crate-specific rules near the relevant crate when they do not apply to
+  the whole repository.
+- Update an existing rule when possible; avoid adding rules for one-off
+  observations.

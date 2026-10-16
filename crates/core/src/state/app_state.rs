@@ -1,0 +1,31 @@
+use super::{Session, SharedDocument};
+
+pub struct PlotiumApp {
+    pub doc: SharedDocument,
+    pub session: Session,
+    /// Live, already-applied preferences. The file is only a flush target, and
+    /// the Preferences dialog owns an in-progress draft rather than another
+    /// source of truth.
+    pub settings: crate::settings::Settings,
+}
+
+/// Live UI-scale state of the monitor under the window: the settings key it is
+/// recorded under, the derived automatic zoom, any manual override, and what
+/// the physical probe reported (for the Preferences description).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorScaleStatus {
+    /// Key into `settings.appearance.ui_scale.monitors`.
+    pub key: String,
+    /// Automatic zoom derived from the display's physical density.
+    pub auto: f32,
+    /// Manual override mirrored from settings; `None` follows `auto`.
+    pub user: Option<f32>,
+    /// Physical pixels per inch when the display reported its dimensions.
+    pub ppi: Option<f32>,
+}
+
+impl MonitorScaleStatus {
+    pub fn effective(&self) -> f32 {
+        self.user.unwrap_or(self.auto)
+    }
+}

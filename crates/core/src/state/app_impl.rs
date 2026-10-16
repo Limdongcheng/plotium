@@ -1,0 +1,753 @@
+use super::*;
+
+type PlotRebuild = (
+    ObjectId,
+    Option<DatasetId>,
+    DataBinding,
+    ChartSpec,
+    StackSpec,
+    AxisProjections,
+    ObjectFrame,
+);
+use crate::operation::OperationHistory;
+use plotium_processing::{ProjectionMode, SliceKind};
+
+pub const OVERLAY_PALETTE: [Color; 8] = [
+    Color::rgb(0x1f, 0x6f, 0xeb),
+    Color::rgb(0xd5, 0x5e, 0x00),
+    Color::rgb(0x00, 0x9e, 0x73),
+    Color::rgb(0xcc, 0x79, 0xa7),
+    Color::rgb(0xe6, 0x9f, 0x00),
+    Color::rgb(0x56, 0xb4, 0xe9),
+    Color::rgb(0x00, 0x72, 0xb2),
+    Color::rgb(0xae, 0x2c, 0x2c),
+];
+
+impl Default for PlotiumApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlotiumApp {
+    pub fn new() -> Self {
+        Self::new_with_settings(crate::settings::load())
+    }
+
+    pub fn new_with_settings(settings: crate::settings::Settings) -> Self {
+        Self {
+            doc: SharedDocument::new(Document {
+                datasets: Vec::new(),
+                canvases: Vec::new(),
+                assets: std::collections::BTreeMap::new(),
+                style_library: StyleLibrary::default(),
+                project_path: None,
+                project_revision: None,
+                automation_revision: 0,
+                automation_runs: Vec::new(),
+                reports: Vec::new(),
+                next_report_id: 0,
+                edit_generation: 0,
+                dirty: false,
+                save_include_view_snapshots: settings.export.include_view_snapshots,
+            }),
+            session: Session {
+                project_present: false,
+                active_canvas: None,
+                board: BoardViewport::default(),
+                board_views: Vec::new(),
+                viewport_mode: ViewportMode::Fit(BoardFitTarget::AllFrames),
+                board_reveal: None,
+                view: PrimaryView::Canvas,
+                tool: Tool::Select,
+                primary_sidebar_width: 240.0,
+                primary_sidebar_visible: true,
+                secondary_sidebar_width: 280.0,
+                secondary_sidebar_visible: true,
+                status: "Open data or a project to begin.".into(),
+                operation_history: OperationHistory::default(),
+                status_history: super::StatusHistory::default(),
+                project_load_warnings: Vec::new(),
+                recent_files: {
+                    let mut files = settings.recent.files.clone();
+                    files.truncate(crate::settings::MAX_RECENT_FILES);
+                    files
+                },
+                ui: UiState {
+                    // follow later preference edits, and resolving at build time
+                    // is what keeps the default reachable as a lifecycle stage.
+                    ..Default::default()
+                },
+                compute: ComputeService::new(),
+                phase_preview: Default::default(),
+                data_imports: DataImports::default(),
+                updates: crate::update::UpdateService::new(&settings.updates),
+                line_fit_job: None,
+                xps_fit_job: None,
+                symmetry_audit_job: None,
+                table_transform_job: None,
+                table_refresh_job: None,
+                data_export_job: None,
+                data_export_operation: None,
+                dataset_epoch: 0,
+                allow_close: false,
+                undo_stack: Vec::new(),
+                redo_stack: Vec::new(),
+                history_limit: 200,
+                present_mode: false,
+                present_page: 0,
+                present_fullscreen_on: false,
+                monitor: None,
+            },
+            settings,
+        }
+    }
+
+    pub(crate) fn short_name(source: &str) -> String {
+        std::path::Path::new(source)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| source.to_string())
+    }
+
+    /// Build a plot object's full figure: its binding figure, then any marginal
+    /// axis projections layered on. The single entry point every object rebuild
+    /// (resize, binding/chart/stack/projection edit, load) routes through, so the
+    /// projections survive every rebuild.
+    pub fn build_object_figure(
+        &mut self,
+        display_owner: Option<DatasetId>,
+        binding: &DataBinding,
+        chart: &ChartSpec,
+        stack: &StackSpec,
+        projections: &AxisProjections,
+        size_mm: [f32; 2],
+    ) -> Figure {
+        let effective = self.display_binding(display_owner, binding);
+        let mut fig = self.build_binding_figure(&effective, chart, stack, size_mm);
+        if let Some(dataset) = binding
+            .primary_dataset()
+            .and_then(|id| self.doc.dataset_index(id))
+        {
+            self.apply_axis_projections(&mut fig, dataset, projections);
+        }
+        fig
+    }
+
+    /// Attach the configured marginal projections to a true-2D contour figure.
+    /// A no-op for pseudo-2D/stack figures and for empty configs.
+    pub fn apply_axis_projections(
+        &self,
+        fig: &mut Figure,
+        dataset: usize,
+        projections: &AxisProjections,
+    ) {
+        fig.top_projection = None;
+        fig.left_projection = None;
+        let Some(d2) = self.doc.datasets.get(dataset).and_then(Dataset::as_nmr2d) else {
+            return;
+        };
+        let Processed2D::Ft(_) = &d2.processed else {
+            return;
+        };
+        fig.top_projection =
+            self.build_axis_trace(&d2.native_processed, SliceKind::Row, &projections.top);
+        fig.left_projection =
+            self.build_axis_trace(&d2.native_processed, SliceKind::Column, &projections.left);
+    }
+
+    fn build_axis_trace(
+        &self,
+        source: &plotium_io::nmr_view::NmrSource,
+        kind: SliceKind,
+        cfg: &AxisProjection,
+    ) -> Option<plotium_figure::AxisTrace> {
+        if !cfg.is_shown() {
+            return None;
+        }
+        let reduction = match &cfg.source {
+            ProjectionSource::None => return None,
+            ProjectionSource::Attached(other) => {
+                return self
+                    .doc
+                    .dataset_index(*other)
+                    .and_then(|index| self.attached_axis_trace(index));
+            }
+            ProjectionSource::Sum => {
+                plotium_processing::slice::Reduction::Projection(ProjectionMode::Sum)
+            }
+            ProjectionSource::Skyline => {
+                plotium_processing::slice::Reduction::Projection(ProjectionMode::Skyline)
+            }
+            ProjectionSource::Slice(index) => plotium_processing::slice::Reduction::Slice(*index),
+        };
+        let (_, slice) = match plotium_processing::slice::extract(source, kind, reduction) {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("NMR axis projection unavailable: {error}");
+                return None;
+            }
+        };
+        let points = slice
+            .coordinates
+            .iter()
+            .zip(&slice.values)
+            .map(|(&p, c)| [p, c.re])
+            .collect();
+        Some(plotium_figure::AxisTrace {
+            points,
+            color: Color::TRACE,
+            width: plotium_figure::DEFAULT_DATA_LINE_WIDTH_PT,
+        })
+    }
+
+    /// A marginal trace lifted from another loaded 1D dataset (manual attach),
+    /// aligned to the contour by ppm. `None` if the target isn't a 1D spectrum.
+    fn attached_axis_trace(&self, dataset: usize) -> Option<plotium_figure::AxisTrace> {
+        let n = self.doc.datasets.get(dataset).and_then(Dataset::as_nmr)?;
+        let spectrum = n.spectrum()?;
+        Some(plotium_figure::AxisTrace {
+            points: spectrum.real_points(),
+            color: Color::TRACE,
+            width: plotium_figure::DEFAULT_DATA_LINE_WIDTH_PT,
+        })
+    }
+
+    pub fn default_plot_title(&self, dataset: usize) -> String {
+        crate::workflow::dataset_title(&self.doc.datasets[dataset])
+    }
+
+    pub fn build_plot_object(
+        &mut self,
+        dataset: usize,
+        frame: ObjectFrame,
+        id: ObjectId,
+        name: String,
+    ) -> CanvasObject {
+        let mut object = crate::workflow::build_plot_object(
+            &self.doc.datasets[dataset],
+            dataset,
+            frame,
+            id,
+            name,
+        );
+        let Some((binding, chart, stack, projections, size_mm)) = object.plot().map(|plot| {
+            (
+                plot.binding.clone(),
+                plot.chart.clone(),
+                plot.stack,
+                plot.projections.clone(),
+                [frame.width / MM_TO_PT, frame.height / MM_TO_PT],
+            )
+        }) else {
+            return object;
+        };
+        let owner = object.plot().and_then(|plot| plot.display_owner);
+        let figure =
+            self.build_object_figure(owner, &binding, &chart, &stack, &projections, size_mm);
+        if let Some(plot) = object.plot_mut() {
+            plot.adopt_rebuilt_figure(figure);
+        }
+        object
+    }
+
+    pub fn apply_viewport_to_plot_object(&mut self, ci: usize, object_id: ObjectId, fig: Figure) {
+        let Some(object) = self
+            .doc
+            .canvases
+            .get_mut(ci)
+            .and_then(|canvas| canvas.object_mut(object_id))
+        else {
+            return;
+        };
+        let Some(plot) = object.plot_mut() else {
+            return;
+        };
+        plot.preserve_viewport_on_rebuild(fig);
+    }
+
+    pub fn rebuild_canvases_for(&mut self, dataset: usize) {
+        self.rebuild_canvases_matching(dataset, None);
+    }
+
+    pub(super) fn rebuild_canvases_for_field(&mut self, dataset: usize, field: FieldRef) {
+        self.rebuild_canvases_matching(dataset, Some(field));
+    }
+
+    fn rebuild_canvases_matching(&mut self, dataset: usize, field: Option<FieldRef>) {
+        let Some(dataset_id) = self.doc.datasets.get(dataset).map(Dataset::resource_id) else {
+            return;
+        };
+        for ci in 0..self.doc.canvases.len() {
+            let ids: Vec<ObjectId> = self.doc.canvases[ci]
+                .objects
+                .iter()
+                .filter_map(|object| {
+                    object
+                        .plot()
+                        .filter(|plot| {
+                            self.display_binding(plot.display_owner, &plot.binding)
+                                .series
+                                .iter()
+                                .any(|series| {
+                                    series.visible
+                                        && series.source.resource == dataset_id
+                                        && field
+                                            .is_none_or(|field| field.field == series.source.field)
+                                })
+                        })
+                        .map(|_| object.id)
+                })
+                .collect();
+            for id in ids {
+                let (owner, binding, chart, stack, projections, frame) = {
+                    let object = self.doc.canvases[ci].object(id).unwrap();
+                    let plot = object.plot().unwrap();
+                    (
+                        plot.display_owner,
+                        plot.binding.clone(),
+                        plot.chart.clone(),
+                        plot.stack,
+                        plot.projections.clone(),
+                        object.frame,
+                    )
+                };
+                let size = [frame.width / MM_TO_PT, frame.height / MM_TO_PT];
+                let displayed = self.display_binding(owner, &binding);
+                // Queue missing artifacts before building projections/overlays:
+                // the entire new figure would be discarded while they wait.
+                for series in displayed.series.iter().filter(|series| {
+                    series.visible
+                        && matches!(series.encoding, plotium_figure::SeriesEncoding::Contour(_))
+                }) {
+                    self.prepare_contour_series(series);
+                }
+                // Processing promotes the field before its estimates and geometry
+                // are ready. Keep the complete displayed frame through both jobs,
+                // including projections and overlays, instead of flashing blank.
+                // Explicit plot edits use their own rebuild path and still apply
+                // immediately; this only defers background data refreshes.
+                if self.binding_contours_pending(&displayed)
+                    && self.doc.canvases[ci]
+                        .object(id)
+                        .and_then(|object| object.plot())
+                        .is_some_and(|plot| !plot.figure().contours.is_empty())
+                {
+                    continue;
+                }
+                let fig =
+                    self.build_object_figure(owner, &binding, &chart, &stack, &projections, size);
+                self.apply_viewport_to_plot_object(ci, id, fig);
+            }
+        }
+    }
+
+    pub fn set_tool(&mut self, tool: Tool) {
+        if self.session.tool == tool {
+            return;
+        }
+        self.session.tool = tool;
+        self.reset_interaction();
+        self.finish_pending_wheel_zoom(f64::INFINITY, true);
+        self.finish_pending_wheel_property(f64::INFINITY, true);
+        // A data tool operates directly on the selected plot, so give it a target:
+        // if the active canvas has no selected plot yet, select the active one.
+        if tool.is_data_tool()
+            && let Some(ci) = self.session.active_canvas
+            && let Some(c) = self.doc.canvases.get(ci)
+            && c.selected_plot_object_id().is_none()
+            && let Some(id) = c.active_plot_object_id()
+        {
+            self.select_object(ci, id);
+        }
+    }
+
+    pub fn toggle_tool(&mut self, tool: Tool) {
+        let next = if self.session.tool == tool {
+            tool.rest()
+        } else {
+            tool
+        };
+        if self.session.tool != next && self.interaction().is_active() {
+            self.cancel_interaction();
+        }
+        self.set_tool(next);
+    }
+
+    /// Select a whole object in page space. Clicking a grouped member selects the
+    /// whole group, with the clicked object primary.
+    pub fn select_object(&mut self, ci: usize, id: ObjectId) {
+        let Some(canvas) = self.doc.canvases.get(ci) else {
+            return;
+        };
+        let canvas_id = canvas.resource_id;
+        let parent = canvas.parent_panel(id);
+        self.session.ui.panel_label_selection = None;
+        self.session.ui.selection = Selection::Objects(self.group_click_members(ci, id));
+        self.session
+            .ui
+            .hierarchical_selection
+            .replace(SelectionPath::content(canvas_id, parent, id));
+        if let Some(c) = self.doc.canvases.get_mut(ci) {
+            c.selected_object = Some(id);
+        }
+    }
+
+    pub fn activate_canvas(&mut self, ci: usize) {
+        let Some(canvas) = self.doc.canvases.get(ci) else {
+            return;
+        };
+        let lead = canvas.active_dataset();
+        self.session.active_canvas = Some(ci);
+        let lead = lead.and_then(|id| self.doc.dataset_index(id));
+        let datasets = self.doc.page_dataset_indices(ci);
+        self.focus_datasets(&datasets, lead);
+        self.sync_selection_to_active_canvas();
+        self.reset_interaction();
+    }
+
+    pub fn reveal_object(&mut self, ci: usize, id: ObjectId) {
+        if self
+            .doc
+            .canvases
+            .get(ci)
+            .and_then(|canvas| canvas.object(id))
+            .is_none()
+        {
+            return;
+        }
+        self.session.active_canvas = Some(ci);
+        self.reset_interaction();
+        self.select_object(ci, id);
+        self.focus_object_datasets(ci, id);
+    }
+
+    pub fn focus_object_datasets(&mut self, ci: usize, id: ObjectId) {
+        let Some(object) = self
+            .doc
+            .canvases
+            .get(ci)
+            .and_then(|canvas| canvas.object(id))
+        else {
+            return;
+        };
+        let lead = object.dataset();
+        let sources = object.dataset_ids();
+        let lead = lead.and_then(|id| self.doc.dataset_index(id));
+        let datasets: Vec<usize> = sources
+            .into_iter()
+            .filter_map(|id| self.doc.dataset_index(id))
+            .collect();
+        if datasets.is_empty() {
+            self.set_active_dataset(lead);
+        } else {
+            self.focus_datasets(&datasets, lead);
+        }
+    }
+
+    pub(super) fn group_click_members(&self, ci: usize, id: ObjectId) -> Vec<ObjectId> {
+        let Some(c) = self.doc.canvases.get(ci) else {
+            return vec![id];
+        };
+        let mut members = c.group_members(id);
+        if let Some(pos) = members.iter().position(|&m| m == id) {
+            members.swap(0, pos);
+        }
+        members
+    }
+
+    pub fn toggle_object_selection(&mut self, ci: usize, id: ObjectId) {
+        let group = self.group_click_members(ci, id);
+        let mut current: Vec<ObjectId> = self.session.ui.selection.objects().to_vec();
+        if group.iter().all(|m| current.contains(m)) {
+            current.retain(|x| !group.contains(x));
+        } else {
+            for m in group {
+                if !current.contains(&m) {
+                    current.push(m);
+                }
+            }
+        }
+        if current.is_empty() {
+            self.set_selection(Selection::None);
+        } else {
+            self.set_selection(Selection::Objects(current));
+        }
+    }
+
+    pub fn set_page_selection(&mut self, ci: usize, ids: &[ObjectId], additive: bool) {
+        let mut out: Vec<ObjectId> = if additive {
+            self.session.ui.selection.objects().to_vec()
+        } else {
+            Vec::new()
+        };
+        if let Some(c) = self.doc.canvases.get(ci) {
+            for &id in ids {
+                for m in c.group_members(id) {
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            self.set_selection(Selection::None);
+        } else {
+            self.set_selection(Selection::Objects(out));
+        }
+    }
+
+    pub fn select_all_objects(&mut self) {
+        let Some(ci) = self.session.active_canvas else {
+            return;
+        };
+        let ids: Vec<ObjectId> = self
+            .doc
+            .canvases
+            .get(ci)
+            .map(|c| {
+                c.objects
+                    .iter()
+                    .filter(|o| o.visible)
+                    .map(|o| o.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return;
+        }
+        self.session.status = format!("Selected {} object(s).", ids.len());
+        self.set_selection(Selection::Objects(ids));
+    }
+
+    pub fn select_panel_label(&mut self, ci: usize, id: ObjectId) {
+        self.session.ui.selection = Selection::None;
+        self.session.ui.panel_label_selection = Some((ci, id));
+        if let Some(c) = self.doc.canvases.get_mut(ci) {
+            c.selected_object = Some(id);
+        }
+    }
+
+    pub fn panel_label_selection(&self) -> Option<(usize, ObjectId)> {
+        self.session.ui.panel_label_selection
+    }
+
+    pub fn set_selection(&mut self, selection: Selection) {
+        let primary = selection.object();
+        self.session.ui.panel_label_selection = None;
+        self.session.ui.selection = selection;
+        if let Some(ci) = self.session.active_canvas
+            && let Some(c) = self.doc.canvases.get_mut(ci)
+        {
+            c.selected_object = primary;
+            if let Some(id) = primary {
+                let path = SelectionPath::content(c.resource_id, c.parent_panel(id), id);
+                self.session.ui.hierarchical_selection.replace(path);
+            } else {
+                self.session.ui.hierarchical_selection.clear();
+            }
+        }
+    }
+
+    pub fn sync_selection_to_active_canvas(&mut self) {
+        self.session.ui.panel_label_selection = None;
+        self.session.ui.selection = self
+            .session
+            .active_canvas
+            .and_then(|ci| self.doc.canvases.get(ci))
+            .and_then(|c| c.selected_object)
+            .map(Selection::single)
+            .unwrap_or(Selection::None);
+        self.session.ui.hierarchical_selection.clear();
+        if let Some(ci) = self.session.active_canvas
+            && let Some(canvas) = self.doc.canvases.get(ci)
+            && let Some(id) = canvas.selected_object
+        {
+            self.session
+                .ui
+                .hierarchical_selection
+                .replace(SelectionPath::content(
+                    canvas.resource_id,
+                    canvas.parent_panel(id),
+                    id,
+                ));
+        }
+        if let Some(ci) = self.session.active_canvas
+            && let Some(c) = self.doc.canvases.get(ci)
+            && c.selected_plot_object_id().is_none()
+            && let Some(id) = c.first_plot_object_id()
+        {
+            self.select_object(ci, id);
+        }
+    }
+
+    /// Format-once: push the primary object's visual style onto every unlocked
+    /// same-kind object on its canvas, as one undoable step. Each target keeps
+    /// its own text/shape primitive — only the styling copies.
+    pub fn apply_style_to_kind(&mut self, ci: usize, source: ObjectId) {
+        let Some(c) = self.doc.canvases.get(ci) else {
+            return;
+        };
+        let Some(src) = c.object(source).and_then(|o| o.style()) else {
+            return;
+        };
+        let panel = c
+            .object(source)
+            .map(|o| o.is_panel_label())
+            .unwrap_or(false);
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        for o in &c.objects {
+            if o.locked {
+                continue;
+            }
+            let Some(cur) = o.style() else {
+                continue;
+            };
+            let merged = match (&cur, &src) {
+                (ObjectStyle::Text(t), ObjectStyle::Text(s)) if o.is_panel_label() == panel => {
+                    let mut t = t.clone();
+                    t.apply_style_from(s);
+                    ObjectStyle::Text(t)
+                }
+                (ObjectStyle::Shape(sh), ObjectStyle::Shape(s)) => {
+                    let mut sh = sh.clone();
+                    sh.apply_style_from(s);
+                    ObjectStyle::Shape(sh)
+                }
+                _ => continue,
+            };
+            before.push((o.id, cur));
+            after.push((o.id, merged));
+        }
+        if before.is_empty() {
+            return;
+        }
+        let n = after.len();
+        self.execute_action(Action::set_object_style(ci, before, after));
+        self.session.status = format!("Applied style to {n} object(s).");
+    }
+
+    /// Format-once: store the source object's style as the default for new
+    /// objects of its kind.
+    pub fn set_style_default(&mut self, ci: usize, source: ObjectId) {
+        let Some(o) = self.doc.canvases.get(ci).and_then(|c| c.object(source)) else {
+            return;
+        };
+        match &o.kind {
+            CanvasObjectKind::Text(t) => self.doc.style_library.text = t.clone(),
+            CanvasObjectKind::Shape(s) => self.doc.style_library.shape = s.clone(),
+            CanvasObjectKind::Plot(_) | CanvasObjectKind::RasterImage(_) => return,
+        }
+        self.session.status = "Saved as default for new objects.".to_owned();
+    }
+
+    /// Re-run a dataset's processing recipe and refresh every canvas built from
+    /// it. The single edit-commit path shared by the canvas interactions and the
+    /// Secondary Side Bar tool widgets.
+    pub fn apply_dataset_edit(&mut self, dataset: usize) {
+        if let Some(n) = self.doc.datasets[dataset].as_nmr_mut() {
+            if let Err(error) = n.rebuild() {
+                self.session.status = format!("NMR processing failed: {error}");
+                return;
+            }
+            n.recompute_integrals();
+        } else if self.doc.datasets[dataset].as_nmr2d().is_some() {
+            self.schedule_2d_processing(dataset, false);
+            self.mark_document_dirty();
+            return;
+        }
+        if let Some(recording) = self.doc.datasets[dataset].as_electrophysiology_mut() {
+            recording.refresh_trace_collections();
+        }
+        self.rebuild_canvases_for(dataset);
+        self.sync_region_table(dataset);
+        self.mark_document_dirty();
+    }
+
+    /// Refresh analysis products affected by a transient sweep selection
+    /// without treating that invocation input as a document edit.
+    pub fn apply_electrophysiology_invocation_edit(&mut self, _dataset: usize) {
+        // Invocation selection is session state. Linked tables are refreshed
+        // only by persistent source edits or explicit creation/export.
+    }
+
+    /// Like [`Self::apply_dataset_edit`] but re-runs the FFT first — the live path
+    /// for dragging a time-domain step parameter, where the cached base changes.
+    pub fn apply_dataset_retransform(&mut self, dataset: usize) {
+        if let Some(n) = self.doc.datasets[dataset].as_nmr_mut() {
+            if let Err(error) = n.retransform() {
+                self.session.status = format!("NMR processing failed: {error}");
+                return;
+            }
+            n.recompute_integrals();
+        } else if self.doc.datasets[dataset].as_nmr2d().is_some() {
+            self.schedule_2d_processing(dataset, true);
+            self.mark_document_dirty();
+            return;
+        }
+        self.rebuild_canvases_for(dataset);
+        self.sync_region_table(dataset);
+        self.mark_document_dirty();
+    }
+
+    pub fn rebuild_canvas(&mut self, ci: usize) {
+        let items: Vec<PlotRebuild> = self.doc.canvases[ci]
+            .objects
+            .iter()
+            .filter_map(|object| {
+                object.plot().map(|plot| {
+                    (
+                        object.id,
+                        plot.display_owner,
+                        plot.binding.clone(),
+                        plot.chart.clone(),
+                        plot.stack,
+                        plot.projections.clone(),
+                        object.frame,
+                    )
+                })
+            })
+            .collect();
+        for (id, owner, binding, chart, stack, projections, frame) in items {
+            let size = [frame.width / MM_TO_PT, frame.height / MM_TO_PT];
+            let fig = self.build_object_figure(owner, &binding, &chart, &stack, &projections, size);
+            self.apply_viewport_to_plot_object(ci, id, fig);
+        }
+    }
+}
+
+pub fn visible_y_range(fig: &Figure, x: AxisRange) -> Option<AxisRange> {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+
+    for series in &fig.series {
+        for &[px, py] in &series.points {
+            if x.contains(px) && py.is_finite() {
+                lo = lo.min(py);
+                hi = hi.max(py);
+            }
+        }
+    }
+
+    if !lo.is_finite() || !hi.is_finite() {
+        return None;
+    }
+
+    let span = (hi - lo).max(f64::MIN_POSITIVE);
+    Some(AxisRange::new(lo - 0.05 * span, hi + 0.08 * span))
+}
+
+pub fn build_render_document(document: &CanvasDocument) -> plotium_render::Document<'_> {
+    let [width, height] = document.size_pt();
+    plotium_render::Document {
+        width,
+        height,
+        background: document.background,
+        items: document_items(document),
+    }
+}
+
+pub fn render_document_svg(document: &CanvasDocument) -> String {
+    plotium_render::svg::export_document(&build_render_document(document))
+}

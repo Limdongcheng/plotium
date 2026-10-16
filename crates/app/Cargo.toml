@@ -1,0 +1,61 @@
+[package]
+name = "plotium"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Plotium desktop application."
+
+[[bin]]
+name = "plotium"
+path = "src/main.rs"
+
+[features]
+# Development and shipping builds use the reference executor. This feature is
+# retained as an explicit maintenance switch for the dormant DataFusion backend.
+default = []
+datafusion = ["plotium-core/datafusion"]
+
+[dependencies]
+nmr.workspace = true
+plotium-core.workspace = true
+plotium-analysis.workspace = true
+plotium-io.workspace = true
+plotium-figure.workspace = true
+plotium-processing.workspace = true
+plotium-render = { workspace = true, features = ["emf"] }
+egui.workspace = true
+egui_extras.workspace = true
+egui-phosphor.workspace = true
+fontdb.workspace = true
+image.workspace = true
+arboard.workspace = true
+log.workspace = true
+num-complex.workspace = true
+rfd.workspace = true
+rhai.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+raw-window-handle.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+eframe = { workspace = true, features = ["glow"] }
+windows-sys.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+eframe.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+ab_glyph = "0.2"
+tiff.workspace = true

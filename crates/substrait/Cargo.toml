@@ -1,0 +1,21 @@
+[package]
+name = "plotium-substrait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Explicit Substrait interoperability for Plotium table plans."
+
+[lib]
+name = "plotium_substrait"
+path = "src/lib.rs"
+
+[dependencies]
+datafusion-substrait.workspace = true
+pbjson-types.workspace = true
+plotium-data.workspace = true
+plotium-datafusion.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+substrait.workspace = true

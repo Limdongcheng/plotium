@@ -1,0 +1,488 @@
+use super::*;
+use crate::state::{
+    Dataset, FloatSeries, PeakOrigin, StoredCurveFitAnalysis, XpsDataset,
+    materialized_float_series_table,
+};
+use crate::{BaselineMode, IntegralMethod};
+use plotium_io::xps::{
+    ImportedXpsFit, ImportedXpsPeak, XpsEnergyKind, XpsExperiment, XpsMeasurement,
+    XpsMeasurementId, XpsRegion, XpsRegionId,
+};
+use plotium_processing::xps::{XpsProcessingStep, XpsStepKind};
+use plotium_processing::{NormalizeMethod, StepId, StepSource};
+
+fn request(content: DataExportContent) -> DataExportRequest {
+    DataExportRequest {
+        content,
+        channel: IntensityChannel::Real,
+        shape: TableShape::Matrix,
+    }
+}
+
+fn snapshot(data: SnapshotData, content: DataExportContent) -> DataExportSnapshot {
+    DataExportSnapshot {
+        dataset_name: "A / dataset".into(),
+        request: request(content),
+        data,
+    }
+}
+
+#[test]
+fn one_dimensional_channels_use_processed_complex_values() {
+    let mut value = snapshot(
+        SnapshotData::Nmr1D {
+            axis: vec![1.0],
+            axis_label: "ppm",
+            values: vec![Complex64::new(3.0, 4.0)],
+        },
+        DataExportContent::ProcessedData,
+    );
+    assert_eq!(
+        value.to_text(Delimiter::Comma).unwrap(),
+        "ppm,intensity\n1,3\n"
+    );
+    value.request.channel = IntensityChannel::Imaginary;
+    assert_eq!(
+        value.to_text(Delimiter::Comma).unwrap(),
+        "ppm,intensity\n1,4\n"
+    );
+    value.request.channel = IntensityChannel::Magnitude;
+    assert_eq!(
+        value.to_text(Delimiter::Comma).unwrap(),
+        "ppm,intensity\n1,5\n"
+    );
+}
+
+#[test]
+fn xps_export_keeps_raw_processed_fit_and_parameter_columns() {
+    let data = XpsDataSnapshot {
+        native_energy_ev: vec![1200.0, 1201.0],
+        binding_energy_ev: Some(vec![286.69, 285.69]),
+        raw_cps: vec![10.0, 20.0],
+        processed_energy_ev: vec![291.79, 290.79],
+        processed_cps: vec![0.5, 1.0],
+        fit_energy_ev: vec![291.79, 290.79],
+        background: vec![0.1, 0.1],
+        background_subtracted: vec![0.4, 0.9],
+        envelope: vec![0.5, 1.0],
+        residual: vec![0.0, 0.0],
+        components: vec![("Aromatic C".into(), vec![0.4, 0.9])],
+        background_model: Some("Shirley".into()),
+        background_window_ev: Some([290.79, 291.79]),
+        low_anchor_ev: Some([290.79, 290.79]),
+        high_anchor_ev: Some([291.79, 291.79]),
+    };
+    let text = snapshot(
+        SnapshotData::Xps(Box::new(data)),
+        DataExportContent::ProcessedData,
+    )
+    .to_text(Delimiter::Comma)
+    .unwrap();
+    assert!(text.contains("background_subtracted_cps"));
+    assert!(text.contains("Shirley"));
+
+    let rows = vec![XpsFitParameterRow {
+        provenance: "Plotium",
+        label: "Aromatic C".into(),
+        center_ev: 284.8,
+        fwhm_ev: 1.2,
+        area: 42.0,
+        fraction: Some(1.0),
+        r_squared: Some(0.999),
+        rmse: Some(0.01),
+        residual_lag1: Some(0.1),
+        hit_position_bound: Some(false),
+        hit_fwhm_bound: Some(true),
+        hit_area_bound: Some(false),
+        center_standard_error: Some(0.02),
+        center_confidence_95: Some([284.76, 284.84]),
+        fwhm_standard_error: Some(0.03),
+        fwhm_confidence_95: Some([1.14, 1.26]),
+        area_standard_error: Some(1.0),
+        area_confidence_95: Some([40.0, 44.0]),
+        maximum_correlation: Some(0.8),
+        bootstrap_center: Some([284.75, 284.8, 284.85]),
+        bootstrap_fwhm: Some([1.1, 1.2, 1.3]),
+        bootstrap_area: Some([39.0, 42.0, 45.0]),
+        bootstrap_fraction: Some([0.9, 1.0, 1.0]),
+    }];
+    let text = snapshot(SnapshotData::XpsFits(rows), DataExportContent::CurveFits)
+        .to_text(Delimiter::Tab)
+        .unwrap();
+    assert!(text.contains("position_standard_error"));
+    assert!(
+        text.contains(
+            "Plotium\tAromatic C\t284.8\t1.2\t42\t1\t0.999\t0.01\t0.1\tfalse\ttrue\tfalse"
+        )
+    );
+}
+
+#[test]
+fn processed_xps_export_omits_imported_curves_after_processing() {
+    let measurement = XpsMeasurementId(1);
+    let region = XpsRegionId(1);
+    let intensity = vec![1.0, 2.0, 4.0, 8.0, 7.0, 4.0, 2.0, 1.0];
+    let experiment = XpsExperiment {
+        source: "casa.txt".into(),
+        measurements: vec![XpsMeasurement {
+            id: measurement,
+            label: "CasaXPS export".into(),
+            position_mm: None,
+            metadata: Default::default(),
+        }],
+        regions: vec![XpsRegion {
+            id: region,
+            measurement,
+            name: "C 1s".into(),
+            native_energy_kind: XpsEnergyKind::Binding,
+            native_energy_ev: (283..=290).rev().map(f64::from).collect(),
+            binding_energy_ev: Some((283..=290).rev().map(f64::from).collect()),
+            intensity_cps: intensity.clone(),
+            counts: None,
+            photon_energy_ev: None,
+            dwell_time_s: None,
+            sweeps: None,
+            imported_fit: Some(ImportedXpsFit {
+                background_cps: vec![1.0; 8],
+                envelope_cps: intensity,
+                components_cps: vec![vec![0.0, 1.0, 3.0, 7.0, 6.0, 3.0, 1.0, 0.0]],
+                peaks: vec![ImportedXpsPeak {
+                    label: "Imported C 1s".into(),
+                    position_ev: 284.8,
+                    fwhm_ev: 1.2,
+                    area: 10.0,
+                    lineshape: Some("GL(30)".into()),
+                }],
+            }),
+            metadata: Default::default(),
+        }],
+        metadata: Default::default(),
+        import_warnings: Vec::new(),
+    };
+    let mut xps = XpsDataset::load(experiment);
+    xps.region_recipes
+        .get_mut(&region)
+        .unwrap()
+        .steps
+        .push(XpsProcessingStep {
+            id: StepId::new(1),
+            kind: XpsStepKind::Normalize(NormalizeMethod::MaxPeak),
+            enabled: true,
+            source: StepSource::User,
+        });
+    let dataset = Dataset::Xps(Box::new(xps));
+
+    let SnapshotData::Xps(snapshot) = capture_processed(&dataset).unwrap() else {
+        panic!("expected XPS processed-data snapshot")
+    };
+    assert!(snapshot.envelope.is_empty());
+    assert!(snapshot.residual.is_empty());
+    assert!(snapshot.components.is_empty());
+    assert_ne!(
+        snapshot.background_model.as_deref(),
+        Some("Imported (CasaXPS)")
+    );
+    assert_eq!(
+        capture_xps_fits(dataset.as_xps().unwrap()).unwrap()[0].provenance,
+        "Imported (CasaXPS)"
+    );
+}
+
+#[test]
+fn complete_table_interleaves_sigma_and_leaves_missing_values_empty() {
+    let typed = materialized_float_series_table(
+        ("Time".into(), "s".into(), vec![Some(1.0), None, None]),
+        vec![
+            FloatSeries {
+                name: "signal, one".into(),
+                unit: String::new(),
+                values: vec![Some(2.0), Some(3.0), Some(4.0)],
+                uncertainty: Some(vec![Some(0.1), None, None]),
+                fit: None,
+            },
+            FloatSeries {
+                name: "二".into(),
+                unit: String::new(),
+                values: vec![Some(f64::INFINITY), Some(6.0), None],
+                uncertainty: None,
+                fit: None,
+            },
+        ],
+        "plotium.test.export-table.v1",
+    )
+    .unwrap()
+    .typed_state;
+    let text = snapshot(
+        SnapshotData::Table(Box::new(typed)),
+        DataExportContent::TypedTable,
+    )
+    .to_text(Delimiter::Comma)
+    .unwrap();
+    assert_eq!(
+        text,
+        "Time,\"signal, one\",\"signal, one uncertainty\",二\n1,2,0.1,+Inf\n,3,,6\n,4,,\n"
+    );
+}
+
+#[test]
+fn true_2d_matrix_and_long_keep_row_major_axis_order() {
+    let spectrum = Arc::new(Spectrum2D {
+        magnitude_plane: None,
+        f2_domain: plotium_io::Domain::Frequency,
+        f1_domain: plotium_io::Domain::Frequency,
+        f2_ppm: vec![10.0, 20.0],
+        f1_ppm: vec![1.0, 2.0],
+        data: vec![
+            Complex64::new(11.0, 0.0),
+            Complex64::new(12.0, 0.0),
+            Complex64::new(21.0, 0.0),
+            Complex64::new(22.0, 0.0),
+        ],
+        f2_size: 2,
+        f1_size: 2,
+        direct: plotium_processing::AxisMeta {
+            nucleus: "1H".into(),
+            observe_freq_mhz: Some(400.0),
+            unit: Some(nmr::axis::AxisUnit::Ppm),
+        },
+        indirect: plotium_processing::AxisMeta {
+            nucleus: "1H".into(),
+            observe_freq_mhz: Some(400.0),
+            unit: Some(nmr::axis::AxisUnit::Ppm),
+        },
+        source: String::new(),
+    });
+    let mut value = snapshot(
+        SnapshotData::True2D(spectrum),
+        DataExportContent::ProcessedData,
+    );
+    assert_eq!(
+        value.to_text(Delimiter::Comma).unwrap(),
+        "F1/F2 (ppm),10,20\n1,11,12\n2,21,22\n"
+    );
+    value.request.shape = TableShape::Long;
+    assert_eq!(
+        value.to_text(Delimiter::Comma).unwrap(),
+        "f1_ppm,f2_ppm,intensity\n1,10,11\n1,20,12\n2,10,21\n2,20,22\n"
+    );
+}
+
+#[test]
+fn fit_parameters_keep_long_header_and_escape_names() {
+    use plotium_analysis::fit_model::{FitDataset, FitOptions};
+    use std::collections::BTreeMap;
+    let x: Vec<f64> = (0..5).map(|value| value as f64).collect();
+    let y: Vec<f64> = x.iter().map(|value| 2.0 + 3.0 * value).collect();
+    let model = plotium_analysis::models::builtin_model_by_name("Linear").unwrap();
+    let result = plotium_analysis::fit_model::fit_model(
+        model,
+        vec![FitDataset {
+            id: "column-0".into(),
+            inputs: BTreeMap::from([("x".into(), x.clone())]),
+            responses: BTreeMap::from([("y".into(), y.clone())]),
+            sigmas: BTreeMap::new(),
+            constants: BTreeMap::new(),
+        }],
+        &[],
+        FitOptions::default(),
+    )
+    .unwrap();
+    let analyses = vec![StoredCurveFitAnalysis {
+        id: 0,
+        name: "curve, A".into(),
+        bindings: Vec::new(),
+        result,
+        selection: None,
+        plot_samples: BTreeMap::new(),
+    }];
+    let text = snapshot(SnapshotData::Fits(analyses), DataExportContent::CurveFits)
+        .to_text(Delimiter::Comma)
+        .unwrap();
+    assert!(text.starts_with("record_type,analysis,dataset,response,model,name,value,standard_error,row,row_id,observed,predicted,residual,related_name,details\nparameter,\"curve, A\","));
+}
+
+#[test]
+fn default_name_is_stable_and_descriptive() {
+    let value = snapshot(
+        SnapshotData::Nmr1D {
+            axis: vec![1.0],
+            axis_label: "ppm",
+            values: vec![Complex64::new(2.0, 0.0)],
+        },
+        DataExportContent::ProcessedData,
+    );
+    assert_eq!(
+        value.default_file_name("csv"),
+        "A-dataset-processed-data-real.csv"
+    );
+}
+
+#[test]
+fn pseudo_2d_long_uses_the_actual_ruler_name_and_unit() {
+    let spectrum = Arc::new(StackSpectrum {
+        direct_domain: plotium_io::Domain::Frequency,
+        ppm: vec![7.0, 8.0],
+        traces: vec![vec![Complex64::new(1.0, 2.0), Complex64::new(3.0, 4.0)]],
+        direct: plotium_processing::AxisMeta {
+            nucleus: "1H".into(),
+            observe_freq_mhz: Some(400.0),
+            unit: Some(nmr::axis::AxisUnit::Ppm),
+        },
+        source: String::new(),
+    });
+    let mut value = snapshot(
+        SnapshotData::Pseudo2D {
+            spectrum,
+            ruler_name: "Delay".into(),
+            ruler_unit: "s".into(),
+            ruler: vec![0.5],
+        },
+        DataExportContent::ProcessedData,
+    );
+    value.request.channel = IntensityChannel::Imaginary;
+    value.request.shape = TableShape::Long;
+    assert_eq!(
+        value.to_text(Delimiter::Tab).unwrap(),
+        "Delay (s)\tppm\tintensity\n0.5\t7\t2\n0.5\t8\t4\n"
+    );
+}
+
+#[test]
+fn electrophysiology_export_includes_only_selected_sweeps_and_pads_short_ones() {
+    use plotium_io::{ElectricalUnit, ElectrophysiologyData, RecordedChannel, Sweep};
+
+    let data = ElectrophysiologyData {
+        abf_version: "2".into(),
+        sample_rate_hz: 2.0,
+        channels: vec![RecordedChannel {
+            name: "Current".into(),
+            unit: ElectricalUnit::from_symbol("pA"),
+        }],
+        sweeps: vec![
+            Sweep {
+                start_time_s: 0.0,
+                channels: vec![vec![1.0, 2.0]],
+                commands: Vec::new(),
+            },
+            Sweep {
+                start_time_s: 0.0,
+                channels: vec![vec![3.0]],
+                commands: Vec::new(),
+            },
+        ],
+        protocol: None,
+        source: "recording.abf".into(),
+        import_warnings: Vec::new(),
+    };
+    let mut recording = crate::state::ElectrophysiologyDataset::load(data);
+    recording.processing.gaussian_lowpass_enabled = false;
+    recording.invocation.analysis_selection = Some(vec![recording.trace_items()[0].id]);
+    let dataset = Dataset::Electrophysiology(Box::new(recording));
+    let value = DataExportSnapshot::capture(
+        &dataset,
+        DataExportRequest {
+            content: DataExportContent::ProcessedData,
+            channel: IntensityChannel::Real,
+            shape: TableShape::Matrix,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        value.to_text(Delimiter::Comma).unwrap(),
+        "Time (s),Current (pA) — Sweep 1\n0,1\n0.5,2\n"
+    );
+}
+
+#[test]
+fn analysis_tables_keep_stable_headers_and_escape_user_text() {
+    let peak = crate::state::ResolvedPeak {
+        x: 1.25,
+        y: 9.0,
+        label: "a, \"peak\"".into(),
+        origin: PeakOrigin::Manual,
+        mark_id: Some(1),
+    };
+    let peaks = DataExportSnapshot {
+        dataset_name: "sample, one".into(),
+        request: request(DataExportContent::Peaks),
+        data: SnapshotData::Peaks(vec![peak]),
+    };
+    assert_eq!(
+        peaks.to_text(Delimiter::Comma).unwrap(),
+        "dataset,x,y,origin,label\n\"sample, one\",1.25,9,manual,\"a, \"\"peak\"\"\"\n"
+    );
+
+    let integral = Integral2D {
+        id: 1,
+        name: "cross, peak".into(),
+        f2: (1.0, 2.0),
+        f1: (3.0, 4.0),
+        volume: -5.0,
+        normalized_volume: None,
+        reference_value: Some(2.0),
+        mode: crate::DisplayModeLabel::Real,
+        method: IntegralMethod::Sum,
+        baseline: BaselineMode::Plane,
+    };
+    let integrals = snapshot(
+        SnapshotData::Integrals2D(vec![integral]),
+        DataExportContent::Integrals,
+    );
+    let text = integrals.to_text(Delimiter::Comma).unwrap();
+    assert!(text.starts_with(
+        "name,f2_lo,f2_hi,f1_lo,f1_hi,volume,normalized_volume,reference_value,mode,method,baseline\n"
+    ));
+    assert!(text.ends_with("\"cross, peak\",1,2,3,4,-5,,2,real,sum,plane\n"));
+}
+
+#[test]
+fn empty_dataset_returns_an_explicit_unavailable_error() {
+    let dataset = Dataset::Table(Box::new(
+        materialized_float_series_table(
+            ("x".into(), "".into(), Vec::new()),
+            Vec::new(),
+            "plotium.test.empty-export-table.v1",
+        )
+        .unwrap(),
+    ));
+    assert!(DataExportAvailability::for_dataset(&dataset).is_empty());
+    let error = DataExportSnapshot::capture(&dataset, request(DataExportContent::TypedTable))
+        .err()
+        .unwrap();
+    assert!(matches!(error, DataExportError::Unavailable));
+    assert_eq!(error.category(), "unavailable");
+}
+
+#[test]
+fn default_channel_tracks_the_enabled_magnitude_display_step() {
+    use plotium_io::{Domain, NmrData};
+    use plotium_processing::{ProcessingStep, StepKind, StepSource};
+
+    let data = NmrData {
+        points: vec![Complex64::new(1.0, 2.0)],
+        domain: Domain::Frequency,
+        spectral_width_hz: 1_000.0,
+        observe_freq_mhz: 400.0,
+        carrier_ppm: 4.7,
+        nucleus: "1H".into(),
+        source: "spectrum".into(),
+        group_delay: 0.0,
+    };
+    let mut nmr = crate::nmr_test_support::load_1d(data).unwrap();
+    let dataset = Dataset::Nmr(Box::new(nmr.clone()));
+    assert_eq!(
+        DataExportAvailability::for_dataset(&dataset).default_channel,
+        IntensityChannel::Real
+    );
+    let id = nmr.allocate_step_id();
+    nmr.pipeline.steps.push(ProcessingStep::new(
+        id,
+        StepKind::Magnitude,
+        StepSource::User,
+    ));
+    let dataset = Dataset::Nmr(Box::new(nmr));
+    assert_eq!(
+        DataExportAvailability::for_dataset(&dataset).default_channel,
+        IntensityChannel::Magnitude
+    );
+}

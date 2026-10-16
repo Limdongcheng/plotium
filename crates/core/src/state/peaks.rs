@@ -1,0 +1,295 @@
+//! Domain-neutral peak model: a labelled `(x, y)` apex on any 1D trace, not an
+//! NMR-specific annotation.
+
+use plotium_analysis::peaks::{DetectParams, detect_peaks, estimate_noise};
+use serde::{Deserialize, Serialize};
+
+/// A reduced 1D trace any data domain can expose for peak work: the x samples, the
+/// scalar y the peaks sit on, and whether the domain draws x high-to-low.
+#[derive(Debug, Clone)]
+pub struct Trace1d {
+    pub xs: Vec<f64>,
+    pub ys: Vec<f64>,
+    pub x_reversed: bool,
+}
+
+impl Trace1d {
+    /// A small x distance (a fraction of the span) used to treat two peaks as the
+    /// same location — for suppression and de-duplicating picks.
+    pub fn tol(&self) -> f64 {
+        x_tolerance(self)
+    }
+
+    /// Resolve a manual pick at `x` per `snap`. See [`ManualPeakSnap`].
+    pub fn pick(&self, x: f64, snap: ManualPeakSnap) -> (f64, f64) {
+        match snap {
+            ManualPeakSnap::Apex { half_width } => self.snap_within(x, half_width),
+            ManualPeakSnap::NearestSample => self.nearest_sample(x),
+        }
+    }
+
+    /// Snap `x` to the tallest local maximum within ± `half_width` (data
+    /// units), so a click near a peak lands on its apex. Falls back to the
+    /// nearest sample when the window holds no local maximum.
+    ///
+    /// Callers derive `half_width` from screen pixels: zooming in narrows the
+    /// data window in step with the click precision the zoom affords, which is
+    /// what lets a weak line be picked next to a strong one. Tallest-in-window
+    /// (rather than nearest local maximum) keeps zoomed-out clicks landing on
+    /// real peaks instead of the noise wiggle closest to the pointer.
+    pub fn snap_within(&self, x: f64, half_width: f64) -> (f64, f64) {
+        let n = self.xs.len();
+        let mut best: Option<(f64, f64)> = None;
+        for i in 1..n.saturating_sub(1) {
+            let px = self.xs[i];
+            if (px - x).abs() > half_width {
+                continue;
+            }
+            let v = self.ys[i];
+            if v >= self.ys[i - 1] && v > self.ys[i + 1] && best.is_none_or(|(_, bv)| v > bv) {
+                best = Some((px, v));
+            }
+        }
+        best.unwrap_or_else(|| self.nearest_sample(x))
+    }
+
+    /// The sample closest to `x`, with no apex search.
+    pub fn nearest_sample(&self, x: f64) -> (f64, f64) {
+        self.xs
+            .iter()
+            .zip(&self.ys)
+            .filter(|(px, py)| px.is_finite() && py.is_finite())
+            .min_by(|a, b| (a.0 - x).abs().partial_cmp(&(b.0 - x).abs()).unwrap())
+            .map(|(&px, &py)| (px, py))
+            .unwrap_or((x, 0.0))
+    }
+}
+
+/// How a manual pick chooses its apex from the clicked x position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ManualPeakSnap {
+    /// Snap to the tallest local maximum within ± `half_width` data units.
+    /// UI callers convert a fixed pixel radius at the current zoom, so the
+    /// search window narrows as the user zooms in.
+    Apex { half_width: f64 },
+    /// No apex search: place on the sample nearest the click. The escape
+    /// hatch (modifier-click) for shoulders and signals snapping refuses to
+    /// resolve.
+    NearestSample,
+}
+
+/// Provenance only — both kinds are ordinary, individually editable marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PeakOrigin {
+    Detected,
+    #[default]
+    Manual,
+}
+
+/// One peak: a labelled `(x, y)` apex. `label` overrides the shift-formatted
+/// default when set.
+///
+/// `x` is stored *uncalibrated*: the finished-spectrum position minus the
+/// pipeline's chemical-shift reference offset at pick time. Readers add the
+/// current offset back through [`PeakSet::resolve`], so marks follow the
+/// spectrum when a Reference step is edited instead of freezing at the old
+/// axis. `y` remains a pick-time intensity snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeakMark {
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub origin: PeakOrigin,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// The detection recipe remembered between runs: the last threshold the on-plot
+/// line committed (`None` = the noise-relative auto floor) and an optional cap.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct DetectorConfig {
+    pub threshold: Option<f64>,
+    pub max_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PeakSet {
+    /// Stable source column for table peaks. Non-table 1D domains leave this
+    /// unset until they expose typed column identities.
+    #[serde(default)]
+    pub column: Option<plotium_data::ColumnId>,
+    pub detector: DetectorConfig,
+    pub marks: Vec<PeakMark>,
+    #[serde(default)]
+    pub next_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPeak {
+    pub x: f64,
+    pub y: f64,
+    pub label: String,
+    pub origin: PeakOrigin,
+    pub mark_id: Option<u64>,
+}
+
+/// Multiple of the noise sigma used for the automatic threshold and as the
+/// prominence floor that rejects shoulders and baseline ripple. Conservative so
+/// auto-detection starts clean; the on-plot line relaxes it when peaks are wanted.
+const NOISE_SIGMA_MULT: f64 = 5.0;
+
+/// Prominence floor for range-scoped picking, in sigma of the window's own noise.
+const RANGE_SIGMA_MULT: f64 = 3.0;
+
+pub fn default_label(x: f64) -> String {
+    format!("{x:.2}")
+}
+
+impl PeakSet {
+    pub fn next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// The automatic y floor for a trace: its baseline (median) lifted by a few
+    /// noise sigma. What the on-plot threshold line snaps to when set to Auto.
+    pub fn auto_threshold(trace: &Trace1d) -> f64 {
+        let sigma = estimate_noise(&trace.ys);
+        baseline(&trace.ys) + NOISE_SIGMA_MULT * sigma
+    }
+
+    /// Peaks detected on the whole trace at `threshold` (`None` = auto), as apex
+    /// `(x, y)` pairs. The transient set the on-plot line previews while dragging.
+    pub fn detect_at(
+        trace: &Trace1d,
+        threshold: Option<f64>,
+        max_count: Option<usize>,
+    ) -> Vec<(f64, f64)> {
+        if trace.xs.len() < 3 {
+            return Vec::new();
+        }
+        let sigma = estimate_noise(&trace.ys);
+        let base = baseline(&trace.ys);
+        let height = threshold.unwrap_or(base + NOISE_SIGMA_MULT * sigma);
+        let params = DetectParams {
+            min_height: Some(height),
+            // The line drives noise rejection: raising it lifts the prominence floor
+            // in step, so a higher line also prunes low, broad ripple — not just short
+            // peaks — while never dropping below a few sigma of point noise.
+            min_prominence: (height - base)
+                .max(NOISE_SIGMA_MULT * sigma)
+                .max(f64::MIN_POSITIVE),
+            min_spacing: None,
+            max_count,
+        };
+        detect_peaks(&trace.xs, &trace.ys, &params)
+            .into_iter()
+            .map(|p| (p.x, p.y))
+            .collect()
+    }
+
+    /// Re-run detection at the stored threshold: replace every detected mark with a
+    /// fresh set, leaving hand-placed marks (and any detection coincident with one)
+    /// untouched. `reference_offset_ppm` is the calibration currently applied
+    /// to the finished `trace`; detections are stored uncalibrated.
+    pub fn redetect(&mut self, trace: &Trace1d, reference_offset_ppm: f64) {
+        self.marks.retain(|m| m.origin == PeakOrigin::Manual);
+        let tol = x_tolerance(trace);
+        for (x, y) in Self::detect_at(trace, self.detector.threshold, self.detector.max_count) {
+            let x = x - reference_offset_ppm;
+            if self.marks.iter().any(|m| (m.x - x).abs() <= tol) {
+                continue;
+            }
+            let id = self.next_id();
+            self.marks.push(PeakMark {
+                id,
+                x,
+                y,
+                origin: PeakOrigin::Detected,
+                label: None,
+            });
+        }
+    }
+
+    /// Detect peaks inside an x-window using noise estimated from that window alone,
+    /// returning apex `(x, y)` pairs. Prominence-only so an elevated local baseline
+    /// does not hide a real line; the scoped window keeps far-off noise out.
+    pub fn pick_in_range(trace: &Trace1d, x_a: f64, x_b: f64) -> Vec<(f64, f64)> {
+        let (lo, hi) = (x_a.min(x_b), x_a.max(x_b));
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for (i, &x) in trace.xs.iter().enumerate() {
+            if x >= lo && x <= hi {
+                xs.push(x);
+                ys.push(trace.ys[i]);
+            }
+        }
+        if xs.len() < 3 {
+            return Vec::new();
+        }
+        let sigma = estimate_noise(&ys);
+        let params = DetectParams {
+            min_height: None,
+            min_prominence: (RANGE_SIGMA_MULT * sigma).max(f64::MIN_POSITIVE),
+            min_spacing: None,
+            max_count: None,
+        };
+        detect_peaks(&xs, &ys, &params)
+            .into_iter()
+            .map(|p| (p.x, p.y))
+            .collect()
+    }
+
+    /// Marks in finished-spectrum coordinates: the stored uncalibrated x plus
+    /// the pipeline's *current* chemical-shift reference offset, so labels
+    /// follow a Reference edit instead of pinning the pick-time axis.
+    pub fn resolve(&self, reference_offset_ppm: f64) -> Vec<ResolvedPeak> {
+        self.marks
+            .iter()
+            .map(|m| {
+                let x = m.x + reference_offset_ppm;
+                ResolvedPeak {
+                    x,
+                    y: m.y,
+                    label: m.label.clone().unwrap_or_else(|| default_label(x)),
+                    origin: m.origin,
+                    mark_id: Some(m.id),
+                }
+            })
+            .collect()
+    }
+
+    pub fn remove_mark(&mut self, id: u64) {
+        self.marks.retain(|m| m.id != id);
+    }
+}
+
+fn baseline(ys: &[f64]) -> f64 {
+    let mut finite: Vec<f64> = ys.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.is_empty() {
+        return 0.0;
+    }
+    finite.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    finite[finite.len() / 2]
+}
+
+#[cfg(test)]
+#[path = "peaks_tests.rs"]
+mod tests;
+
+fn x_tolerance(trace: &Trace1d) -> f64 {
+    let (lo, hi) = trace
+        .xs
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+            (lo.min(v), hi.max(v))
+        });
+    if lo.is_finite() && hi > lo {
+        (hi - lo) * 1e-3
+    } else {
+        f64::MIN_POSITIVE
+    }
+}

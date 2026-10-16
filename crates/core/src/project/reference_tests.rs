@@ -1,0 +1,267 @@
+use super::tests::{first_plot_mut, sample_app, temp_project};
+use super::*;
+use crate::state::{DatasetId, DatasetLineage, DerivationKind, ProjectionSource, SeriesBinding};
+
+fn save_error(app: &PlotiumApp, name: &str) -> String {
+    let path = temp_project(name);
+    let _ = std::fs::remove_file(&path);
+    let error = save_project(app, &path, false).unwrap_err().to_string();
+    assert!(!path.exists(), "an invalid project must not be committed");
+    error
+}
+
+#[test]
+fn save_rejects_missing_lineage_source() {
+    let mut app = sample_app();
+    let missing = DatasetId::new();
+    app.doc.datasets[0].set_lineage(Some(DatasetLineage::new(
+        DerivationKind::Projection,
+        [missing],
+    )));
+
+    let error = save_error(&app, "missing-lineage-source");
+    assert!(
+        error.contains("references missing lineage source"),
+        "{error}"
+    );
+}
+
+#[test]
+fn save_rejects_missing_primary_and_series_datasets() {
+    let mut missing_primary = sample_app();
+    let missing = DatasetId::new();
+    first_plot_mut(&mut missing_primary).binding.series[0]
+        .source
+        .resource = missing;
+    let error = save_error(&missing_primary, "missing-primary-dataset");
+    assert!(
+        error.contains(&format!("missing primary dataset {missing}")),
+        "{error}"
+    );
+
+    let mut missing_series = sample_app();
+    let missing = DatasetId::new();
+    let plot = first_plot_mut(&mut missing_series);
+    let mut series = SeriesBinding::with_source(crate::state::SeriesSource {
+        resource: missing,
+        field: crate::state::FieldId::default(),
+        item: None,
+    });
+    series.id = plot.allocate_series_id();
+    plot.binding.series.push(series);
+    let error = save_error(&missing_series, "missing-series-dataset");
+    assert!(
+        error.contains(&format!("missing series dataset {missing}")),
+        "{error}"
+    );
+}
+
+#[test]
+fn save_rejects_unknown_items_and_duplicate_owner_local_series_ids() {
+    let mut unknown_item = sample_app();
+    let collection = plotium_data::TraceCollectionId::derived(b"missing", b"collection");
+    first_plot_mut(&mut unknown_item).binding.series[0]
+        .source
+        .item = Some(plotium_data::TraceItemId::derived(collection, b"item"));
+    let error = save_error(&unknown_item, "unknown-trace-item");
+    assert!(error.contains("unknown trace item"), "{error}");
+
+    let mut duplicate = sample_app();
+    let repeated = first_plot_mut(&mut duplicate).binding.series[0].clone();
+    first_plot_mut(&mut duplicate).binding.series.push(repeated);
+    let error = save_error(&duplicate, "duplicate-series-id");
+    assert!(error.contains("duplicate series id"), "{error}");
+
+    let recording = Dataset::Electrophysiology(Box::new(
+        crate::state::ElectrophysiologyDataset::load(plotium_io::ElectrophysiologyData {
+            abf_version: "test".into(),
+            sample_rate_hz: 1_000.0,
+            channels: vec![plotium_io::RecordedChannel {
+                name: "A".into(),
+                unit: plotium_io::ElectricalUnit::from_symbol("pA"),
+            }],
+            sweeps: vec![plotium_io::Sweep {
+                start_time_s: 0.0,
+                channels: vec![vec![0.0, 1.0]],
+                commands: Vec::new(),
+            }],
+            protocol: None,
+            source: "scalar-collection.abf".into(),
+            import_warnings: Vec::new(),
+        }),
+    ));
+    let canvas = crate::workflow::build_default_canvas(&recording, "scalar-collection.abf");
+    let mut scalar_collection = PlotiumApp::new();
+    scalar_collection.doc.datasets.push(recording);
+    scalar_collection.doc.canvases.push(canvas);
+    first_plot_mut(&mut scalar_collection).binding.series[0]
+        .source
+        .item = None;
+    let error = save_error(&scalar_collection, "scalar-trace-collection");
+    assert!(
+        error.contains("trace collection as a scalar field"),
+        "{error}"
+    );
+}
+
+#[test]
+fn save_rejects_missing_attached_projection_dataset() {
+    let mut app = sample_app();
+    let missing = DatasetId::new();
+    first_plot_mut(&mut app).projections.top.source = ProjectionSource::Attached(missing);
+
+    let error = save_error(&app, "missing-projection-dataset");
+    assert!(
+        error.contains(&format!(
+            "axis projection references missing dataset {missing}"
+        )),
+        "{error}"
+    );
+}
+
+#[test]
+fn object_allocator_roundtrip_preserves_deleted_high_water_mark() {
+    let mut app = sample_app();
+    let canvas = &mut app.doc.canvases[0];
+    let first_unused = canvas.allocate_object_id();
+    let high_water = canvas.next_object_id;
+    assert!(canvas.object(first_unused).is_none());
+
+    let path = temp_project("object_allocator");
+    let _ = std::fs::remove_file(&path);
+    save_project(&app, &path, false).unwrap();
+    let loaded = load_project(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded.doc.canvases[0].next_object_id, high_water);
+}
+
+#[test]
+fn loading_a_maximum_object_id_reports_exhaustion() {
+    let app = sample_app();
+    let path = temp_project("maximum-object-id");
+    let _ = std::fs::remove_file(&path);
+    save_project(&app, &path, false).unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let mut zip = zip::ZipArchive::new(file).unwrap();
+    let view: ViewObject = serde_json::from_value(serde_json::json!({
+        "id": "view-max-object-id",
+        "role": "canvas",
+        "classification": {
+            "domain": "visualization",
+            "object": "page"
+        },
+        "name": "Maximum object id",
+        "next_object_id": 1,
+        "next_panel_label_slot": 0,
+        "panel_label_style": "lower_alpha",
+        "layout": { "size_mm": [120.0, 80.0] },
+        "panels": [],
+        "loose_item_order": [u64::MAX.to_string()],
+        "groups": [],
+        "analysis_binding": null,
+        "x_viewport_links": [],
+        "objects": [{
+            "id": u64::MAX.to_string(),
+            "name": "Label",
+            "kind": "text",
+            "next_series_id": 0,
+            "series": [],
+            "frame": { "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0 },
+            "parent_panel": {"kind":"loose"},
+            "locked": false,
+            "visible": true
+        }]
+    }))
+    .unwrap();
+    let mut loading_app = PlotiumApp::new();
+
+    let error = match view_to_canvas(
+        &mut loading_app,
+        &mut zip,
+        "view-max-object-id",
+        &view,
+        0,
+        &HashMap::new(),
+    ) {
+        Ok(_) => panic!("an exhausted object id space must be rejected"),
+        Err(error) => error,
+    };
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        matches!(error, ProjectError::Invalid(ref message) if message.contains("object id space exhausted")),
+        "{error}"
+    );
+}
+
+/// P0-4 regression, mirroring `loading_a_maximum_object_id_reports_exhaustion`
+/// for the series allocator. `repair_series_allocator` used to map the
+/// `u64::MAX` case to `SeriesId(0)` through `unwrap_or_default()`; because
+/// `next_series_id < 0` is never true, the repair was skipped entirely and the
+/// very next `allocate_series_id` handed back an id the binding already used.
+/// Restoring `unwrap_or_default()` makes this load succeed and the test fail.
+#[test]
+fn loading_a_maximum_series_id_reports_exhaustion() {
+    let app = sample_app();
+    let recipe = format!("recipe_{}", app.doc.datasets[0].resource_id());
+    let path = temp_project("maximum-series-id");
+    let _ = std::fs::remove_file(&path);
+    save_project(&app, &path, false).unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let mut zip = zip::ZipArchive::new(file).unwrap();
+    let view: ViewObject = serde_json::from_value(serde_json::json!({
+        "id": "view-max-series-id",
+        "role": "canvas",
+        "classification": { "domain": "visualization", "object": "page" },
+        "name": "Maximum series id",
+        "next_object_id": 2,
+        "next_panel_label_slot": 0,
+        "panel_label_style": "lower_alpha",
+        "layout": { "size_mm": [120.0, 80.0] },
+        "panels": [],
+        "loose_item_order": ["1"],
+        "groups": [],
+        "analysis_binding": null,
+        "x_viewport_links": [],
+        "objects": [{
+            "id": "1",
+            "name": "Plot",
+            "kind": "line_plot",
+            "input": recipe,
+            "series": [{
+                "id": u64::MAX,
+                "source": { "kind": "field", "input": recipe, "field": 0 },
+                "encoding": {"kind":"line","spec":{"color":{"explicit":{"r":15,"g":77,"b":146}},"scale":1.0,"width":1.0,"x_shift":0.0}}
+            }],
+            "frame": { "x": 0.0, "y": 0.0, "width": 100.0, "height": 80.0 },
+            "parent_panel": {"kind":"loose"},
+            "locked": false,
+            "visible": true
+        }]
+    }))
+    .unwrap();
+
+    let mut loading_app = PlotiumApp::new();
+    loading_app.doc.datasets.push(app.doc.datasets[0].clone());
+    let mut recipe_to_dataset = HashMap::new();
+    recipe_to_dataset.insert(recipe.clone(), 0usize);
+
+    let error = match view_to_canvas(
+        &mut loading_app,
+        &mut zip,
+        "view-max-series-id",
+        &view,
+        0,
+        &recipe_to_dataset,
+    ) {
+        Ok(_) => panic!("an exhausted series id space must be rejected"),
+        Err(error) => error,
+    };
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        matches!(error, ProjectError::Invalid(ref message) if message.contains("series id space")),
+        "{error}"
+    );
+}

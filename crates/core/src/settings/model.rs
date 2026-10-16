@@ -1,0 +1,408 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default = "current_schema_version")]
+    pub schema_version: u32,
+    #[serde(default = "current_app_version")]
+    pub app_version: String,
+    #[serde(default)]
+    pub general: GeneralSettings,
+    #[serde(default)]
+    pub appearance: AppearanceSettings,
+    #[serde(default)]
+    pub processing: ProcessingDefaults,
+    #[serde(default)]
+    pub export: ExportDefaults,
+    #[serde(default)]
+    pub canvas_size: CanvasSizeDefaults,
+    #[serde(default)]
+    pub window: WindowState,
+    #[serde(default)]
+    pub recent: RecentFiles,
+    #[serde(default)]
+    pub updates: UpdateSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSettings {
+    /// Check for and download updates in the background. A verified update is
+    /// applied only after Plotium closes.
+    #[serde(default = "default_auto_check")]
+    pub auto_check: bool,
+    /// Which release train to follow; `Auto` follows the build's own channel.
+    #[serde(default)]
+    pub channel: crate::update::UpdateChannelSetting,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            auto_check: default_auto_check(),
+            channel: Default::default(),
+        }
+    }
+}
+
+fn default_auto_check() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GeneralSettings {
+    #[serde(default = "default_snap_enabled")]
+    pub snap_enabled: bool,
+    /// Use equal data units per screen unit for eligible homonuclear 2D NMR
+    /// spectra when they are imported.
+    #[serde(default = "default_equal_scale_homonuclear_2d_imports")]
+    pub equal_scale_homonuclear_2d_imports: bool,
+    /// Keep a source canvas after tiling away its final object.
+    #[serde(default)]
+    pub keep_empty_source_canvas: bool,
+    /// Number of complete previous project files retained beside the project.
+    /// Zero disables save-time backups; crash-recovery snapshots are separate.
+    #[serde(default = "default_project_backup_generations")]
+    pub project_backup_generations: u8,
+}
+
+pub const MAX_PROJECT_BACKUP_GENERATIONS: u8 = 5;
+pub const MIN_EXPORT_DPI: u16 = 72;
+pub const MAX_EXPORT_DPI: u16 = 1200;
+pub const MIN_ILT_LAMBDA: f64 = 1e-6;
+pub const MAX_ILT_LAMBDA: f64 = 1e3;
+pub const DEFAULT_ILT_LAMBDA: f64 = 1e-2;
+/// Diffusion-grid limits for the ILT inversion. These are not preferences and
+/// have no catalog property; they exist because the inversion solves a dense
+/// `n_grid x n_grid` system, so a grid size read back from a project file sizes
+/// a quadratic allocation. Project content is external input and must not be
+/// able to make that allocation unbounded.
+pub const MIN_ILT_GRID: usize = 16;
+pub const MAX_ILT_GRID: usize = 512;
+pub const MIN_ILT_DIFFUSION: f64 = 1e-13;
+pub const MAX_ILT_DIFFUSION: f64 = 1e-6;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct AppearanceSettings {
+    #[serde(default)]
+    pub theme: ThemeMode,
+    #[serde(default)]
+    pub ui_scale: UiScaleSettings,
+    #[serde(default)]
+    pub graphics_power: GraphicsPowerPreference,
+    /// Optional editor-chrome accent. Figure colours and exports are unaffected.
+    #[serde(default)]
+    pub canvas_accent: Option<[u8; 3]>,
+}
+
+/// Graphics policy applied at the next application start. Platform-specific
+/// backends enforce the strongest available interpretation of this preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphicsPowerPreference {
+    #[default]
+    LowPower,
+    HighPerformance,
+}
+
+impl GraphicsPowerPreference {
+    pub const ALL: [Self; 2] = [Self::LowPower, Self::HighPerformance];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LowPower => "Power saving",
+            Self::HighPerformance => "High performance",
+        }
+    }
+}
+
+/// Per-monitor UI scale records, keyed by a stable identity of the display
+/// (device name plus native resolution and physical size, so replacing the
+/// panel or changing its mode mints a fresh entry and a fresh auto value).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct UiScaleSettings {
+    #[serde(default)]
+    pub monitors: std::collections::BTreeMap<String, MonitorScale>,
+}
+
+/// The UI zoom for one monitor: the automatically derived legible value plus
+/// an optional manual override (Ctrl+= / Ctrl+- or the Preferences slider).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitorScale {
+    /// Zoom computed from the display's physical density on first sight.
+    pub auto: f32,
+    /// Manual override; `None` follows `auto`.
+    #[serde(default)]
+    pub user: Option<f32>,
+}
+
+impl MonitorScale {
+    pub fn effective(&self) -> f32 {
+        self.user.unwrap_or(self.auto)
+    }
+}
+
+/// The application chrome theme, kept correct-by-construction as an enum so an
+/// invalid value can't be stored. An unrecognized string in a settings file
+/// falls back to `System`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    Light,
+    Dark,
+    #[serde(other)]
+    #[default]
+    System,
+}
+
+impl ThemeMode {
+    pub const ALL: [ThemeMode; 3] = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeMode::System => "Follow system",
+            ThemeMode::Light => "Light",
+            ThemeMode::Dark => "Dark",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProcessingDefaults {
+    #[serde(default = "default_ilt_lambda")]
+    pub ilt_lambda: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportDefaults {
+    #[serde(default)]
+    pub include_view_snapshots: bool,
+    #[serde(default = "default_export_dpi")]
+    pub dpi: u16,
+    #[serde(default)]
+    pub trim_to_visible_content: bool,
+}
+
+/// Sticky choices of the canvas-size popover.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct CanvasSizeDefaults {
+    /// When true, applying a new size also scales the page content uniformly
+    /// by the width ratio (font sizes stay physical).
+    #[serde(default)]
+    pub scale_content: bool,
+    /// Most recently applied preset ids, newest first.
+    #[serde(default)]
+    pub recent_presets: Vec<String>,
+    /// User-saved custom page sizes.
+    #[serde(default)]
+    pub custom_presets: Vec<CustomSizePreset>,
+}
+
+/// Upper bound for `CanvasSizeDefaults::recent_presets`, enforced on every
+/// note so a hand-edited settings file cannot grow the list without bound.
+pub const MAX_RECENT_SIZE_PRESETS: usize = 5;
+
+impl CanvasSizeDefaults {
+    /// Move `id` to the front of the recent list, deduplicating and truncating
+    /// to [`MAX_RECENT_SIZE_PRESETS`].
+    pub fn note_recent(&mut self, id: &str) {
+        self.recent_presets.retain(|existing| existing != id);
+        self.recent_presets.insert(0, id.to_owned());
+        self.recent_presets.truncate(MAX_RECENT_SIZE_PRESETS);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CustomSizePreset {
+    pub name: String,
+    pub width_mm: f32,
+    pub height_mm: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct WindowState {
+    #[serde(default)]
+    pub main: Option<WindowGeometry>,
+    #[serde(default)]
+    pub last_open_directory: Option<PathBuf>,
+    /// User-selected sizes for the floating canvas task cards. These are UI
+    /// preferences, not project content; a temporarily small window clamps the
+    /// rendered size without overwriting them.
+    #[serde(default)]
+    pub task_cards: TaskCardSettings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskCardSize {
+    #[serde(default)]
+    pub width: f32,
+    /// Height of the scrollable body. Header and tab chrome are measured by
+    /// the UI and do not need a guessed persisted allowance.
+    #[serde(default)]
+    pub body_height: f32,
+}
+
+impl TaskCardSize {
+    pub const fn new(width: f32, body_height: f32) -> Self {
+        Self { width, body_height }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskCardSettings {
+    #[serde(default = "default_processing_card_size")]
+    pub processing: TaskCardSize,
+    #[serde(default = "default_craft_card_size")]
+    pub craft: TaskCardSize,
+    #[serde(default = "default_standard_card_size")]
+    pub regions: TaskCardSize,
+    #[serde(default = "default_standard_card_size")]
+    pub curve_fit: TaskCardSize,
+    #[serde(default = "default_standard_card_size")]
+    pub statistics: TaskCardSize,
+}
+
+const fn default_standard_card_size() -> TaskCardSize {
+    TaskCardSize::new(340.0, 436.0)
+}
+
+const fn default_processing_card_size() -> TaskCardSize {
+    TaskCardSize::new(340.0, 430.0)
+}
+
+const fn default_craft_card_size() -> TaskCardSize {
+    TaskCardSize::new(520.0, 500.0)
+}
+
+impl Default for TaskCardSettings {
+    fn default() -> Self {
+        Self {
+            processing: default_processing_card_size(),
+            craft: default_craft_card_size(),
+            regions: default_standard_card_size(),
+            curve_fit: default_standard_card_size(),
+            statistics: default_standard_card_size(),
+        }
+    }
+}
+
+impl TaskCardSettings {
+    pub(crate) fn sanitize(&mut self) {
+        sanitize_card_size(&mut self.processing, default_processing_card_size());
+        sanitize_card_size(&mut self.craft, default_craft_card_size());
+        sanitize_card_size(&mut self.regions, default_standard_card_size());
+        sanitize_card_size(&mut self.curve_fit, default_standard_card_size());
+        sanitize_card_size(&mut self.statistics, default_standard_card_size());
+    }
+}
+
+fn sanitize_card_size(size: &mut TaskCardSize, fallback: TaskCardSize) {
+    if !size.width.is_finite() || size.width <= 0.0 {
+        size.width = fallback.width;
+    }
+    if !size.body_height.is_finite() || size.body_height <= 0.0 {
+        size.body_height = fallback.body_height;
+    }
+    size.width = size.width.min(4_096.0);
+    size.body_height = size.body_height.min(4_096.0);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RecentFiles {
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
+}
+
+/// Upper bound for `RecentFiles::files`; enforced on every note and load so a
+/// hand-edited settings file cannot grow the list without bound.
+pub const MAX_RECENT_FILES: usize = 10;
+
+impl RecentFiles {
+    /// Move `path` to the front of the list, deduplicating and truncating to
+    /// [`MAX_RECENT_FILES`].
+    pub fn note(&mut self, path: PathBuf) {
+        self.files.retain(|existing| *existing != path);
+        self.files.insert(0, path);
+        self.files.truncate(MAX_RECENT_FILES);
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            schema_version: current_schema_version(),
+            app_version: current_app_version(),
+            general: GeneralSettings::default(),
+            appearance: AppearanceSettings::default(),
+            processing: ProcessingDefaults::default(),
+            export: ExportDefaults::default(),
+            canvas_size: CanvasSizeDefaults::default(),
+            window: WindowState::default(),
+            recent: RecentFiles::default(),
+            updates: UpdateSettings::default(),
+        }
+    }
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            snap_enabled: default_snap_enabled(),
+            equal_scale_homonuclear_2d_imports: default_equal_scale_homonuclear_2d_imports(),
+            keep_empty_source_canvas: false,
+            project_backup_generations: default_project_backup_generations(),
+        }
+    }
+}
+
+impl Default for ExportDefaults {
+    fn default() -> Self {
+        Self {
+            include_view_snapshots: false,
+            dpi: default_export_dpi(),
+            trim_to_visible_content: false,
+        }
+    }
+}
+
+impl Default for ProcessingDefaults {
+    fn default() -> Self {
+        Self {
+            ilt_lambda: default_ilt_lambda(),
+        }
+    }
+}
+
+fn current_schema_version() -> u32 {
+    super::SETTINGS_SCHEMA_VERSION
+}
+
+fn current_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}
+
+fn default_snap_enabled() -> bool {
+    true
+}
+
+fn default_equal_scale_homonuclear_2d_imports() -> bool {
+    true
+}
+
+fn default_project_backup_generations() -> u8 {
+    1
+}
+
+fn default_ilt_lambda() -> f64 {
+    DEFAULT_ILT_LAMBDA
+}
+
+fn default_export_dpi() -> u16 {
+    crate::export::DEFAULT_BITMAP_DPI
+}

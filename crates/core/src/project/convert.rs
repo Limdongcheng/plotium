@@ -1,0 +1,681 @@
+use super::convert_recipes::{nmr2d_recipe_extensions, read_region_analysis};
+use super::electrophysiology_convert::{
+    electrophysiology_from_object, electrophysiology_to_objects,
+};
+use super::field_catalog::read as read_field_catalog;
+use super::*;
+use crate::{DosyMethod, PseudoDisplay};
+use plotium_processing::Processed2D;
+
+pub enum DatasetBlob<'a> {
+    Nmr(&'a nmr::Dataset),
+    Electrophysiology(&'a crate::state::ElectrophysiologyDataset),
+    Afm(&'a plotium_io::AfmData),
+    MassSpec(&'a crate::state::MassSpecDataset),
+    Xrd(&'a plotium_io::XrdData),
+    Xps(&'a plotium_io::xps::XpsExperiment),
+}
+
+pub struct DatasetObjects<'a> {
+    pub data: DataObject,
+    pub blob: DatasetBlob<'a>,
+    pub recipe: RecipeObject,
+    /// Extra blobs this dataset owns, as (zip path, bytes). Written verbatim.
+    pub extra_blobs: Vec<(String, Vec<u8>)>,
+}
+
+impl<'a> DatasetObjects<'a> {
+    pub(super) fn primary(data: DataObject, blob: DatasetBlob<'a>, recipe: RecipeObject) -> Self {
+        Self {
+            data,
+            blob,
+            recipe,
+            extra_blobs: Vec::new(),
+        }
+    }
+}
+
+pub fn dataset_to_objects<'a>(
+    dataset: &'a Dataset,
+    data_id: &str,
+    recipe_id: &str,
+) -> Result<DatasetObjects<'a>> {
+    let mut objects = match dataset {
+        Dataset::Nmr(n) => {
+            let data = DataObject {
+                id: data_id.to_owned(),
+                role: "data".to_owned(),
+                classification: nmr_acquisition_classification(),
+                label: n.name.clone(),
+                dimensions: Vec::new(),
+                payload: Payload {
+                    storage: super::nmr_snapshot::STORAGE.to_owned(),
+                    blob: format!("objects/{data_id}/data.bin"),
+                    shape: vec![n.data.len()],
+                    domain: "nmr".to_owned(),
+                },
+                extensions: serde_json::json!({
+                    "plotium.fields": &n.field_catalog
+                }),
+            };
+            let recipe = RecipeObject {
+                id: recipe_id.to_owned(),
+                role: "recipe".to_owned(),
+                classification: nmr_recipe_classification(),
+                input: data_id.to_owned(),
+                parameters: RecipeParameters {
+                    dimension_count: 1,
+                    pipelines: vec![pipeline_to_dto(&n.pipeline)],
+                    group_delay_correct: n.group_delay_correct,
+                    ..RecipeParameters::default()
+                },
+                extensions: serde_json::json!({
+                    "plotium.step_allocator": {
+                        "next_id": n.next_step_id
+                    },
+                    "plotium.analysis": {
+                        "peaks": &n.peaks,
+                        "integrals": &n.integrals,
+                        "line_fits": &n.line_fits,
+                        "multiplets": &n.multiplets,
+                        "craft_runs": &n.craft_runs
+                    }
+                }),
+            };
+            DatasetObjects::primary(data, DatasetBlob::Nmr(n.data.dataset()), recipe)
+        }
+        Dataset::Nmr2D(n) => {
+            let data = DataObject {
+                id: data_id.to_owned(),
+                role: "data".to_owned(),
+                classification: nmr_acquisition_classification(),
+                label: n.name.clone(),
+                dimensions: Vec::new(),
+                payload: Payload {
+                    storage: super::nmr_snapshot::STORAGE.to_owned(),
+                    blob: format!("objects/{data_id}/data.bin"),
+                    shape: n
+                        .data
+                        .source_dataset()
+                        .axes()
+                        .iter()
+                        .map(|axis| axis.points)
+                        .collect(),
+                    domain: "nmr".to_owned(),
+                },
+                extensions: serde_json::json!({
+                    "plotium.fields": &n.field_catalog
+                }),
+            };
+            let has_dosy_state = n.display != PseudoDisplay::Stack
+                || n.dosy_method != DosyMethod::MonoExp
+                || n.dosy_map.is_some()
+                || n.ilt_map.is_some()
+                || n.dosy_provenance.is_some()
+                || n.ilt_provenance.is_some();
+            let (dosy_extension, extra_blobs) = if has_dosy_state {
+                // Only the map-without-provenance direction is refused: a stored
+                // map nobody can attribute is the orphan this guard exists to
+                // prevent, and every builder installs both together, so reaching
+                // it means a bug rather than user state. The mirror case is
+                // legitimate and reachable — a load whose blob failed to decode
+                // keeps the provenance and drops the numbers — and refusing it
+                // would make that project permanently unsaveable.
+                if n.dosy_map.is_some() && n.dosy_provenance.is_none() {
+                    return Err(ProjectError::Invalid(
+                        "per-column DOSY map has no provenance to store with it".to_owned(),
+                    ));
+                }
+                if n.ilt_map.is_some() && n.ilt_provenance.is_none() {
+                    return Err(ProjectError::Invalid(
+                        "ILT DOSY map has no provenance to store with it".to_owned(),
+                    ));
+                }
+                let dosy_path = format!("objects/{data_id}/dosy.bin");
+                let (bytes, shapes) =
+                    super::dosy_convert::encode_dosy(n.dosy_map.as_ref(), n.ilt_map.as_ref())?;
+                let extension = super::dosy_convert::DosyExtensionDto::new(
+                    n.display,
+                    n.dosy_method,
+                    super::dosy_convert::DosyProvenanceDto {
+                        diffusion: n.dosy_provenance.clone(),
+                        ilt: n.ilt_provenance.clone(),
+                    },
+                    dosy_path.clone(),
+                    shapes,
+                );
+                (
+                    Some(serde_json::to_value(extension)?),
+                    vec![(dosy_path, bytes)],
+                )
+            } else {
+                (None, Vec::new())
+            };
+            let recipe = RecipeObject {
+                id: recipe_id.to_owned(),
+                role: "recipe".to_owned(),
+                classification: nmr_recipe_classification(),
+                input: data_id.to_owned(),
+                parameters: RecipeParameters {
+                    dimension_count: 2,
+                    pipelines: vec![pipeline_to_dto(&n.params.f2), pipeline_to_dto(&n.params.f1)],
+                    group_delay_correct: n.group_delay_correct,
+                    layout: Some(layout_to_str(n.params.layout).to_owned()),
+                    preset: Some(preset_to_str(n.preset).to_owned()),
+                },
+                extensions: nmr2d_recipe_extensions(n, dosy_extension),
+            };
+            DatasetObjects {
+                data,
+                blob: DatasetBlob::Nmr(n.data.source_dataset().dataset()),
+                recipe,
+                extra_blobs,
+            }
+        }
+        Dataset::Table(t) => {
+            return Err(ProjectError::Invalid(format!(
+                "typed table {} reached the generic object encoder",
+                t.resource_id
+            )));
+        }
+        Dataset::Electrophysiology(recording) => {
+            let (data, recipe) = electrophysiology_to_objects(recording, data_id, recipe_id)?;
+            DatasetObjects::primary(data, DatasetBlob::Electrophysiology(recording), recipe)
+        }
+        Dataset::Afm(afm) => {
+            let data = DataObject {
+                id: data_id.to_owned(),
+                role: "data".to_owned(),
+                classification: Classification {
+                    domain: "afm".to_owned(),
+                    technique: Some("nanoscope".to_owned()),
+                    object: "acquisition".to_owned(),
+                },
+                label: afm.name.clone(),
+                dimensions: Vec::new(),
+                payload: Payload {
+                    storage: STORAGE_AFM_V1.to_owned(),
+                    blob: format!("objects/{data_id}/data.bin"),
+                    shape: afm.data.forces.as_ref().map_or_else(Vec::new, |forces| {
+                        vec![
+                            forces.grid_height,
+                            forces.grid_width,
+                            forces.samples_per_curve,
+                        ]
+                    }),
+                    domain: "afm".to_owned(),
+                },
+                extensions: serde_json::json!({
+                    "plotium.afm": {
+                        "selected_pixel": afm.selected_pixel
+                    },
+                    "plotium.fields": &afm.field_catalog
+                }),
+            };
+            let recipe = RecipeObject {
+                id: recipe_id.to_owned(),
+                role: "recipe".to_owned(),
+                classification: Classification {
+                    domain: "afm".to_owned(),
+                    technique: Some("nanoscope".to_owned()),
+                    object: "display_recipe".to_owned(),
+                },
+                input: data_id.to_owned(),
+                parameters: RecipeParameters::default(),
+                extensions: serde_json::Value::Null,
+            };
+            DatasetObjects::primary(data, DatasetBlob::Afm(&afm.data), recipe)
+        }
+        Dataset::MassSpec(mass_spec) => {
+            let scan_count = mass_spec
+                .run
+                .streams
+                .iter()
+                .map(|stream| stream.spectra.len())
+                .sum();
+            let point_count = mass_spec
+                .run
+                .streams
+                .iter()
+                .flat_map(|stream| &stream.spectra)
+                .map(|scan| scan.mz.len())
+                .sum();
+            let data = DataObject {
+                id: data_id.to_owned(),
+                role: "data".to_owned(),
+                classification: Classification {
+                    domain: "mass_spectrometry".to_owned(),
+                    technique: Some("lc_ms".to_owned()),
+                    object: "acquisition".to_owned(),
+                },
+                label: mass_spec.name.clone(),
+                dimensions: Vec::new(),
+                payload: Payload {
+                    storage: STORAGE_MASS_SPEC_V1.to_owned(),
+                    blob: format!("objects/{data_id}/data.bin"),
+                    shape: vec![mass_spec.run.streams.len(), scan_count, point_count],
+                    domain: "mass_spectrometry".to_owned(),
+                },
+                extensions: serde_json::json!({
+                    "plotium.fields": &mass_spec.field_catalog
+                }),
+            };
+            let recipe = RecipeObject {
+                id: recipe_id.to_owned(),
+                role: "recipe".to_owned(),
+                classification: Classification {
+                    domain: "mass_spectrometry".to_owned(),
+                    technique: Some("lc_ms".to_owned()),
+                    object: "display_recipe".to_owned(),
+                },
+                input: data_id.to_owned(),
+                parameters: RecipeParameters::default(),
+                extensions: serde_json::Value::Null,
+            };
+            DatasetObjects::primary(data, DatasetBlob::MassSpec(mass_spec), recipe)
+        }
+        Dataset::Xrd(xrd) => {
+            let data = DataObject {
+                id: data_id.to_owned(),
+                role: "data".to_owned(),
+                classification: Classification {
+                    domain: "diffraction".to_owned(),
+                    technique: Some("powder_xrd".to_owned()),
+                    object: "pattern".to_owned(),
+                },
+                label: xrd.name.clone(),
+                dimensions: Vec::new(),
+                payload: Payload {
+                    storage: STORAGE_XRD_V1.to_owned(),
+                    blob: format!("objects/{data_id}/data.bin"),
+                    shape: vec![xrd.data.len()],
+                    domain: "two_theta".to_owned(),
+                },
+                extensions: serde_json::json!({ "plotium.fields": &xrd.field_catalog }),
+            };
+            let recipe = RecipeObject {
+                id: recipe_id.to_owned(),
+                role: "recipe".to_owned(),
+                classification: Classification {
+                    domain: "diffraction".to_owned(),
+                    technique: Some("powder_xrd".to_owned()),
+                    object: "processing_recipe".to_owned(),
+                },
+                input: data_id.to_owned(),
+                parameters: RecipeParameters::default(),
+                extensions: serde_json::json!({ "plotium.xrd": { "processing": &xrd.params } }),
+            };
+            DatasetObjects::primary(data, DatasetBlob::Xrd(&xrd.data), recipe)
+        }
+        Dataset::Xps(xps) => super::xps_convert::to_objects(xps, data_id, recipe_id),
+    };
+    write_acquisition_identity(&mut objects.data, dataset.acquisition_identity())?;
+    let execution = match dataset {
+        Dataset::Nmr(n) => Some(super::nmr_snapshot::execution_evidence(
+            &n.native_processed,
+            &n.phase_reports,
+        )?),
+        Dataset::Nmr2D(n) => Some(super::nmr_snapshot::execution_evidence(
+            &n.native_processed,
+            &n.phase_reports,
+        )?),
+        _ => None,
+    };
+    if let Some(execution) = execution {
+        objects.data.extensions["plotium.nmr_execution"] = execution;
+    }
+    Ok(objects)
+}
+
+pub(super) fn write_acquisition_identity(
+    data: &mut DataObject,
+    identity: &plotium_io::AcquisitionIdentity,
+) -> Result<()> {
+    let extensions = data.extensions.as_object_mut().ok_or_else(|| {
+        ProjectError::Invalid(format!("dataset {} extensions are not an object", data.id))
+    })?;
+    extensions.insert(
+        "plotium.acquisition_identity".to_owned(),
+        serde_json::to_value(identity)?,
+    );
+    Ok(())
+}
+
+pub(super) fn read_acquisition_identity(
+    data: &DataObject,
+) -> Result<plotium_io::AcquisitionIdentity> {
+    let value = data
+        .extensions
+        .get("plotium.acquisition_identity")
+        .cloned()
+        .ok_or_else(|| {
+            ProjectError::Invalid(format!(
+                "dataset {} is missing plotium.acquisition_identity",
+                data.id
+            ))
+        })?;
+    serde_json::from_value(value).map_err(ProjectError::from)
+}
+pub fn object_to_dataset(
+    zip: &mut zip::ZipArchive<File>,
+    data: &DataObject,
+    recipe: &RecipeObject,
+) -> Result<Dataset> {
+    if data.classification.domain == "diffraction"
+        && data.classification.technique.as_deref() == Some("powder_xrd")
+        && data.classification.object == "pattern"
+    {
+        if data.payload.storage != STORAGE_XRD_V1 {
+            return Err(ProjectError::Unsupported(format!(
+                "XRD payload storage {}",
+                data.payload.storage
+            )));
+        }
+        // Named generic decoder functions do not satisfy the higher-ranked
+        // lifetime required by `ZipFile`; the closure reborrows each entry.
+        #[allow(clippy::redundant_closure)]
+        let decoded = read_entry(
+            zip,
+            &data.payload.blob,
+            "XRD payload",
+            ProjectLoadLimits::default().max_entry_bytes,
+            |reader| super::xrd_convert::decode(reader),
+        )?;
+        if data.payload.shape.as_slice() != [decoded.len()] {
+            return Err(ProjectError::Invalid(format!(
+                "XRD payload shape {:?} does not match {} decoded points",
+                data.payload.shape,
+                decoded.len()
+            )));
+        }
+        decoded
+            .validate()
+            .map_err(|error| ProjectError::Invalid(error.to_owned()))?;
+        let mut dataset = crate::state::XrdDataset::load(decoded);
+        dataset.acquisition_identity = read_acquisition_identity(data)?;
+        dataset.field_catalog = read_field_catalog(data)?;
+        dataset.name = data.label.clone();
+        if let Some(value) = recipe
+            .extensions
+            .get("plotium.xrd")
+            .and_then(|value| value.get("processing"))
+        {
+            let processing = serde_json::from_value(value.clone())?;
+            dataset
+                .apply_processing(processing)
+                .map_err(|error| ProjectError::Invalid(error.to_string()))?;
+        }
+        let dataset = Dataset::Xrd(Box::new(dataset));
+        dataset
+            .validate_field_catalog()
+            .map_err(ProjectError::Invalid)?;
+        return Ok(dataset);
+    }
+    if super::xps_convert::matches(data) {
+        return super::xps_convert::from_objects(zip, data, recipe);
+    }
+    // Named generic decoder functions do not satisfy the higher-ranked lifetime
+    // required by `ZipFile`; closures let the compiler reborrow each entry.
+    #[allow(clippy::redundant_closure)]
+    if data.classification.domain == "mass_spectrometry" {
+        if data.payload.storage != STORAGE_MASS_SPEC_V1 {
+            return Err(ProjectError::Unsupported(format!(
+                "LC–MS payload storage {}",
+                data.payload.storage
+            )));
+        }
+        let mut dataset = read_entry(
+            zip,
+            &data.payload.blob,
+            "LC–MS payload",
+            ProjectLoadLimits::default().max_entry_bytes,
+            |reader| super::mass_spec_convert::decode(reader),
+        )?;
+        dataset.acquisition_identity = read_acquisition_identity(data)?;
+        dataset.field_catalog = read_field_catalog(data)?;
+        dataset.name = data.label.clone();
+        dataset.repair_selection().map_err(ProjectError::Invalid)?;
+        let dataset = Dataset::MassSpec(Box::new(dataset));
+        dataset
+            .validate_field_catalog()
+            .map_err(ProjectError::Invalid)?;
+        return Ok(dataset);
+    }
+    if data.classification.domain == "afm" && data.payload.storage == STORAGE_AFM_V1 {
+        #[allow(clippy::redundant_closure)]
+        let decoded = read_entry(
+            zip,
+            &data.payload.blob,
+            "AFM payload",
+            ProjectLoadLimits::default().max_entry_bytes,
+            |reader| super::afm_convert::decode_afm(reader),
+        )?;
+        let mut dataset = crate::state::AfmDataset::load(decoded);
+        dataset.acquisition_identity = read_acquisition_identity(data)?;
+        dataset.field_catalog = read_field_catalog(data)?;
+        dataset.name = data.label.clone();
+        if let Some(state) = data.extensions.get("plotium.afm")
+            && let Some(pixel) = state
+                .get("selected_pixel")
+                .and_then(serde_json::Value::as_array)
+            && let (Some(x), Some(y)) = (
+                pixel.first().and_then(serde_json::Value::as_u64),
+                pixel.get(1).and_then(serde_json::Value::as_u64),
+            )
+        {
+            dataset.selected_pixel = [x as usize, y as usize];
+        }
+        let dataset = Dataset::Afm(Box::new(dataset));
+        dataset
+            .validate_field_catalog()
+            .map_err(ProjectError::Invalid)?;
+        return Ok(dataset);
+    }
+    if data.classification.domain == "electrophysiology"
+        && data.classification.object == "recording"
+    {
+        return electrophysiology_from_object(zip, data);
+    }
+    if data.classification.object == "table" {
+        if data.payload.storage != STORAGE_TABLE_V1 {
+            return Err(ProjectError::Unsupported(
+                "legacy DataTable payload; this project must be regenerated".to_owned(),
+            ));
+        }
+        return table_dataset_from_v1(zip, data).map(|table| Dataset::Table(Box::new(table)));
+    }
+    if data.classification.domain != "spectroscopy"
+        || data.classification.technique.as_deref() != Some("nmr")
+        || data.classification.object != "acquisition"
+    {
+        return Err(ProjectError::Unsupported(format!(
+            "data classification {}/{:?}/{}",
+            data.classification.domain, data.classification.technique, data.classification.object
+        )));
+    }
+    if recipe.parameters.dimension_count == 1 {
+        return super::nmr_snapshot::read_1d(zip, data, recipe);
+    }
+    let source = super::nmr_snapshot::read(zip, data)?;
+    match source.axes().len() {
+        2 => {
+            let initial = Params2D {
+                layout: if source.axes()[0].domain == nmr::axis::AxisDomain::Parameter
+                    || source
+                        .dataset()
+                        .as_raw()
+                        .is_some_and(|raw| raw.data().is_sparse())
+                {
+                    Layout2D::Stack
+                } else {
+                    Layout2D::Ft
+                },
+                f2: AxisPipeline { steps: Vec::new() },
+                f1: AxisPipeline { steps: Vec::new() },
+            };
+            let mut dataset =
+                Nmr2DDataset::load_with_pipeline(source, Some(initial), Some(false), None, true)
+                    .map_err(ProjectError::Invalid)?;
+            dataset.acquisition_identity = read_acquisition_identity(data)?;
+            dataset.field_catalog = read_field_catalog(data)?;
+            apply_2d_recipe(&mut dataset, recipe)?;
+            read_region_analysis(&mut dataset, recipe)?;
+            read_integrals_2d(&mut dataset, recipe)?;
+            read_peaks_2d(&mut dataset, recipe)?;
+            dataset.name = data.label.clone();
+            dataset.retransform().map_err(ProjectError::Invalid)?;
+            // `retransform` deliberately invalidates every analysis map. Restore
+            // auxiliary DOSY state only after it, or a load will silently erase
+            // the stored result and serve the stack fallback instead.
+            restore_dosy(zip, &mut dataset, recipe);
+            if let Err(error) = dataset.recompute_integrals() {
+                dataset.integral_error = Some(error.to_string());
+            }
+            let dataset = Dataset::Nmr2D(Box::new(dataset));
+            dataset
+                .validate_field_catalog()
+                .map_err(ProjectError::Invalid)?;
+            Ok(dataset)
+        }
+        n => Err(ProjectError::Unsupported(format!(
+            "NMR acquisitions with {n} dimensions"
+        ))),
+    }
+}
+
+fn restore_dosy(
+    zip: &mut zip::ZipArchive<File>,
+    dataset: &mut Nmr2DDataset,
+    recipe: &RecipeObject,
+) {
+    let Some(value) = recipe.extensions.get("plotium.dosy") else {
+        return;
+    };
+    let extension: super::dosy_convert::DosyExtensionDto =
+        match serde_json::from_value(value.clone()) {
+            Ok(extension) => extension,
+            Err(error) => {
+                dataset.dosy_provenance_warning = Some(format!(
+                    "The stored DOSY state is malformed ({error}), so Plotium is showing the \
+                     reconstructed stack instead. Rebuild the DOSY map."
+                ));
+                return;
+            }
+        };
+    dataset.display = extension.display;
+    dataset.dosy_method = extension.method;
+    dataset.dosy_provenance = extension.provenance.diffusion;
+    dataset.ilt_provenance = extension.provenance.ilt;
+
+    let decoded = if extension.storage != STORAGE_DOSY_V1 {
+        Err(ProjectError::Unsupported(format!(
+            "DOSY payload storage {}",
+            extension.storage
+        )))
+    } else {
+        read_entry(
+            zip,
+            &extension.blob,
+            "DOSY payload",
+            ProjectLoadLimits::default().max_entry_bytes,
+            |reader| super::dosy_convert::decode_dosy(reader, &extension.shapes),
+        )
+    };
+    match decoded {
+        Ok(decoded) => {
+            dataset.dosy_map = decoded.dosy_map;
+            dataset.ilt_map = decoded.ilt_map;
+        }
+        Err(error) => {
+            dataset.dosy_provenance_warning = Some(unavailable_dosy_warning(
+                dataset.dosy_method,
+                &error.to_string(),
+            ));
+            return;
+        }
+    }
+
+    let mut warnings = Vec::new();
+    let Processed2D::Stack(stack) = &dataset.processed else {
+        // Do not claim the stored map is being shown: `figure()` selects on the
+        // processed result before it consults `display`, so a true-2D result
+        // always draws the contour spectrum and never a DOSY map.
+        warnings.push(
+            "The stored DOSY map belongs to a pseudo-2D stack, but the processing recipe now \
+             reconstructs a true-2D spectrum, so the map is not shown. Return the dataset to its \
+             pseudo-2D layout and rebuild the DOSY map."
+                .to_owned(),
+        );
+        dataset.dosy_provenance_warning = Some(warnings.join(" "));
+        return;
+    };
+    // Both methods hash the same inputs, so one reconstruction serves both.
+    if let (Some(axis), Some(meta)) = (
+        dataset.data.pseudo_axis.as_ref(),
+        dataset.data.diffusion.as_ref(),
+    ) {
+        let reconstructed = crate::state::dosy_data_fingerprint(stack, &axis.values, meta);
+        for (label, provenance) in [
+            (
+                "per-column DOSY",
+                dataset
+                    .dosy_map
+                    .as_ref()
+                    .and(dataset.dosy_provenance.as_ref()),
+            ),
+            (
+                "ILT DOSY",
+                dataset
+                    .ilt_map
+                    .as_ref()
+                    .and(dataset.ilt_provenance.as_ref()),
+            ),
+        ] {
+            let Some(provenance) = provenance else {
+                continue;
+            };
+            if reconstructed != provenance.data_fingerprint {
+                warnings.push(fingerprint_warning(
+                    label,
+                    &provenance.data_fingerprint,
+                    &reconstructed,
+                ));
+            }
+        }
+    }
+    // "The selected map is absent" is deliberately *not* stored here. It is a
+    // pure function of the display, the method and which maps exist, and
+    // `Nmr2DDataset::missing_selected_map_note` already derives it. A stored copy
+    // would survive the user switching to a method that does have a map, and
+    // would then keep claiming the stack is shown while the map is on screen —
+    // and because readers prefer the stored warning, the stale copy would win.
+    dataset.dosy_provenance_warning = (!warnings.is_empty()).then(|| warnings.join(" "));
+}
+
+fn unavailable_dosy_warning(method: DosyMethod, reason: &str) -> String {
+    let (label, action) = match method {
+        DosyMethod::MonoExp => ("per-column DOSY", "Build the per-column DOSY map"),
+        DosyMethod::Ilt(_) => ("ILT DOSY", "Build the ILT DOSY map"),
+    };
+    format!(
+        "The stored {label} map could not be loaded ({reason}), so Plotium is showing the stack \
+         instead. {action} to replace it."
+    )
+}
+
+fn fingerprint_warning(label: &str, stored: &str, reconstructed: &str) -> String {
+    // A short prefix, not the full digest: two 64-character hashes bury the one
+    // sentence the reader has to act on, and nothing downstream reconstructs the
+    // input from them. The prefix still distinguishes one mismatch from another.
+    format!(
+        "The stored {label} map was produced from different data than the recipe now reconstructs \
+         (saved data {}, rebuilt data {}). The stored map is being shown. Rebuild the {label} map \
+         to update it.",
+        short_fingerprint(stored),
+        short_fingerprint(reconstructed),
+    )
+}
+
+fn short_fingerprint(value: &str) -> &str {
+    value.get(..12).unwrap_or(value)
+}

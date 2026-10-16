@@ -1,0 +1,40 @@
+use super::{KIND_CANVAS, KIND_DATASET, ResourceRef, top_ref};
+use crate::state::{BoardFrameId, PlotiumApp};
+
+pub(super) fn current(app: &PlotiumApp) -> Vec<ResourceRef> {
+    let mut selected = Vec::new();
+    if !app.session.ui.frame_selection.is_empty() {
+        for frame in &app.session.ui.frame_selection {
+            let target = match *frame {
+                BoardFrameId::Page(id) => {
+                    app.doc.canvas_index(id).map(|_| top_ref(id, KIND_CANVAS))
+                }
+                BoardFrameId::Sheet(id) => {
+                    app.doc.dataset_index(id).map(|_| top_ref(id, KIND_DATASET))
+                }
+            };
+            if let Some(target) = target
+                && !selected.contains(&target)
+            {
+                selected.push(target);
+            }
+        }
+        if !selected.is_empty() {
+            return selected;
+        }
+    }
+    if let Some(dataset) = app
+        .active_dataset()
+        .and_then(|index| app.doc.datasets.get(index))
+    {
+        selected.push(top_ref(dataset.resource_id(), KIND_DATASET));
+    }
+    if let Some(canvas) = app
+        .session
+        .active_canvas
+        .and_then(|index| app.doc.canvases.get(index))
+    {
+        selected.push(top_ref(canvas.resource_id, KIND_CANVAS));
+    }
+    selected
+}

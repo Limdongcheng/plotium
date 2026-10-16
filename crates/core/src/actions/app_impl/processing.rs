@@ -1,0 +1,423 @@
+//! Processing-recipe commits: the pause gate and on-plot phase seeding.
+
+use super::*;
+
+impl PlotiumApp {
+    /// Record an action whose final state is already live, without applying it
+    /// again. Multi-surface processing sessions and coalesced catalog gestures
+    /// use this for their final commit: both have been writing the live document
+    /// all along and need only the one history entry that covers the run.
+    pub(crate) fn record_applied_action(&mut self, action: Action) -> Result<(), ActionApplyError> {
+        if action.is_noop() {
+            return Ok(());
+        }
+        validate_action(self, &action, &mut ValidationShape::from_app(self))?;
+        self.session.undo_stack.push(action);
+        if self.session.undo_stack.len() > self.session.history_limit {
+            self.session.undo_stack.remove(0);
+        }
+        self.session.redo_stack.clear();
+        self.mark_document_dirty();
+        self.doc.automation_revision = self.doc.automation_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Write a recipe into the live dataset without recomputing its spectra — the
+    /// paused edit path, where the display refreshes later on Apply.
+    fn set_recipe_no_recompute(&mut self, dataset: usize, state: &DatasetProcessingState) {
+        let Some(current) = self.doc.datasets.get_mut(dataset) else {
+            return;
+        };
+        match (current, state) {
+            (
+                Dataset::Nmr(n),
+                DatasetProcessingState::Nmr {
+                    pipeline,
+                    group_delay_correct,
+                },
+            ) => {
+                n.pipeline = pipeline.clone();
+                n.group_delay_correct = *group_delay_correct;
+            }
+            (
+                Dataset::Nmr2D(n),
+                DatasetProcessingState::Nmr2D {
+                    params,
+                    preset,
+                    nus_request,
+                    group_delay_correct,
+                },
+            ) => {
+                n.params = params.clone();
+                n.preset = *preset;
+                n.base_stale |= n.nus_request != *nus_request;
+                n.nus_request = *nus_request;
+                n.group_delay_correct = *group_delay_correct;
+            }
+            (Dataset::Xrd(data), DatasetProcessingState::Xrd(processing)) => {
+                data.params = *processing;
+            }
+            (
+                Dataset::Xps(xps),
+                DatasetProcessingState::Xps {
+                    active_region,
+                    measurement_shifts,
+                    region_recipes,
+                    fit_workspaces,
+                    fits,
+                    next_step_id,
+                },
+            ) => {
+                xps.active_region = *active_region;
+                xps.measurement_shifts = measurement_shifts.clone();
+                xps.region_recipes = region_recipes.clone();
+                xps.fit_workspaces = fit_workspaces.clone();
+                xps.fits = fits.clone();
+                xps.next_step_id = *next_step_id;
+            }
+            _ => {}
+        }
+    }
+
+    /// Write a recipe into the live dataset and re-derive from it now. Whether
+    /// that means a full retransform or a cheap re-apply is decided by comparing
+    /// the recipes, not by the caller. Lives beside the pause gate because it is
+    /// the other half of it: this is what "not paused" does.
+    pub fn set_dataset_processing_state(
+        &mut self,
+        dataset: usize,
+        state: &DatasetProcessingState,
+    ) -> Result<(), String> {
+        let Some(current) = self.doc.datasets.get(dataset) else {
+            return Err(format!("Dataset index {dataset} is no longer available."));
+        };
+        validate_processing_state(current, state)?;
+        if let (
+            Some(Dataset::Nmr2D(current)),
+            DatasetProcessingState::Nmr2D {
+                params,
+                preset,
+                nus_request,
+                group_delay_correct,
+            },
+        ) = (self.doc.datasets.get_mut(dataset), state)
+        {
+            let force_full = current.group_delay_correct != *group_delay_correct
+                || current.nus_request != *nus_request;
+            current.base_stale |= force_full;
+            current.params = params.clone();
+            current.preset = *preset;
+            current.nus_request = *nus_request;
+            current.group_delay_correct = *group_delay_correct;
+            self.schedule_2d_processing(dataset, force_full);
+            return Ok(());
+        }
+        let current = &mut self.doc.datasets[dataset];
+        state.apply_to(current).map_err(|error| error.to_string())?;
+        self.recompute_integrals_2d_after_processing(dataset);
+        self.rebuild_canvases_for(dataset);
+        Ok(())
+    }
+
+    /// Commit a processing edit through the pause gate: recompute now when
+    /// unpaused, or stash the recipe and defer the recompute to [`Self::apply_paused_processing`].
+    pub fn commit_processing_edit(
+        &mut self,
+        dataset: usize,
+        before: DatasetProcessingState,
+        after: DatasetProcessingState,
+    ) {
+        if let Err(error) = self.try_commit_processing_edit(dataset, before, after) {
+            self.session.status = error;
+        }
+    }
+
+    pub(crate) fn try_commit_processing_edit(
+        &mut self,
+        dataset: usize,
+        before: DatasetProcessingState,
+        after: DatasetProcessingState,
+    ) -> Result<(), String> {
+        let Some(dataset_id) = self.doc.datasets.get(dataset).map(Dataset::resource_id) else {
+            return Err("The processing dataset is no longer available.".into());
+        };
+        validate_processing_state(&self.doc.datasets[dataset], &after)?;
+        if self
+            .session
+            .ui
+            .processing_session
+            .as_ref()
+            .is_some_and(|edit| edit.dataset == dataset_id)
+            && !self.session.ui.proc_paused
+        {
+            if DatasetProcessingState::from_dataset(&self.doc.datasets[dataset]) != after
+                && let Err(error) = self.set_dataset_processing_state(dataset, &after)
+            {
+                self.session.status = error;
+            }
+            return Ok(());
+        }
+        if self.session.ui.proc_paused {
+            self.set_recipe_no_recompute(dataset, &after);
+            if self.session.ui.proc_pending.is_none() {
+                self.session.ui.proc_pending = Some((dataset_id, before));
+            }
+        } else {
+            self.try_execute_action(Action::update_dataset_processing(dataset_id, before, after))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn has_pending_processing(&self) -> bool {
+        self.session.ui.proc_pending.is_some()
+    }
+
+    /// Start a processing transaction whose live edits may come from multiple UI
+    /// surfaces. Re-entering the same dataset preserves the original snapshot.
+    pub fn begin_processing_session(&mut self, dataset: usize) {
+        let Some(dataset_id) = self.doc.datasets.get(dataset).map(Dataset::resource_id) else {
+            return;
+        };
+        if self
+            .session
+            .ui
+            .processing_session
+            .as_ref()
+            .is_some_and(|edit| edit.dataset == dataset_id)
+        {
+            return;
+        }
+        self.finish_processing_session();
+        if let Some(current) = self.doc.datasets.get(dataset) {
+            self.session.ui.processing_session = Some(PendingProcessingEdit {
+                dataset: dataset_id,
+                before: DatasetProcessingState::from_dataset(current),
+            });
+        }
+    }
+
+    /// End the current multi-surface processing transaction, recording its
+    /// already-applied final state without recomputing it.
+    pub fn finish_processing_session(&mut self) {
+        let Some(edit) = self.session.ui.processing_session.take() else {
+            return;
+        };
+        let Some(dataset_index) = self.doc.dataset_index(edit.dataset) else {
+            return;
+        };
+        let dataset = &self.doc.datasets[dataset_index];
+        let after = DatasetProcessingState::from_dataset(dataset);
+        let action = Action::update_dataset_processing(edit.dataset, edit.before, after);
+        if let Err(error) = self.record_applied_action(action) {
+            self.session.status = error.to_string();
+        }
+    }
+
+    pub fn apply_paused_processing(&mut self) {
+        let Some((dataset, before)) = self.session.ui.proc_pending.take() else {
+            return;
+        };
+        let Some(dataset_index) = self.doc.dataset_index(dataset) else {
+            return;
+        };
+        let after = DatasetProcessingState::from_dataset(&self.doc.datasets[dataset_index]);
+        // Restore the pre-edit recipe so the commit sees a real diff and picks
+        // retransform vs rebuild correctly, then apply the accumulated recipe.
+        self.set_recipe_no_recompute(dataset_index, &before);
+        self.execute_action(Action::update_dataset_processing(dataset, before, after));
+    }
+
+    /// Abandon the staged recipe and restore the exact pre-edit state without
+    /// creating history. Paused edits never recompute, so restoring the recipe is
+    /// sufficient to restore the state before the edit run.
+    pub fn discard_paused_processing(&mut self) {
+        let Some((dataset, before)) = self.session.ui.proc_pending.take() else {
+            return;
+        };
+        let Some(dataset) = self.doc.dataset_index(dataset) else {
+            return;
+        };
+        self.set_recipe_no_recompute(dataset, &before);
+        self.session.status = "Discarded pending processing changes.".to_owned();
+    }
+
+    /// Whether the Processing panel currently has a Phase step's editor expanded
+    /// for the active dataset — the signal that the user is phasing and the canvas
+    /// should show the pivot and take on-plot drags.
+    pub fn phase_editor_open(&self) -> bool {
+        self.phase_editor_dataset().is_some()
+    }
+
+    fn phase_editor_dataset(&self) -> Option<usize> {
+        let (owner, id) = self.session.ui.proc_expanded_step?;
+        let di = self.active_dataset()?;
+        let dataset = self.doc.datasets.get(di)?;
+        // The expanded row belongs to one dataset. Without this check a step
+        // that merely shares its owner-local number would read as "the user is
+        // phasing" the moment the active dataset changes.
+        if dataset.resource_id() != owner {
+            return None;
+        }
+        dataset
+            .phase_axes()
+            .iter()
+            .any(|&axis| {
+                dataset.axis_pipeline(axis).is_some_and(|pipe| {
+                    pipe.steps.iter().any(|s| {
+                        s.id == id && matches!(s.kind, plotium_processing::StepKind::Phase(_))
+                    })
+                })
+            })
+            .then_some(di)
+    }
+
+    /// Hold the canvas in on-plot phase mode exactly while a Phase step's editor is
+    /// open, so expanding it shows the pivot and drags phase, and collapsing it
+    /// hands the plot back to the Home (Select) tool. Edge-detected against `phase_edit_active`
+    /// so a deliberate mid-phasing tool switch is respected rather than fought.
+    pub fn sync_phase_interaction(&mut self) {
+        let phase_dataset = self.phase_editor_dataset();
+        let phasing = phase_dataset.is_some();
+        let session_matches = phase_dataset.is_some_and(|dataset| {
+            self.session
+                .ui
+                .processing_session
+                .as_ref()
+                .is_some_and(|edit| {
+                    self.doc
+                        .datasets
+                        .get(dataset)
+                        .is_some_and(|value| value.resource_id() == edit.dataset)
+                })
+        });
+        if phasing == self.session.ui.phase_edit_active && (!phasing || session_matches) {
+            return;
+        }
+        self.session.ui.phase_edit_active = phasing;
+        if phasing {
+            if let Some(dataset) = phase_dataset {
+                self.begin_processing_session(dataset);
+            }
+            self.set_tool(crate::state::Tool::ManualPhase);
+        } else {
+            self.finish_processing_session();
+            if self.session.tool == crate::state::Tool::ManualPhase {
+                self.set_tool(crate::state::Tool::Select);
+            }
+        }
+    }
+
+    /// Arm or disarm the one-shot pick of a Reference step's source position
+    /// on the plot. Arming replaces any previously armed pick.
+    pub fn toggle_reference_pick(&mut self, dataset: DatasetId, step: plotium_processing::StepId) {
+        let pick = crate::state::ReferencePick { dataset, step };
+        if self.session.ui.reference_pick.take() == Some(pick) {
+            self.session.status = "Reference pick cancelled.".to_owned();
+            return;
+        }
+        self.session.ui.reference_pick = Some(pick);
+        self.session.status =
+            "Click the spectrum to pick the reference source position — Shift skips the peak snap, Esc cancels."
+                .to_owned();
+    }
+
+    /// The armed Reference pick resolved against the document, or `None` when
+    /// nothing valid is armed. A pick is valid only while the step editor that
+    /// armed it is still expanded on the active dataset and the step is still
+    /// a Reference step — the same lifetime the on-plot phase mode uses — so a
+    /// collapsed card cannot leave a live click trap on the plot.
+    pub fn resolve_reference_pick(&self) -> Option<crate::state::ResolvedReferencePick> {
+        let pick = self.session.ui.reference_pick?;
+        if self.session.ui.proc_expanded_step != Some((pick.dataset, pick.step)) {
+            return None;
+        }
+        let dataset_index = self.active_dataset()?;
+        let dataset = self.doc.datasets.get(dataset_index)?;
+        if dataset.resource_id() != pick.dataset {
+            return None;
+        }
+        let axis = dataset.phase_axes().iter().copied().find(|&axis| {
+            dataset.axis_pipeline(axis).is_some_and(|pipe| {
+                pipe.steps.iter().any(|step| {
+                    step.id == pick.step
+                        && matches!(step.kind, plotium_processing::StepKind::Reference(_))
+                })
+            })
+        })?;
+        Some(crate::state::ResolvedReferencePick {
+            pick,
+            dataset_index,
+            axis,
+        })
+    }
+
+    /// Drop an armed Reference pick that went stale — its editor collapsed,
+    /// the active dataset changed, or the step is gone.
+    pub fn sync_reference_pick(&mut self) {
+        if self.session.ui.reference_pick.is_some() && self.resolve_reference_pick().is_none() {
+            self.session.ui.reference_pick = None;
+        }
+    }
+
+    /// Switch the first enabled Phase step on `axis` to manual, seeding it from the
+    /// phase the auto method currently yields so the display does not jump. Used by
+    /// the on-plot phase grab and the panel's Manual/Auto switch.
+    pub fn seed_manual_phase(&mut self, dataset: usize, axis: crate::state::PhaseAxis) {
+        use plotium_processing::StepKind;
+        let seed = self
+            .doc
+            .datasets
+            .get(dataset)
+            .and_then(|dataset| dataset.automatic_phase_params(axis));
+        let Some(pipe) = self
+            .doc
+            .datasets
+            .get_mut(dataset)
+            .and_then(|d| d.axis_pipeline_mut(axis))
+        else {
+            return;
+        };
+        for step in pipe.steps.iter_mut().filter(|s| s.enabled) {
+            if let StepKind::Phase(p) = &mut step.kind {
+                if p.auto.is_some() {
+                    if let Some((p0, p1, piv)) = seed {
+                        p.phase0 = p0;
+                        p.phase1 = p1;
+                        p.pivot_frac = piv;
+                    }
+                    p.auto = None;
+                }
+                break;
+            }
+        }
+    }
+}
+
+pub(super) fn validate_processing_state(
+    dataset: &Dataset,
+    state: &DatasetProcessingState,
+) -> Result<(), String> {
+    match (dataset, state) {
+        (Dataset::Nmr(dataset), DatasetProcessingState::Nmr { pipeline, .. }) => pipeline
+            .output_domain(dataset.input_domain())
+            .map(|_| ())
+            .map_err(|error| format!("Cannot apply invalid direct processing pipeline: {error}")),
+        (Dataset::Nmr2D(dataset), DatasetProcessingState::Nmr2D { params, .. }) => {
+            plotium_processing::nmr_execution::validate_2d_domains(&dataset.data, params)?;
+            Ok(())
+        }
+        (Dataset::Xrd(_), DatasetProcessingState::Xrd(processing)) => {
+            plotium_processing::xrd::validate(*processing)
+                .map_err(|error| format!("Cannot apply invalid XRD processing pipeline: {error}"))
+        }
+        (Dataset::Xps(_), DatasetProcessingState::Xps { .. }) => {
+            let mut candidate = dataset.clone();
+            state
+                .apply_to(&mut candidate)
+                .map(|_| ())
+                .map_err(|error| format!("Cannot apply invalid XPS state: {error}"))
+        }
+        _ => Ok(()),
+    }
+}

@@ -1,0 +1,571 @@
+//! The canvas-size UI: the searchable preset section of the Canvas settings
+//! window, the on-page size chip with its overflow and column-suggestion
+//! hints, and the preset-application path shared with the command catalog.
+
+use egui::{Response, RichText, Ui};
+use egui_phosphor::regular as icon;
+use plotium_core::actions::{Action, PageSizeState};
+use plotium_core::settings::{CanvasSizeDefaults, CustomSizePreset};
+use plotium_core::state::{
+    CanvasSizeUnit, MM_TO_PT, PlotiumApp, SizePreset, SizePresetGroup, content_bounds_pt,
+    content_overflows, matching_preset, size_display_name, size_presets, wider_preset_suggestion,
+};
+
+/// What the user picked in the preset list; resolved after the list closures
+/// release their borrow of the app.
+enum SizeChoice {
+    Preset(&'static SizePreset),
+    Custom([f32; 2]),
+    DeleteCustom(usize),
+    Swap,
+}
+
+pub(crate) fn size_section(app: &mut PlotiumApp, ci: usize, ui: &mut Ui) {
+    ui.label(crate::typography::headline("Canvas size"));
+    ui.add_space(6.0);
+
+    let size = app.doc.canvases[ci].size_mm;
+    let preset_id = app.doc.canvases[ci].size_preset_id.clone();
+    let matched = matching_preset(size, preset_id.as_deref());
+    let mut choice: Option<SizeChoice> = None;
+
+    let search_id = ui.id().with(("canvas_size_search", ci));
+    let mut search = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<String>(search_id))
+        .unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label("Preset");
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut search)
+                .hint_text("Search presets…")
+                .desired_width(200.0),
+        );
+        let clear = !search.is_empty() && ui.small_button(icon::X).clicked();
+        if clear {
+            search.clear();
+        }
+        if resp.changed() || clear {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(search_id, search.clone()));
+        }
+    });
+
+    let filter = search.trim().to_lowercase();
+    let defaults = app.settings.canvas_size.clone();
+    egui::ScrollArea::vertical()
+        .max_height(170.0)
+        .show(ui, |ui| {
+            // Recency only helps while browsing; a search already names the target.
+            if filter.is_empty() {
+                let recent: Vec<_> = defaults
+                    .recent_presets
+                    .iter()
+                    .filter_map(|id| plotium_core::state::preset_by_id(id))
+                    .collect();
+                if !recent.is_empty() {
+                    ui.weak("Recent");
+                    for preset in recent {
+                        if preset_row(ui, preset, matched).clicked() {
+                            choice = Some(SizeChoice::Preset(preset));
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
+            }
+            for group in [
+                SizePresetGroup::Journal,
+                SizePresetGroup::Paper,
+                SizePresetGroup::Presentation,
+            ] {
+                let items: Vec<_> = size_presets()
+                    .iter()
+                    .filter(|p| p.group == group && p.label.to_lowercase().contains(&filter))
+                    .collect();
+                if items.is_empty() {
+                    continue;
+                }
+                ui.weak(group.title());
+                for preset in items {
+                    if preset_row(ui, preset, matched).clicked() {
+                        choice = Some(SizeChoice::Preset(preset));
+                    }
+                }
+                ui.add_space(4.0);
+            }
+            let customs: Vec<_> = defaults
+                .custom_presets
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.name.to_lowercase().contains(&filter))
+                .collect();
+            if !customs.is_empty() {
+                ui.weak("Custom");
+                for (index, custom) in customs {
+                    let custom_size = [custom.width_mm, custom.height_mm];
+                    let selected = (size[0] - custom_size[0]).abs() < 0.01
+                        && (size[1] - custom_size[1]).abs() < 0.01;
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(selected, &custom.name).clicked() {
+                            choice = Some(SizeChoice::Custom(custom_size));
+                        }
+                        if ui
+                            .small_button(icon::TRASH)
+                            .on_hover_text("Remove this custom preset")
+                            .clicked()
+                        {
+                            choice = Some(SizeChoice::DeleteCustom(index));
+                        }
+                    });
+                }
+            }
+        });
+
+    // Orientation applies to fixed rectangles; journal widths have no
+    // landscape variant to rotate into.
+    if matched.is_none_or(SizePreset::is_fixed) && (size[0] - size[1]).abs() > 0.01 {
+        ui.horizontal(|ui| {
+            ui.label("Orientation");
+            let portrait = size[1] >= size[0];
+            if ui.selectable_label(portrait, "Portrait").clicked() && !portrait {
+                choice = Some(SizeChoice::Swap);
+            }
+            if ui.selectable_label(!portrait, "Landscape").clicked() && portrait {
+                choice = Some(SizeChoice::Swap);
+            }
+        });
+    }
+
+    match choice {
+        Some(SizeChoice::Preset(preset)) => apply_preset(app, ui.ctx(), ci, preset),
+        Some(SizeChoice::Custom(after)) => apply_size(app, ci, after, None),
+        Some(SizeChoice::Swap) => {
+            let after = [size[1], size[0]];
+            apply_size(app, ci, after, matched.filter(|p| p.is_fixed()));
+        }
+        Some(SizeChoice::DeleteCustom(index)) => {
+            update_canvas_size_defaults(app, |d| {
+                if index < d.custom_presets.len() {
+                    d.custom_presets.remove(index);
+                }
+            });
+        }
+        None => {}
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("Unit");
+        for unit in CanvasSizeUnit::all() {
+            ui.selectable_value(&mut app.session.ui.canvas_size_unit, *unit, unit.label());
+        }
+    });
+
+    let defaults = app.settings.canvas_size.clone();
+    let mut scale_content = defaults.scale_content;
+    if ui
+        .checkbox(&mut scale_content, "Scale content when applying sizes")
+        .on_hover_text(
+            "Presets and orientation changes scale objects uniformly by the width \
+             ratio; font sizes keep their physical pt values. Manual W/H edits \
+             never scale content.",
+        )
+        .changed()
+    {
+        set_scale_content_default(app, scale_content);
+    }
+
+    let size = app.doc.canvases[ci].size_mm;
+    if let Some(preset) = matched
+        && let Some(max) = preset.max_height_mm
+        && size[1] > max + 0.01
+    {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!(
+                "{} allows at most {max:.0} mm of figure depth; the page is {:.0} mm tall.",
+                preset.label, size[1]
+            ),
+        );
+    }
+
+    let width_in = CanvasSizeUnit::Inch.from_mm(size[0]);
+    let height_in = CanvasSizeUnit::Inch.from_mm(size[1]);
+    let width_px = CanvasSizeUnit::Pixel.from_mm(size[0]);
+    let height_px = CanvasSizeUnit::Pixel.from_mm(size[1]);
+    ui.weak(format!(
+        "{:.1} x {:.1} mm | {:.3} x {:.3} in | {:.0} x {:.0} px at 96 px/in",
+        size[0], size[1], width_in, height_in, width_px, height_px
+    ));
+
+    if ui
+        .button(format!("{} Save as custom preset", icon::PLUS))
+        .on_hover_text("Keep the current page size in the preset list, across sessions.")
+        .clicked()
+    {
+        update_canvas_size_defaults(app, |d| {
+            let exists = d.custom_presets.iter().any(|c| {
+                (c.width_mm - size[0]).abs() < 0.01 && (c.height_mm - size[1]).abs() < 0.01
+            });
+            if !exists {
+                d.custom_presets.push(CustomSizePreset {
+                    name: format!("{:.0} × {:.0} mm", size[0], size[1]),
+                    width_mm: size[0],
+                    height_mm: size[1],
+                });
+            }
+        });
+    }
+}
+
+fn preset_row(ui: &mut Ui, preset: &'static SizePreset, matched: Option<&SizePreset>) -> Response {
+    let selected = matched.is_some_and(|m| m.id == preset.id);
+    let detail = if preset.is_fixed() {
+        format!(
+            "{:.0} × {:.0} mm",
+            preset.width_mm, preset.default_height_mm
+        )
+    } else {
+        format!("{:.0} mm wide", preset.width_mm)
+    };
+    ui.horizontal(|ui| {
+        let resp = ui.selectable_label(selected, preset.label);
+        ui.weak(detail);
+        resp
+    })
+    .inner
+}
+
+/// Applies `preset` to page `ci`: fixed rectangles take their exact size; a
+/// journal preset fixes the width and preserves the content-driven height
+/// (scaled along when the sticky scale option is on; the default height is
+/// used only for an empty page).
+pub(crate) fn apply_preset(
+    app: &mut PlotiumApp,
+    _ctx: &egui::Context,
+    ci: usize,
+    preset: &'static SizePreset,
+) {
+    let Some(canvas) = app.doc.canvases.get(ci) else {
+        return;
+    };
+    let current = canvas.size_mm;
+    let after = if preset.is_fixed() || canvas.objects.is_empty() {
+        preset.size_mm()
+    } else if app.settings.canvas_size.scale_content {
+        [
+            preset.width_mm,
+            (current[1] * preset.width_mm / current[0]).clamp(10.0, 1000.0),
+        ]
+    } else {
+        [preset.width_mm, current[1]]
+    };
+    apply_size(app, ci, after, Some(preset));
+}
+
+fn apply_size(
+    app: &mut PlotiumApp,
+    ci: usize,
+    after_size: [f32; 2],
+    preset: Option<&'static SizePreset>,
+) {
+    if let Some(action) = size_and_margin_action(app, ci, after_size, preset) {
+        app.execute_action(action);
+    }
+    if let Some(preset) = preset {
+        update_canvas_size_defaults(app, |d| d.note_recent(preset.id));
+    }
+}
+
+fn size_and_margin_action(
+    app: &PlotiumApp,
+    ci: usize,
+    after_size: [f32; 2],
+    preset: Option<&'static SizePreset>,
+) -> Option<Action> {
+    // Size and preset identity travel through the action together, so
+    // undo/redo restores both and an ambiguous width (183 mm is Nature double
+    // and Science full width) keeps the user's choice across history moves.
+    let before = PageSizeState::of(&app.doc.canvases[ci]);
+    let after = PageSizeState {
+        size_mm: after_size,
+        preset_id: preset.map(|p| p.id.to_owned()),
+    };
+    let mut actions = Vec::new();
+    if before != after {
+        let action = if app.settings.canvas_size.scale_content {
+            Action::set_canvas_size_scaling_content(app, ci, after)
+        } else {
+            Action::set_canvas_size(ci, before, after)
+        };
+        actions.push(action);
+    }
+    if let Some(preset) = preset {
+        let before = app.doc.canvases[ci].layout;
+        let mut after = before;
+        after.margin_mm = preset.default_margin_mm();
+        if before != after {
+            actions.push(Action::set_page_layout(ci, before, after));
+        }
+    }
+    match actions.len() {
+        0 => None,
+        1 => actions.pop(),
+        _ => Some(Action::Composite(actions)),
+    }
+}
+
+/// The floating chip row above the active page: current size (click opens the
+/// settings window), an overflow warning with a one-click fix, and the
+/// dismissible wider-column suggestion. All fixes go through undoable actions;
+/// nothing here resizes the page on its own.
+pub(crate) fn page_size_chrome(
+    app: &mut PlotiumApp,
+    ci: usize,
+    page: egui::Rect,
+    view: egui::Rect,
+    host: &Ui,
+) {
+    if !view.intersects(page) {
+        return;
+    }
+    let ctx = host.ctx().clone();
+    let canvas = &app.doc.canvases[ci];
+    let size = canvas.size_mm;
+    let name = size_display_name(size, canvas.size_preset_id.as_deref());
+    let mut label = format!("{} {:.0} × {:.0} mm", icon::FRAME_CORNERS, size[0], size[1]);
+    if let Some(name) = &name {
+        label = format!("{label} · {name}");
+    }
+    if canvas.auto_height {
+        label = format!("{label} · auto");
+    }
+    let overflows = content_overflows(canvas);
+    let resource_id = canvas.resource_id.to_string();
+    let suggestion =
+        wider_preset_suggestion(canvas).filter(|s| !suggestion_dismissed(&ctx, &resource_id, s));
+
+    // The chip is page chrome stacked above the frame-header strip (which sits
+    // directly on the page's top edge), bottom-anchored so the row grows
+    // upward from a known clearance. It scrolls and zooms away with the page:
+    // pinning it inside the viewport would float it over unrelated content,
+    // so once its row leaves the view it goes with the page — Canvas settings
+    // stays reachable from the Ribbon, the page list, and the right-click
+    // menu. Zoom-to-fit reserves this row's headroom (`FIT_CHROME_PX`).
+    let mut pos = egui::pos2(
+        page.left(),
+        page.top() - super::canvas::FRAME_HEADER_PX - 4.0,
+    );
+    pos.x = pos.x.max(view.left() + 4.0);
+    if pos.y - 22.0 < view.top() {
+        return;
+    }
+
+    let mut open_settings = false;
+    let mut fit = false;
+    let mut apply: Option<&'static SizePreset> = None;
+    let mut dismiss: Option<&'static SizePreset> = None;
+    // Middle order keeps the chip above the board but in the same class as
+    // windows, so any window the user touches stacks above it; Foreground
+    // would pin it over popups and the settings window it opens.
+    egui::Area::new(egui::Id::new(("page_size_chip", ci)))
+        .order(egui::Order::Middle)
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .fixed_pos(pos)
+        .constrain_to(view)
+        .show(&ctx, |ui| {
+            ui.set_clip_rect(view);
+            ui.set_max_width((view.right() - pos.x).max(1.0));
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button(label)
+                    .on_hover_text("Canvas size — click to change it")
+                    .clicked()
+                {
+                    open_settings = true;
+                }
+                if overflows
+                    && ui
+                        .small_button(
+                            RichText::new(format!("{} Overflows — scale to fit", icon::WARNING))
+                                .color(ui.visuals().error_fg_color),
+                        )
+                        .on_hover_text(
+                            "Content extends past the page. Click to scale it down to \
+                             fit (undoable); font sizes keep their pt values.",
+                        )
+                        .clicked()
+                {
+                    fit = true;
+                }
+                if let Some(preset) = suggestion {
+                    if ui
+                        .small_button(format!(
+                            "{} {}-column grid {} {} ({:.0} mm)?",
+                            icon::ARROWS_OUT_LINE_HORIZONTAL,
+                            app.doc.canvases[ci].layout.cols,
+                            icon::ARROW_RIGHT,
+                            preset.label,
+                            preset.width_mm
+                        ))
+                        .on_hover_text(
+                            "The layout grid asks for multiple panel columns but the page \
+                             is a single-column width. Click to switch (undoable).",
+                        )
+                        .clicked()
+                    {
+                        apply = Some(preset);
+                    }
+                    if ui
+                        .small_button(icon::X)
+                        .on_hover_text("Dismiss this suggestion for this page")
+                        .clicked()
+                    {
+                        dismiss = Some(preset);
+                    }
+                }
+            });
+        });
+
+    if open_settings {
+        app.session.ui.canvas_settings = Some(ci);
+        // The click just raised the chip's own layer; an already-open settings
+        // window must still end up above it.
+        ctx.move_to_top(super::windows::canvas_settings_layer());
+    }
+    if fit {
+        scale_content_to_fit(app, ci);
+    }
+    if let Some(preset) = apply {
+        apply_preset(app, &ctx, ci, preset);
+    }
+    if let Some(preset) = dismiss {
+        ctx.data_mut(|d| d.insert_temp(suggestion_id(&resource_id, preset), true));
+    }
+}
+
+/// Shrinks (never enlarges) all content uniformly so its bounding box fits the
+/// page, translating it into the page first if it starts left of or above the
+/// origin. One undoable step.
+pub(crate) fn scale_content_to_fit(app: &mut PlotiumApp, ci: usize) {
+    let canvas = &app.doc.canvases[ci];
+    let Some([min_x, min_y, max_x, max_y]) = content_bounds_pt(canvas) else {
+        return;
+    };
+    let page_w = canvas.size_mm[0] * MM_TO_PT;
+    let page_h = canvas.size_mm[1] * MM_TO_PT;
+    let offset_x = min_x.min(0.0);
+    let offset_y = min_y.min(0.0);
+    let extent_w = (max_x - offset_x).max(1.0);
+    let extent_h = (max_y - offset_y).max(1.0);
+    let scale = (page_w / extent_w).min(page_h / extent_h).min(1.0);
+    let before: Vec<_> = canvas
+        .objects
+        .iter()
+        .filter_map(|object| {
+            canvas
+                .layout_frame(object.id)
+                .map(|frame| (object.id, frame))
+        })
+        .collect();
+    let after: Vec<_> = before
+        .iter()
+        .map(|&(id, f)| {
+            (
+                id,
+                plotium_core::state::ObjectFrame::new(
+                    (f.x - offset_x) * scale,
+                    (f.y - offset_y) * scale,
+                    f.width * scale,
+                    f.height * scale,
+                ),
+            )
+        })
+        .collect();
+    if before.is_empty() {
+        return;
+    }
+    app.execute_action(Action::set_object_frames(ci, before, after));
+}
+
+fn suggestion_id(resource_id: &str, preset: &SizePreset) -> egui::Id {
+    egui::Id::new((
+        "size_suggestion_dismissed",
+        resource_id.to_owned(),
+        preset.id,
+    ))
+}
+
+fn suggestion_dismissed(ctx: &egui::Context, resource_id: &str, preset: &SizePreset) -> bool {
+    ctx.data(|d| d.get_temp(suggestion_id(resource_id, preset)))
+        .unwrap_or(false)
+}
+
+fn update_canvas_size_defaults(app: &mut PlotiumApp, f: impl FnOnce(&mut CanvasSizeDefaults)) {
+    f(&mut app.settings.canvas_size);
+    app.persist_settings();
+}
+
+fn set_scale_content_default(app: &mut PlotiumApp, scale_content: bool) {
+    let target = app.app_target();
+    match app.plan_property_write(
+        plotium_core::properties::app_preferences::SCALE_CONTENT,
+        std::slice::from_ref(&target),
+        &plotium_core::properties::PropertyValue::Bool(scale_content),
+    ) {
+        Ok(commit) => {
+            app.commit_property(commit);
+        }
+        Err(error) => {
+            app.session.status = format!("Could not save the scale-content preference: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plotium_core::state::{CanvasDocument, NATURE_SINGLE_COLUMN, PAPER_A4};
+
+    fn app_with_canvas(size_mm: [f32; 2], margin_mm: [f32; 4]) -> PlotiumApp {
+        let mut app = PlotiumApp::new_with_settings(plotium_core::settings::Settings::default());
+        let mut canvas = CanvasDocument::new("Canvas 1".to_owned(), size_mm);
+        canvas.layout.margin_mm = margin_mm;
+        app.doc.canvases.push(canvas);
+        app.session.active_canvas = Some(0);
+        app
+    }
+
+    #[test]
+    fn paper_preset_applies_size_and_safe_margin_as_one_undo_step() {
+        let mut app = app_with_canvas([89.0, 60.0], [0.0; 4]);
+        let action = size_and_margin_action(&app, 0, PAPER_A4.size_mm(), Some(&PAPER_A4))
+            .expect("paper preset action");
+
+        app.execute_action(action);
+        assert_eq!(app.doc.canvases[0].size_mm, PAPER_A4.size_mm());
+        assert_eq!(app.doc.canvases[0].layout.margin_mm, [15.0; 4]);
+        assert_eq!(app.session.undo_stack.len(), 1);
+
+        app.undo();
+        assert_eq!(app.doc.canvases[0].size_mm, [89.0, 60.0]);
+        assert_eq!(app.doc.canvases[0].layout.margin_mm, [0.0; 4]);
+    }
+
+    #[test]
+    fn journal_preset_clears_an_existing_page_margin_even_at_the_same_size() {
+        let mut app = app_with_canvas(NATURE_SINGLE_COLUMN.size_mm(), [15.0; 4]);
+        let action = size_and_margin_action(
+            &app,
+            0,
+            NATURE_SINGLE_COLUMN.size_mm(),
+            Some(&NATURE_SINGLE_COLUMN),
+        )
+        .expect("journal margin action");
+
+        app.execute_action(action);
+        assert_eq!(app.doc.canvases[0].layout.margin_mm, [0.0; 4]);
+
+        app.undo();
+        assert_eq!(app.doc.canvases[0].layout.margin_mm, [15.0; 4]);
+    }
+}

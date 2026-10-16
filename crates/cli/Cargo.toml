@@ -1,0 +1,27 @@
+[package]
+name = "plotium-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Command-line inspection, processing, and export tool for Plotium."
+
+[[bin]]
+name = "plotium-cli"
+path = "src/main.rs"
+
+[features]
+# Default builds use the reference executor. This feature is retained as an
+# explicit maintenance switch for the dormant DataFusion backend.
+default = []
+datafusion = ["plotium-core/datafusion"]
+
+[dependencies]
+nmr.workspace = true
+plotium-core.workspace = true
+plotium-io.workspace = true
+plotium-processing.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

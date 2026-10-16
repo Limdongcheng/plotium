@@ -1,0 +1,757 @@
+use super::axis_overrides::AxisOverridesDto;
+use super::*;
+#[path = "dto_series_source.rs"]
+mod dto_series_source;
+pub use dto_series_source::SeriesSourceDto;
+#[path = "dto_panel.rs"]
+mod dto_panel;
+pub use dto_panel::*;
+
+#[derive(Serialize, Deserialize)]
+pub struct Manifest {
+    pub format: String,
+    pub schema_version: u32,
+    pub app_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryMetadata>,
+    pub save_profile: SaveProfile,
+    pub objects: Vec<Entry>,
+    pub views: Vec<Entry>,
+    pub assets: Vec<AssetEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<Entry>,
+    pub workspace: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RecoveryMetadata {
+    pub original_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_file: Option<FileStamp>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStamp {
+    pub modified_nanos: u128,
+    pub len: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SaveProfile {
+    pub include_view_snapshots: bool,
+    pub snapshot_kind: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Entry {
+    pub id: String,
+    pub role: String,
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Classification {
+    pub domain: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub technique: Option<String>,
+    pub object: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DataObject {
+    pub id: String,
+    pub role: String,
+    pub classification: Classification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub dimensions: Vec<Dimension>,
+    pub payload: Payload,
+    pub extensions: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Dimension {
+    pub id: String,
+    pub role: String,
+    pub size: usize,
+    pub storage_axis: usize,
+    pub quantity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_quantity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nucleus: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spectral_width_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observe_freq_mhz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub carrier_ppm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_delay: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Payload {
+    pub storage: String,
+    pub blob: String,
+    pub shape: Vec<usize>,
+    pub domain: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecipeObject {
+    pub id: String,
+    pub role: String,
+    pub classification: Classification,
+    pub input: String,
+    pub parameters: RecipeParameters,
+    #[serde(default)]
+    pub extensions: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecipeParameters {
+    pub dimension_count: usize,
+    /// One ordered step list per dimension (`[direct]` for 1D, `[f2, f1]` for 2D).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipelines: Vec<AxisPipelineDto>,
+    #[serde(default = "bool_true", skip_serializing_if = "is_true")]
+    pub group_delay_correct: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+impl Default for RecipeParameters {
+    fn default() -> Self {
+        Self {
+            dimension_count: 0,
+            pipelines: Vec::new(),
+            group_delay_correct: true,
+            layout: None,
+            preset: None,
+        }
+    }
+}
+
+/// Same representation as the standalone `*.plotiumproc` scheme file.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AxisPipelineDto {
+    pub steps: Vec<ProcessingStepDto>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ProcessingStepDto {
+    /// Present in a project archive, where step identities must round-trip.
+    /// Absent in a `.plotiumproc` recipe: a detached recipe carries no identity —
+    /// the adopting dataset remints every step from its own allocator — so
+    /// requiring one would make hand-written recipes spell out a field that is
+    /// immediately discarded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    pub kind: StepKindDto,
+    pub enabled: bool,
+    pub source: StepSourceDto,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub enum StepKindDto {
+    Apodize(ApodizationDto),
+    ZeroFill(String),
+    Fft,
+    Phase(PhaseParamsDto),
+    Baseline(BaselineMethodDto),
+    Reference(ReferenceParamsDto),
+    Magnitude,
+    Smooth(SmoothMethodDto),
+    Normalize(NormalizeMethodDto),
+    Bin { width: f64, method: BinMethodDto },
+    Reverse,
+    Invert,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub enum SmoothMethodDto {
+    MovingAverage { window: u16 },
+    SavitzkyGolay { window: u16, poly_order: u8 },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub enum NormalizeMethodDto {
+    MaxPeak,
+    TotalArea,
+    Constant { divisor: f64 },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub enum BinMethodDto {
+    Sum,
+    Mean,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub enum ApodizationDto {
+    None,
+    CosineBell,
+    Exponential { lb_hz: f64 },
+    Gaussian { lb_hz: f64, gb_hz: f64 },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PhaseParamsDto {
+    pub phase0: f64,
+    pub phase1: f64,
+    pub pivot_frac: f64,
+    pub auto: Option<AutoPhaseMethodDto>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub enum AutoPhaseMethodDto {
+    RobustConsensus,
+    AbsorptivePeak,
+    Entropy,
+    NegativeMinimization,
+    PeakRegression,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub enum BaselineMethodDto {
+    Offset,
+    Polynomial {
+        order: u8,
+    },
+    AsymmetricLeastSquares {
+        smoothness: f64,
+        asymmetry: f64,
+        iterations: u16,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct ReferenceParamsDto {
+    pub at_ppm: f64,
+    pub target_ppm: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub enum StepSourceDto {
+    Default,
+    User,
+    Imported,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewObject {
+    pub id: String,
+    pub role: String,
+    pub classification: Classification,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    pub name: String,
+    pub next_object_id: u64,
+    pub next_panel_label_slot: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
+    #[serde(default = "caption_visible_default")]
+    pub caption_visible: bool,
+    pub panel_label_style: String,
+    pub layout: ViewLayout,
+    pub objects: Vec<ViewCanvasObject>,
+    pub panels: Vec<ViewPanel>,
+    pub loose_item_order: Vec<String>,
+    pub groups: Vec<ViewGroup>,
+    /// `null` identifies an ordinary author-created page.
+    pub analysis_binding: Option<AnalysisBindingDto>,
+    /// Empty for pages without linked horizontal axes.
+    #[serde(default)]
+    pub x_viewport_links: Vec<XViewportLinkDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ViewportDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<ViewSnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum AnalysisBindingDto {
+    #[serde(rename = "craft")]
+    Craft { input: String, run: u64 },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XViewportLinkDto {
+    pub id: String,
+    pub members: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ViewLayout {
+    pub size_mm: [f32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_preset: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_height: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<PageLayoutDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_pos: Option<[f32; 2]>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct PageLayoutDto {
+    pub margin_mm: [f32; 4],
+    pub gutter_mm: f32,
+    pub rows: u32,
+    pub cols: u32,
+    #[serde(default)]
+    pub show_grid: bool,
+    #[serde(default)]
+    pub spacing_mode: crate::layout::SpacingMode,
+}
+
+impl PageLayoutDto {
+    pub fn from_layout(l: &PageLayout) -> Self {
+        Self {
+            margin_mm: l.margin_mm,
+            gutter_mm: l.gutter_mm,
+            rows: l.rows,
+            cols: l.cols,
+            show_grid: l.show_grid,
+            spacing_mode: l.spacing_mode,
+        }
+    }
+
+    pub fn into_layout(self) -> PageLayout {
+        PageLayout {
+            margin_mm: self.margin_mm,
+            gutter_mm: self.gutter_mm,
+            rows: self.rows.max(1),
+            cols: self.cols.max(1),
+            show_grid: self.show_grid,
+            spacing_mode: self.spacing_mode,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "dto_tests.rs"]
+mod tests;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewCanvasObject {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub input: String,
+    /// Plot-only allocator high-water mark, derivable from `series` via
+    /// `PlotObject::repair_series_allocator` (which load always runs). Omitting
+    /// it when zero keeps it out of text/shape/label objects, where it is noise.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub next_series_id: u64,
+    pub series: Vec<SeriesBindingDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_type: Option<String>,
+    /// Stable column UUID for column-oriented charts; absent selects the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_column: Option<String>,
+    /// Histogram bin count; absent = automatic binning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_bins: Option<usize>,
+    /// Multi-column bar charts: stacked instead of grouped.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub chart_stacked: bool,
+    /// Colormap id for value-mapped charts; absent = default. Kept as a string
+    /// so files from newer builds with unknown maps still open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_colormap: Option<String>,
+    /// 3D surface `[azimuth°, elevation°]`; absent = default view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_view: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<StackDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projections: Option<ProjectionsDto>,
+    pub frame: FrameDto,
+    /// Required in final schema v1. `null` means page-level loose content.
+    pub parent_panel: ParentPanelDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ViewportDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_overrides: Option<AxisOverridesDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextBoxDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<ShapeDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<RasterImageDto>,
+    pub locked: bool,
+    pub visible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<ViewSnapshot>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+fn caption_visible_default() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SeriesBindingDto {
+    /// Owner-local series identity. It is mandatory because a persisted series
+    /// is an addressable component, not a position in an overlay list.
+    pub id: u64,
+    pub source: SeriesSourceDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The complete, concrete document encoding. Auto is creation-only and
+    /// intentionally cannot be represented here.
+    pub encoding: plotium_figure::SeriesEncoding,
+    #[serde(default = "bool_true", skip_serializing_if = "is_true")]
+    pub visible: bool,
+}
+
+fn bool_true() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StackDto {
+    pub mode: String,
+    pub spacing_y: f64,
+    pub shear_x: f64,
+    pub normalize: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<usize>,
+}
+
+impl StackDto {
+    pub fn from_spec(s: &StackSpec) -> Self {
+        Self {
+            mode: match s.mode {
+                StackMode::Superimposed => "superimposed",
+                StackMode::Offset => "offset",
+                StackMode::ColorOverlay => "color_overlay",
+            }
+            .to_owned(),
+            spacing_y: s.spacing_y,
+            shear_x: s.shear_x,
+            normalize: s.normalize,
+            active: s.active,
+        }
+    }
+
+    pub fn into_spec(self) -> StackSpec {
+        StackSpec {
+            mode: match self.mode.as_str() {
+                "offset" => StackMode::Offset,
+                "color_overlay" => StackMode::ColorOverlay,
+                _ => StackMode::Superimposed,
+            },
+            spacing_y: self.spacing_y,
+            shear_x: self.shear_x,
+            normalize: self.normalize,
+            active: self.active,
+        }
+    }
+}
+
+/// An `Attached` source persists the referenced dataset as a recipe id (the same
+/// id scheme as series bindings), so it re-resolves on load.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ProjectionsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top: Option<AxisProjectionDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<AxisProjectionDto>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AxisProjectionDto {
+    /// One of "attached", "sum", "skyline", "slice".
+    pub source: String,
+    /// Recipe id of the attached 1D dataset, when `source == "attached"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached: Option<String>,
+    /// Pinned grid index, when `source == "slice"`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub slice_index: usize,
+    #[serde(default = "bool_true", skip_serializing_if = "is_true")]
+    pub visible: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TextBoxDto {
+    pub text: String,
+    pub font_size: f32,
+    pub color: [u8; 3],
+    pub align: String,
+    pub bold: bool,
+}
+
+impl TextBoxDto {
+    pub fn from_text_box(t: &TextBox) -> Self {
+        Self {
+            text: t.text.clone(),
+            font_size: t.font_size,
+            color: [t.color.r, t.color.g, t.color.b],
+            align: match t.align {
+                TextAlign::Left => "left",
+                TextAlign::Center => "center",
+                TextAlign::Right => "right",
+            }
+            .to_owned(),
+            bold: t.bold,
+        }
+    }
+
+    pub fn into_text_box(self) -> TextBox {
+        TextBox {
+            text: self.text,
+            font_size: self.font_size,
+            color: Color::rgb(self.color[0], self.color[1], self.color[2]),
+            align: match self.align.as_str() {
+                "center" => TextAlign::Center,
+                "right" => TextAlign::Right,
+                _ => TextAlign::Left,
+            },
+            bold: self.bold,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ShapeDto {
+    pub shape: String,
+    pub stroke: [u8; 3],
+    pub stroke_width: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 3]>,
+}
+
+impl ShapeDto {
+    pub fn from_shape(s: &ShapeObject) -> Self {
+        Self {
+            shape: match s.shape {
+                ShapeKind::Rect => "rect",
+                ShapeKind::Ellipse => "ellipse",
+                ShapeKind::Line => "line",
+                ShapeKind::Arrow => "arrow",
+            }
+            .to_owned(),
+            stroke: [s.stroke.r, s.stroke.g, s.stroke.b],
+            stroke_width: s.stroke_width,
+            fill: s.fill.map(|c| [c.r, c.g, c.b]),
+        }
+    }
+
+    pub fn into_shape(self) -> ShapeObject {
+        ShapeObject {
+            shape: match self.shape.as_str() {
+                "ellipse" => ShapeKind::Ellipse,
+                "line" => ShapeKind::Line,
+                "arrow" => ShapeKind::Arrow,
+                _ => ShapeKind::Rect,
+            },
+            stroke: Color::rgb(self.stroke[0], self.stroke[1], self.stroke[2]),
+            stroke_width: self.stroke_width,
+            fill: self.fill.map(|c| Color::rgb(c[0], c[1], c[2])),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct FrameDto {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ViewSnapshot {
+    pub kind: String,
+    pub schema_version: u32,
+    pub figure: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Workspace {
+    pub dataset_order: Vec<DatasetBinding>,
+    pub view_order: Vec<String>,
+    #[serde(default)]
+    pub automation_revision: u64,
+    pub active_data: Option<String>,
+    pub active_view: Option<String>,
+    pub primary_view: String,
+    pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_selection: Option<SelectionDto>,
+    pub primary_sidebar_width: f32,
+    pub primary_sidebar_visible: bool,
+    pub secondary_sidebar_width: f32,
+    pub secondary_sidebar_visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<BoardDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub board_views: Vec<BoardViewDto>,
+    /// Document-level axis text sizes; absent in older files → defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_typography: Option<plotium_figure::FigureTypography>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct BoardDto {
+    pub zoom: f32,
+    pub world_center: [f32; 2],
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BoardViewDto {
+    pub name: String,
+    pub zoom: f32,
+    pub world_center: [f32; 2],
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DatasetBinding {
+    pub data: String,
+    pub recipe: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<DerivationDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DerivationDto {
+    pub kind: String,
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct RangeDto {
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ViewportDto {
+    pub full_x: RangeDto,
+    pub full_y: RangeDto,
+    pub view_x: RangeDto,
+    pub view_y: RangeDto,
+    pub auto_y: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SelectionDto {
+    pub dataset: String,
+    pub canvas: String,
+    pub object: String,
+    pub x_range: RangeDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y_range: Option<RangeDto>,
+}
+
+impl ViewportDto {
+    pub fn from_viewport(v: &CanvasViewport) -> Self {
+        Self {
+            full_x: RangeDto::from_range(v.full_x),
+            full_y: RangeDto::from_range(v.full_y),
+            view_x: RangeDto::from_range(v.view_x),
+            view_y: RangeDto::from_range(v.view_y),
+            auto_y: v.auto_y,
+        }
+    }
+
+    pub fn to_viewport(&self) -> CanvasViewport {
+        CanvasViewport {
+            full_x: self.full_x.into_range(),
+            full_y: self.full_y.into_range(),
+            view_x: self.view_x.into_range(),
+            view_y: self.view_y.into_range(),
+            auto_y: self.auto_y,
+        }
+    }
+}
+
+impl FrameDto {
+    pub fn from_frame(frame: ObjectFrame) -> Self {
+        Self {
+            x: frame.x,
+            y: frame.y,
+            width: frame.width,
+            height: frame.height,
+        }
+    }
+
+    pub fn into_frame(self) -> ObjectFrame {
+        ObjectFrame::new(self.x, self.y, self.width, self.height)
+    }
+}
+
+impl RangeDto {
+    pub fn from_range(r: AxisRange) -> Self {
+        Self {
+            min: r.min,
+            max: r.max,
+        }
+    }
+
+    pub fn into_range(self) -> AxisRange {
+        AxisRange::new(self.min, self.max)
+    }
+}
+
+impl SelectionDto {
+    pub fn from_selection(selection: &AnalysisSelection) -> Self {
+        Self {
+            dataset: selection.dataset.to_string(),
+            canvas: selection.canvas.to_string(),
+            object: selection.object.to_string(),
+            x_range: RangeDto::from_range(selection.x_range),
+            y_range: selection.y_range.map(RangeDto::from_range),
+        }
+    }
+
+    pub fn to_selection(&self) -> Option<AnalysisSelection> {
+        Some(AnalysisSelection {
+            dataset: self.dataset.parse().ok()?,
+            canvas: self.canvas.parse().ok()?,
+            object: self.object.parse().ok()?,
+            x_range: self.x_range.into_range(),
+            y_range: self.y_range.map(RangeDto::into_range),
+            field: None,
+            unit: None,
+            source_stream: None,
+        })
+    }
+}

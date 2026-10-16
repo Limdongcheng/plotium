@@ -1,0 +1,137 @@
+use plotium_core::export::ExportFormat;
+use plotium_core::layout::Align;
+use plotium_core::state::{Tool, ToolGroup, WorkflowTab};
+
+use super::CommandId;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RibbonPlacement {
+    pub tab: WorkflowTab,
+    pub group: &'static str,
+    /// Lower values survive longer as space becomes constrained.
+    pub priority: u8,
+    pub applicability: Applicability,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applicability {
+    Always,
+    LineAlignmentOnly,
+    TableOnly,
+    SeriesOnly,
+    Homonuclear2dOnly,
+    ToolGroup(ToolGroup),
+}
+
+/// The row a command takes when its Ribbon group stacks two commands per
+/// column. Commands that come in two parallel families declare one, so the
+/// stacked group reads family by row (Left, Center, Right over Top, Middle,
+/// Bottom) instead of pairing neighbours from the catalog order. `None`
+/// stacks in catalog order.
+pub(crate) fn stack_row(id: CommandId) -> Option<u8> {
+    match id {
+        CommandId::Align(Align::Left | Align::HCenter | Align::Right) => Some(0),
+        CommandId::Align(Align::Top | Align::VCenter | Align::Bottom) => Some(1),
+        _ => None,
+    }
+}
+
+pub(super) fn ribbon_placement(id: CommandId) -> Option<RibbonPlacement> {
+    use Applicability::{Always, Homonuclear2dOnly, LineAlignmentOnly, SeriesOnly, TableOnly};
+    use WorkflowTab::{Analyze, Arrange, Data, Figure, Process, View};
+    let (tab, group, priority, applicability) = match id {
+        CommandId::Tool(Tool::BrowseZoom) | CommandId::ZoomToFit | CommandId::ZoomToSelection => {
+            (View, "Navigate", 0, Always)
+        }
+        CommandId::TogglePrimarySidebar
+        | CommandId::ToggleSecondarySidebar
+        | CommandId::ToggleGrid
+        | CommandId::Present
+        | CommandId::Preferences => (View, "Display", 1, Always),
+        CommandId::OpenFile
+        | CommandId::ImportTable
+        | CommandId::ImportImage
+        | CommandId::OpenFolder
+        | CommandId::PasteTable => (Data, "Import", 0, Always),
+        CommandId::NewTable | CommandId::StackData => (Data, "Build", 1, Always),
+        CommandId::ExportData => (Data, "Export", 0, Always),
+        CommandId::Tool(Tool::Peaks) | CommandId::DetectPeaks | CommandId::PeakList => (
+            Analyze,
+            "Peaks",
+            1,
+            Applicability::ToolGroup(ToolGroup::Peaks),
+        ),
+        CommandId::Tool(Tool::Symmetry) => (Analyze, "Review", 1, Homonuclear2dOnly),
+        CommandId::AlignTraces => (Analyze, "Overlay", 1, LineAlignmentOnly),
+        CommandId::XpsWorkbench(_) => (Analyze, "XPS", 0, Applicability::ToolGroup(ToolGroup::Xps)),
+        CommandId::Tool(Tool::ManualPhase) => (Process, "Correct", 0, Always),
+        CommandId::SpectrumArithmetic | CommandId::AlignSpectra | CommandId::Craft => {
+            (Process, "Transform", 1, Always)
+        }
+        CommandId::ApplyProcessingTemplate | CommandId::SaveProcessingTemplate => {
+            (Process, "Recipes", 2, Always)
+        }
+        CommandId::SelectRange | CommandId::ClearRange => (Analyze, "Range", 0, Always),
+        CommandId::ExtractMassSpectrum => (
+            Analyze,
+            "Extract",
+            0,
+            Applicability::ToolGroup(ToolGroup::MassSpectrometry),
+        ),
+        CommandId::Regions => (Analyze, "Regions", 0, SeriesOnly),
+        CommandId::SeriesTable => (Analyze, "Regions", 0, SeriesOnly),
+        CommandId::LineFit | CommandId::RunPeakFit => (
+            Analyze,
+            "Peak Fit",
+            0,
+            Applicability::ToolGroup(ToolGroup::LineFit),
+        ),
+        CommandId::CurveFit | CommandId::RunCurveFit => (Analyze, "Curve Fit", 0, TableOnly),
+        CommandId::Statistics => (Analyze, "Statistics", 0, TableOnly),
+        CommandId::Integrate | CommandId::Multiplets => (
+            Analyze,
+            "Interpret",
+            1,
+            Applicability::ToolGroup(ToolGroup::Nmr1dAnalysis),
+        ),
+        CommandId::NewCanvas(_) => (Figure, "Create", 0, Always),
+        CommandId::ChartType => (Figure, "Chart", 0, TableOnly),
+        // The "Figure typography" property group already puts a typography
+        // tile in Style; the dialog command stays in the menus and palette.
+        CommandId::ApplyTheme(_) | CommandId::CanvasSettings => (Figure, "Style", 1, Always),
+        // PNG and SVG cover the two figure endpoints (slides and publication);
+        // the other formats stay in the File menu and the palette.
+        CommandId::CopyFigure
+        | CommandId::Export(ExportFormat::Png)
+        | CommandId::Export(ExportFormat::Svg) => (Figure, "Output", 0, Always),
+        // The spacing basis and minimum spacing are canvas properties, set
+        // once per document: the inspector's Margins and spacing section,
+        // the canvas context menu, and the palette carry them. The grid
+        // presets stay in the canvas context menu and the palette; the
+        // Ribbon offers the popover that takes any rows × columns.
+        CommandId::Tool(Tool::Select)
+        | CommandId::ArrangeGridCustom
+        | CommandId::SimplifyInnerAxes
+        | CommandId::TidyBoard => (Arrange, "Layout", 0, Always),
+        CommandId::Align(_) => (Arrange, "Align", 1, Always),
+        CommandId::Distribute(_) => (Arrange, "Distribute", 2, Always),
+        CommandId::ZOrder(_) => (Arrange, "Order", 2, Always),
+        CommandId::ToggleSnap => (Arrange, "Guides", 1, Always),
+        CommandId::Tool(
+            Tool::Text | Tool::PanelLabel | Tool::Rect | Tool::Ellipse | Tool::Line | Tool::Arrow,
+        ) => (Arrange, "Annotate", 3, Always),
+        // The group's own declaration decides where it lands, so a new group
+        // needs no arm here.
+        CommandId::PropertyGroup(section) => {
+            let spot = crate::ui::properties::discovery::group(section)?.ribbon;
+            (spot.tab, spot.group, spot.priority, Always)
+        }
+        _ => return None,
+    };
+    Some(RibbonPlacement {
+        tab,
+        group,
+        priority,
+        applicability,
+    })
+}

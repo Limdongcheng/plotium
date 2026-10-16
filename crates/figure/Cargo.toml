@@ -1,0 +1,18 @@
+[package]
+name = "plotium-figure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Figure-model layer for Plotium: axes, layers, series, and styling, independent of rendering."
+
+[lib]
+name = "plotium_figure"
+path = "src/lib.rs"
+
+[dependencies]
+colorous.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,715 @@
+mod activity;
+pub(crate) mod affordance;
+pub(crate) mod align;
+pub(crate) mod arithmetic;
+pub(crate) mod batch_workflow;
+pub(crate) mod canvas;
+pub(crate) mod canvas_size;
+mod clipboard_figure;
+#[cfg(windows)]
+pub(crate) mod clipboard_native;
+pub(crate) mod clipboard_table;
+mod command_exec;
+mod command_palette;
+pub(crate) mod commands;
+mod data_export_dialog;
+mod data_sheet;
+mod diagnostics;
+mod export_dialog;
+mod figure_typography;
+pub(crate) mod file_dialogs;
+pub(crate) mod file_drop;
+mod menus;
+#[cfg(target_os = "macos")]
+pub(crate) mod native_menu;
+mod object_inspector;
+mod panel_chrome;
+mod present;
+mod primary_sidebar;
+pub(crate) mod processing_templates;
+pub(crate) mod properties;
+mod ribbon;
+mod ribbon_chrome;
+mod scientific_script;
+mod secondary_sidebar;
+mod settings_dialog;
+mod shortcuts;
+mod sidebars;
+mod switcher;
+#[cfg(not(target_os = "macos"))]
+mod title_bar;
+pub(crate) mod tools;
+mod trace_alignment;
+mod trace_composer;
+mod windows;
+mod workspace_geometry;
+
+use data_sheet::*;
+use diagnostics::*;
+use egui::{
+    Color32, Id, InnerResponse, Mesh, Pos2, Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2,
+};
+use export_dialog::*;
+use plotium_core::actions::Action;
+use plotium_core::export::{ExportPageScope, ExportScopeKind, ExportSettings};
+use plotium_core::operation::OperationOutcome;
+use plotium_core::state::{Interaction, PlotiumApp, Selection};
+pub(crate) use ribbon_chrome::{
+    RibbonChrome, configure_viewport as configure_ribbon_viewport, current as current_ribbon_chrome,
+};
+pub(crate) use settings_dialog::apply_chrome_theme;
+use settings_dialog::{settings_window, sync_chrome_theme};
+use shortcuts::*;
+use windows::*;
+use workspace_geometry::resolve as workspace_geometry;
+
+pub fn render(
+    app: &mut PlotiumApp,
+    clipboard_table_paste: &mut clipboard_table::ClipboardTablePaste,
+    batch_workflow: &mut batch_workflow::AutomationUi,
+    last_window_title: &mut Option<String>,
+    ui: &mut Ui,
+    input_blocked: bool,
+    ribbon_chrome: RibbonChrome,
+) {
+    let ctx = ui.ctx().clone();
+    let title = project_window_title(app);
+    if last_window_title.as_deref() != Some(title.as_str()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        *last_window_title = Some(title);
+    }
+    sync_chrome_theme(&ctx, app.settings.appearance.theme);
+    clipboard_table_paste.begin_frame(app, &ctx);
+    file_dialogs::image_import::poll(app, &ctx);
+    if app.poll_data_import() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+    file_dialogs::image_import::large_image_consent_window(app, &ctx);
+    if let Some(payload) = app.poll_data_export() {
+        copy_table_export(&ctx, payload);
+    }
+    present::sync_fullscreen(app, &ctx);
+    if app.session.present_mode {
+        present::render(app, ui);
+        if app.session.present_mode {
+            return;
+        }
+    }
+
+    // Derived page-size state (auto height, stale preset ids) re-derives once
+    // per frame, outside the undo stack, before anything paints.
+    app.reconcile_page_fit();
+
+    handle_palette_shortcut(app, clipboard_table_paste, &ctx);
+
+    // Every dialog is egui::Modal-based, so its modal layer already blocks
+    // background input; the chrome must NOT be disabled here (`Ui::disable`
+    // repaints everything at `disabled_alpha`, washing the chrome out against
+    // the window clear colour). This flag only gates the global shortcuts.
+    let modal_open = input_blocked
+        || app.session.ui.processing_scheme_dialog.is_some()
+        || app.session.ui.processing_template_dialog.is_some()
+        || app.session.ui.spectrum_arithmetic_dialog.is_some()
+        || app.session.ui.align_spectra_dialog.is_some()
+        || app.session.ui.trace_alignment_dialog.is_some()
+        || app.session.ui.trace_composer.is_some()
+        || app.session.ui.command_palette.is_some()
+        || app.session.ui.save_project_options
+        || app.session.ui.project_transition.is_some()
+        || app.session.ui.export_options.is_some()
+        || app.session.ui.data_export.is_some()
+        || app.session.ui.table_import_preview.is_some()
+        || app.session.ui.nmr_import.is_some()
+        || app.session.ui.settings_dialog.is_some()
+        || batch_workflow.is_open();
+    if !modal_open {
+        primary_sidebar::selection::handle_keyboard_selection(app, &ctx);
+        handle_plot_fit_shortcut(app, clipboard_table_paste, &ctx);
+        handle_command_shortcuts(app, clipboard_table_paste, &ctx);
+        handle_escape_shortcut(app, &ctx);
+        handle_rename_shortcut(app, &ctx);
+        handle_focus_shortcut(app, &ctx);
+        handle_hierarchy_traversal(app, &ctx);
+        handle_delete_shortcut(app, &ctx);
+    }
+
+    let dark = ui.visuals().dark_mode;
+    // The gaps between chrome cards show whatever the root panel painted, so
+    // lay the workspace colour under everything first.
+    ui.painter()
+        .rect_filled(ui.max_rect(), 0.0, workspace_fill(dark));
+
+    #[cfg(not(target_os = "macos"))]
+    egui::Panel::top("title_bar")
+        .frame(flush_frame(dark, egui::Margin::ZERO))
+        .show_separator_line(false)
+        .show_inside(ui, |ui| {
+            title_bar::render(app, clipboard_table_paste, ui);
+        });
+
+    egui::Panel::top("ribbon")
+        .frame(ribbon_chrome::frame(dark))
+        .show_separator_line(false)
+        .show_inside(ui, |ui| {
+            ribbon::render(app, clipboard_table_paste, ui, ribbon_chrome);
+        });
+
+    feedback_banner(app, ui, dark);
+    activity::observe(app);
+
+    let workspace_width = ui.available_width();
+    sidebars::render(app, ui, dark, workspace_width);
+
+    // A sidebar may have changed an expanded Phase step before the canvas paints.
+    app.sync_phase_interaction();
+    // Same for an armed Reference pick: collapsing its editor or switching
+    // datasets must not leave a live click trap on the plot.
+    app.sync_reference_pick();
+    egui::CentralPanel::default()
+        .frame(egui::Frame::new().fill(workspace_fill(dark)).inner_margin(
+            central_workspace_margin(
+                app.session.primary_sidebar_visible,
+                app.session.secondary_sidebar_visible,
+            ),
+        ))
+        .show_inside(ui, |ui| {
+            // Same stable id scope as the sidebars: the central panel's ids
+            // must not shift when a sidebar toggles (see `show_sidebar`).
+            ui.scope_builder(
+                UiBuilder::new()
+                    .id_salt(Id::new("central_workspace_stable_scope"))
+                    .global_scope(true),
+                |ui| {
+                    canvas::render_central(app, ui);
+                    tools::render_processing_task(app, ui);
+                    tools::render_region_task(app, ui);
+                    tools::render_curve_fit_task(app, ui);
+                    tools::render_statistics_task(app, ui);
+                    tools::render_craft_task(app, ui);
+                },
+            );
+        });
+
+    canvas_settings_window(app, &ctx);
+    figure_typography::figure_typography_window(app, &ctx);
+    panel_note_edit_window(app, &ctx);
+    text_edit_window(app, &ctx);
+    data_sheet_window(app, &ctx);
+    save_project_window(app, &ctx);
+    export_options_window(app, &ctx);
+    data_export_dialog::data_export_window(app, &ctx);
+    file_dialogs::table_import_preview_window(app, &ctx);
+    settings_window(app, &ctx);
+    command_palette::command_palette_window(app, clipboard_table_paste, &ctx);
+    menus::about_window(app, &ctx);
+    quit_confirm_window(app, &ctx);
+    diagnostic_history_window(app, &ctx);
+    file_dialogs::processing_scheme_window(app, &ctx);
+    file_dialogs::nmr_sampling::window(app, &ctx);
+    processing_templates::processing_template_window(app, &ctx);
+    arithmetic::spectrum_arithmetic_window(app, &ctx);
+    align::align_spectra_window(app, &ctx);
+    trace_alignment::trace_alignment_window(app, &ctx);
+    trace_composer::trace_composer_window(app, &ctx);
+    batch_workflow.show(app, &ctx);
+
+    file_drop::handle(app, &ctx);
+    handle_close_request(app, &ctx);
+    #[cfg(not(target_os = "macos"))]
+    title_bar::resize_zones(&ctx);
+
+    let now = ctx.input(|i| i.time);
+    app.finish_pending_wheel_zoom(now, false);
+    app.finish_pending_wheel_property(now, false);
+    activity::observe(app);
+    // Menus and drops can enqueue after this frame's poll. Schedule the first
+    // worker poll even if the user stops moving the mouse immediately afterward.
+    if app.session.data_imports.is_pending() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+}
+
+fn project_window_title(app: &PlotiumApp) -> String {
+    let project = app
+        .doc
+        .project_path
+        .as_deref()
+        .and_then(std::path::Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .or_else(|| app.session.project_present.then(|| "Untitled".to_owned()));
+    match project {
+        Some(project) if app.doc.dirty => format!("* {project} — Plotium"),
+        Some(project) => format!("{project} — Plotium"),
+        None => "Plotium".to_owned(),
+    }
+}
+
+fn copy_table_export(ctx: &egui::Context, payload: plotium_core::data_export::ClipboardExport) {
+    #[cfg(windows)]
+    {
+        if clipboard_native::set_table_formats(&payload.text, payload.schema_json.as_deref())
+            .is_ok()
+        {
+            return;
+        }
+    }
+    ctx.copy_text(payload.text);
+}
+
+/// The newest *unacknowledged* warning/failure plus how many older ones are
+/// still pending. Selecting by outcome — not recency of the whole history —
+/// means a success landing right after a failure (the second file of a batch,
+/// a background job) can never mask the failure.
+fn pending_feedback(
+    app: &PlotiumApp,
+) -> Option<(
+    plotium_core::operation::OperationId,
+    u64,
+    OperationOutcome,
+    String,
+    usize,
+)> {
+    let acknowledged = app.session.ui.dismissed_feedback_order;
+    let mut pending = app
+        .session
+        .operation_history
+        .operations()
+        .filter(|operation| {
+            matches!(
+                operation.outcome,
+                OperationOutcome::Warning | OperationOutcome::Failure
+            )
+        })
+        .filter(|operation| acknowledged.is_none_or(|latest| operation.completion_order > latest));
+    let newest = pending.next_back()?;
+    let (id, completion_order, outcome, summary) = (
+        newest.id,
+        newest.completion_order,
+        newest.outcome,
+        newest.summary.clone(),
+    );
+    Some((id, completion_order, outcome, summary, pending.count()))
+}
+
+fn feedback_banner(app: &mut PlotiumApp, ui: &mut Ui, dark: bool) {
+    let Some((_, completion_order, outcome, summary, earlier)) = pending_feedback(app) else {
+        return;
+    };
+    let (icon, color) = match outcome {
+        OperationOutcome::Failure => (
+            egui_phosphor::regular::WARNING_OCTAGON,
+            ui.visuals().error_fg_color,
+        ),
+        OperationOutcome::Warning => (
+            egui_phosphor::regular::WARNING,
+            if dark {
+                Color32::from_rgb(245, 190, 72)
+            } else {
+                Color32::from_rgb(145, 86, 0)
+            },
+        ),
+        OperationOutcome::Success => return,
+    };
+    egui::Panel::top("operation_feedback")
+        .frame(
+            egui::Frame::new()
+                .fill(color.linear_multiply(if dark { 0.16 } else { 0.10 }))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .stroke(Stroke::new(1.0_f32, color.linear_multiply(0.55))),
+        )
+        .show_separator_line(false)
+        .show_inside(ui, |ui| {
+            egui::containers::Sides::new()
+                .shrink_left()
+                .truncate()
+                .show(
+                    ui,
+                    |ui| {
+                        ui.colored_label(color, egui::RichText::new(icon).size(18.0));
+                        ui.colored_label(color, &summary).on_hover_text(&summary);
+                        if earlier > 0 {
+                            ui.label(
+                                egui::RichText::new(format!("+{earlier} earlier"))
+                                    .color(ui.visuals().weak_text_color()),
+                            )
+                            .on_hover_text(
+                                "Older unresolved reports — open Details to review them.",
+                            );
+                        }
+                    },
+                    |ui| {
+                        let dismiss = ui.button("Dismiss");
+                        let dismiss = if earlier > 0 {
+                            dismiss.on_hover_text("Acknowledge this and the earlier reports")
+                        } else {
+                            dismiss
+                        };
+                        if dismiss.clicked() {
+                            app.session.ui.dismissed_feedback_order = Some(completion_order);
+                        }
+                        if ui.button("Details").clicked() {
+                            activity::open_diagnostics(app, ui.ctx());
+                        }
+                    },
+                );
+        });
+}
+
+#[derive(Clone, Copy)]
+enum SidebarEdge {
+    Left,
+    Right,
+}
+
+const SIDEBAR_RESIZE_GRAB_RADIUS: f32 = 2.0;
+const SIDEBAR_HIGHLIGHT_RADIUS: f32 = 90.0;
+const SIDEBAR_HIGHLIGHT_SAMPLE_STEP: f32 = 6.0;
+
+fn central_workspace_margin(primary_visible: bool, secondary_visible: bool) -> egui::Margin {
+    egui::Margin {
+        left: if primary_visible { 8 } else { 4 },
+        right: if secondary_visible { 8 } else { 4 },
+        top: 4,
+        bottom: 2,
+    }
+}
+
+/// Keep the resize interaction local to the visible card edge while replacing
+/// egui's full-height, high-contrast separator with restrained feedback.
+fn show_resizable_sidebar<R>(
+    panel: egui::Panel,
+    ui: &mut Ui,
+    panel_id: Id,
+    edge: SidebarEdge,
+    width_range: std::ops::RangeInclusive<f32>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> InnerResponse<R> {
+    let resizable = sidebar_resize_enabled(ui, panel_id, edge);
+    // egui 0.34 uses an absolute distance from the fixed edge. Preserve the
+    // direction before clamping so dragging through that edge cannot grow it.
+    let panel = if let Some(resize) = ui.ctx().read_response(panel_id.with("__resize"))
+        && resize.dragged()
+        && let Some(pointer) = resize.interact_pointer_pos()
+    {
+        let available = ui.available_rect_before_wrap();
+        let width = match edge {
+            SidebarEdge::Left => available.right() - pointer.x,
+            SidebarEdge::Right => pointer.x - available.left(),
+        };
+        panel.exact_size(width.clamp(*width_range.start(), *width_range.end()))
+    } else {
+        panel
+    };
+    let normal_style = ui.style().clone();
+    ui.style_mut().visuals.widgets.hovered.fg_stroke = Stroke::NONE;
+    ui.style_mut().visuals.widgets.active.fg_stroke = Stroke::NONE;
+    ui.style_mut().interaction.resize_grab_radius_side = SIDEBAR_RESIZE_GRAB_RADIUS;
+    let response = panel.resizable(resizable).show_inside(ui, |ui| {
+        ui.set_style(normal_style.clone());
+        add_contents(ui)
+    });
+    ui.set_style(normal_style);
+    response
+}
+
+fn sidebar_resize_enabled(ui: &Ui, panel_id: Id, edge: SidebarEdge) -> bool {
+    let resize_id = panel_id.with("__resize");
+    let previous_response = ui.ctx().read_response(resize_id);
+    if previous_response
+        .as_ref()
+        .is_some_and(|response| response.dragged())
+    {
+        return true;
+    }
+    let card_rect = ui
+        .ctx()
+        .data(|data| data.get_temp::<Rect>(panel_id.with("plotium_card_rect")));
+    let Some(card_rect) = card_rect else {
+        return true;
+    };
+    let on_edge = ui
+        .ctx()
+        .pointer_hover_pos()
+        .is_some_and(|pointer| sidebar_edge_hit_rect(card_rect, edge).contains(pointer));
+    if on_edge && previous_response.is_none() {
+        // The resizer was omitted on the previous pass. Register it now and
+        // schedule the pass on which egui can hit-test its new rectangle.
+        ui.ctx().request_repaint();
+    }
+    on_edge
+}
+
+fn sidebar_edge_hit_rect(card_rect: Rect, edge: SidebarEdge) -> Rect {
+    let x = match edge {
+        SidebarEdge::Left => card_rect.left(),
+        SidebarEdge::Right => card_rect.right(),
+    };
+    let corner_radius = 8.0;
+    Rect::from_min_max(
+        Pos2::new(
+            x - SIDEBAR_RESIZE_GRAB_RADIUS,
+            card_rect.top() + corner_radius,
+        ),
+        Pos2::new(
+            x + SIDEBAR_RESIZE_GRAB_RADIUS,
+            card_rect.bottom() - corner_radius,
+        ),
+    )
+}
+
+fn paint_sidebar_resize_edge(
+    ui: &Ui,
+    panel_id: Id,
+    card_rect: Rect,
+    edge: SidebarEdge,
+    dark: bool,
+) {
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(panel_id.with("plotium_card_rect"), card_rect);
+    });
+    let Some(response) = ui.ctx().read_response(panel_id.with("__resize")) else {
+        return;
+    };
+    if !response.hovered() && !response.dragged() {
+        return;
+    }
+
+    let corner_radius = 8.0;
+    let straight_edge = sidebar_edge_hit_rect(card_rect, edge);
+    let hover_pointer = ui.ctx().pointer_hover_pos();
+    if !response.dragged() && !hover_pointer.is_some_and(|pointer| straight_edge.contains(pointer))
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+        return;
+    }
+
+    let base_color = if dark {
+        Color32::from_gray(if response.dragged() { 112 } else { 88 })
+    } else {
+        Color32::from_gray(if response.dragged() { 145 } else { 174 })
+    };
+    let pointer = if response.dragged() {
+        response
+            .interact_pointer_pos()
+            .or_else(|| ui.ctx().pointer_interact_pos())
+    } else {
+        hover_pointer
+    };
+    let Some(pointer) = pointer else {
+        return;
+    };
+    let x = match edge {
+        SidebarEdge::Left => card_rect.left(),
+        SidebarEdge::Right => card_rect.right(),
+    };
+    let min_y = (card_rect.top() + corner_radius).max(pointer.y - SIDEBAR_HIGHLIGHT_RADIUS);
+    let max_y = (card_rect.bottom() - corner_radius).min(pointer.y + SIDEBAR_HIGHLIGHT_RADIUS);
+    if min_y >= max_y {
+        return;
+    }
+
+    let segments = ((max_y - min_y) / SIDEBAR_HIGHLIGHT_SAMPLE_STEP)
+        .ceil()
+        .max(1.0) as usize;
+    let mut mesh = Mesh::default();
+    mesh.reserve_vertices(2 * (segments + 1));
+    mesh.reserve_triangles(2 * segments);
+    for index in 0..=segments {
+        let y = egui::lerp(min_y..=max_y, index as f32 / segments as f32);
+        let alpha = sidebar_highlight_alpha((y - pointer.y).abs());
+        let color = base_color.linear_multiply(alpha);
+        let vertex = mesh.vertices.len() as u32;
+        mesh.colored_vertex(Pos2::new(x - 0.5, y), color);
+        mesh.colored_vertex(Pos2::new(x + 0.5, y), color);
+        if index > 0 {
+            mesh.add_triangle(vertex - 2, vertex - 1, vertex);
+            mesh.add_triangle(vertex, vertex - 1, vertex + 1);
+        }
+    }
+    ui.painter().add(mesh);
+}
+
+fn sidebar_highlight_alpha(distance: f32) -> f32 {
+    let t = (distance.abs() / SIDEBAR_HIGHLIGHT_RADIUS).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// Chrome layering: the Ribbon and sidebars sit as rounded cards on a slightly
+/// darker workspace instead of being fenced off by separator lines. Fills stay
+/// near-neutral so the chrome never skews colour judgement of plot data.
+fn workspace_fill(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(21, 22, 24)
+    } else {
+        Color32::from_rgb(243, 244, 246)
+    }
+}
+
+pub(super) enum ModalKind {
+    /// Command-palette style: no backdrop dim and anchored near the top of the
+    /// window, so the workspace stays readable while searching (the convention
+    /// set by VS Code / Search Everywhere / Spotlight).
+    Palette,
+    /// Blocking dialog: dims the background, but lighter on light themes where
+    /// egui's default black-alpha backdrop reads far heavier than on dark ones.
+    Dialog,
+}
+
+/// Every modal goes through here so backdrop depth, anchoring, and future
+/// theming decisions live in one place instead of at each call site.
+pub(super) fn modal(ctx: &egui::Context, id: &str, kind: ModalKind) -> egui::Modal {
+    let id = egui::Id::new(id);
+    match kind {
+        ModalKind::Palette => egui::Modal::new(id)
+            .backdrop_color(Color32::TRANSPARENT)
+            .area(
+                egui::Modal::default_area(id)
+                    .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 96.0)),
+            ),
+        ModalKind::Dialog => {
+            let alpha = if ctx.theme() == egui::Theme::Dark {
+                100
+            } else {
+                48
+            };
+            egui::Modal::new(id).backdrop_color(Color32::from_black_alpha(alpha))
+        }
+    }
+}
+
+fn card_frame(dark: bool, outer_margin: egui::Margin) -> egui::Frame {
+    let (fill, stroke, shadow_alpha) = if dark {
+        (
+            Color32::from_rgb(34, 35, 38),
+            Color32::from_white_alpha(12),
+            96,
+        )
+    } else {
+        (Color32::WHITE, Color32::from_black_alpha(15), 20)
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, stroke))
+        .corner_radius(settings_dialog::surface_corner_radius())
+        .inner_margin(8)
+        .outer_margin(outer_margin)
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 2],
+            blur: 8,
+            spread: 0,
+            color: Color32::from_black_alpha(shadow_alpha),
+        })
+}
+
+/// The menu strip blends into the workspace rather than floating on it.
+#[cfg(not(target_os = "macos"))]
+fn flush_frame(dark: bool, inner_margin: egui::Margin) -> egui::Frame {
+    egui::Frame::new()
+        .fill(workspace_fill(dark))
+        .inner_margin(inner_margin)
+}
+
+#[cfg(test)]
+#[path = "sidebar_tests.rs"]
+mod sidebar_tests;
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    use plotium_core::operation::{
+        Diagnostic, DiagnosticCode, OperationId, OperationKind, OperationReport, Severity,
+    };
+
+    fn app() -> PlotiumApp {
+        PlotiumApp::new_with_settings(plotium_core::settings::Settings::default())
+    }
+
+    fn record_failure(app: &mut PlotiumApp, summary: &str) -> OperationId {
+        let id = app.session.begin_operation();
+        app.session.record_operation(OperationReport::<()>::failure(
+            id,
+            OperationKind::DatasetLoad,
+            summary,
+            Diagnostic::new(Severity::Error, DiagnosticCode::DatasetLoadFailed, summary),
+        ));
+        id
+    }
+
+    fn record_success(app: &mut PlotiumApp) {
+        let id = app.session.begin_operation();
+        app.session.record_operation(OperationReport::success(
+            id,
+            OperationKind::DatasetLoad,
+            "Loaded".to_owned(),
+            (),
+        ));
+    }
+
+    /// A success landing after a failure (second file of a batch, background
+    /// job) must not mask the failure.
+    #[test]
+    fn newest_unacknowledged_failure_survives_a_later_success() {
+        let mut app = app();
+        record_failure(&mut app, "boom");
+        record_success(&mut app);
+        let (_, _, outcome, summary, earlier) = pending_feedback(&app).expect("failure pending");
+        assert_eq!(outcome, OperationOutcome::Failure);
+        assert_eq!(summary, "boom");
+        assert_eq!(earlier, 0);
+    }
+
+    #[test]
+    fn dismiss_acknowledges_through_the_shown_report() {
+        let mut app = app();
+        record_failure(&mut app, "first");
+        let newest = record_failure(&mut app, "second");
+        let (shown, shown_order, _, summary, earlier) =
+            pending_feedback(&app).expect("failures pending");
+        assert_eq!(shown, newest);
+        assert_eq!(summary, "second");
+        assert_eq!(earlier, 1);
+
+        app.session.ui.dismissed_feedback_order = Some(shown_order);
+        assert!(pending_feedback(&app).is_none());
+
+        // A report arriving after the watermark surfaces again.
+        record_failure(&mut app, "third");
+        let (_, _, _, summary, earlier) = pending_feedback(&app).expect("new failure pending");
+        assert_eq!(summary, "third");
+        assert_eq!(earlier, 0);
+    }
+
+    #[test]
+    fn dismissal_uses_report_order_for_delayed_operations() {
+        let mut app = app();
+        let delayed_failure = app.session.begin_operation();
+        let later_warning = app.session.begin_operation();
+        app.session.record_operation(OperationReport::warning(
+            later_warning,
+            OperationKind::DataExport,
+            "A later warning",
+            (),
+        ));
+
+        let (_, dismissed_order, _, summary, _) = pending_feedback(&app).expect("warning pending");
+        assert_eq!(summary, "A later warning");
+        app.session.ui.dismissed_feedback_order = Some(dismissed_order);
+
+        app.session.record_operation(OperationReport::<()>::failure(
+            delayed_failure,
+            OperationKind::DataExport,
+            "The delayed export failed",
+            Diagnostic::new(
+                Severity::Error,
+                DiagnosticCode::DataExportWriteFailed,
+                "The delayed export failed.",
+            ),
+        ));
+
+        let (_, _, outcome, summary, earlier) =
+            pending_feedback(&app).expect("delayed failure pending");
+        assert_eq!(outcome, OperationOutcome::Failure);
+        assert_eq!(summary, "The delayed export failed");
+        assert_eq!(earlier, 0);
+    }
+}

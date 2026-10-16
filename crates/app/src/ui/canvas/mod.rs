@@ -1,0 +1,603 @@
+use egui::{Color32, Pos2, Rect as EguiRect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use plotium_core::actions::{Action, PanelState, PendingViewportEdit, PendingWheelPropertyEdit};
+use plotium_core::layout::{self, MovableEdges, SnapGuide, SnapTargets};
+use plotium_core::state::region_color;
+use plotium_core::state::{
+    AnalysisSelection, AuthorDrag, AxisRange, BOARD_GUTTER_PT, BoardFitTarget, BoardMarqueeDrag,
+    BoardViewport, CanvasDocument, CanvasObject, CanvasObjectKind, Dataset, FrameDrag, FrameRef,
+    FurnitureDrag, FurnitureTarget, Integral2DDrag, Integral2DDragKind, IntegralDrag, Interaction,
+    MarqueeDrag, ObjectDrag, ObjectDragKind, ObjectDragSpace, ObjectFrame, ObjectId, PanDrag,
+    PanelDrag, PanelId, PanelLabelDrag, PanelNoteEditState, PhaseDrag, PhaseDragKind, PhaseOrient,
+    PlotiumApp, Region, RegionDrag, RegionDragKind, RegionId, RegionSelection, ResizeHandle,
+    SHEET_COL_W_PT, SHEET_HEADER_H_PT, SHEET_MAX_ROWS, SHEET_ROW_H_PT, Selection, SelectionDrag,
+    TableDataset, TextEditState, TileDropCacheKey, TileDropPreview, Tool, ViewportMode, ZoomAxis,
+    ZoomDrag, board_frame_id, board_frame_ref, board_frames, frame_board_pos, frame_board_rect,
+    set_frame_board_pos, toggle_frame_selection_synced,
+};
+use plotium_core::{Integral2D, IntegralResult};
+use plotium_render::Rect as PlotRect;
+
+const PH0_PER_PX: f64 = 0.01;
+const PH1_PER_PX: f64 = 0.01;
+const PIVOT_GRAB_PX: f32 = 6.0;
+const SELECT_MIN_PX: f32 = 6.0;
+const DRAG_START_PX: f32 = 5.0;
+const WHEEL_ZOOM_SPEED: f32 = 0.0015;
+const HANDLE_SIZE_PX: f32 = 8.0;
+const MIN_OBJECT_SIZE_PT: f32 = 24.0;
+const PANEL_LABEL_HIT_PAD_PX: f32 = 4.0;
+const SNAP_PX: f32 = 6.0;
+
+mod authoring;
+mod band_editor;
+mod board;
+mod board_caption;
+mod board_marquee;
+mod board_notes;
+mod breadcrumb;
+mod chrome;
+mod craft_regions;
+mod craft_results;
+mod cursors;
+mod furniture;
+mod geometry;
+mod image_drop;
+pub(crate) mod image_painting;
+mod selection_painting;
+pub(crate) use image_drop::{ImagePanelDropTarget, image_drop_target};
+mod integrals;
+mod integrals2d;
+mod interactions;
+mod marquee_interactions;
+mod navigation;
+mod painting;
+mod panel_interactions;
+mod panel_notes;
+mod panel_selection;
+mod peaks;
+mod phase;
+mod readout;
+mod reference_pick;
+mod regions;
+mod render_detail;
+mod slices;
+mod snap;
+mod symmetry;
+mod tiling;
+mod view_fit;
+
+pub(crate) use authoring::*;
+pub(crate) use board::*;
+pub(crate) use board_caption::*;
+pub(crate) use board_notes::*;
+pub(crate) use breadcrumb::*;
+pub(crate) use chrome::*;
+pub(crate) use craft_regions::*;
+pub(crate) use craft_results::*;
+pub(crate) use cursors::*;
+pub(crate) use furniture::*;
+pub(crate) use geometry::*;
+pub(crate) use integrals::*;
+pub(crate) use integrals2d::*;
+pub(crate) use interactions::*;
+pub(crate) use marquee_interactions::*;
+pub(crate) use navigation::*;
+pub(crate) use painting::*;
+pub(crate) use panel_interactions::*;
+pub(crate) use panel_notes::*;
+pub(crate) use peaks::*;
+pub(crate) use phase::*;
+pub(crate) use readout::*;
+pub(crate) use reference_pick::*;
+pub(crate) use regions::*;
+use render_detail::*;
+pub(crate) use selection_painting::*;
+pub(crate) use slices::*;
+pub(crate) use snap::*;
+pub(crate) use symmetry::*;
+pub(crate) use tiling::*;
+pub(crate) use view_fit::*;
+
+fn finite_rect_intersects(a: egui::Rect, b: egui::Rect) -> bool {
+    let finite = |r: egui::Rect| {
+        [r.min.x, r.min.y, r.max.x, r.max.y]
+            .iter()
+            .all(|value| value.is_finite())
+    };
+    finite(a)
+        && finite(b)
+        && a.max.x >= b.min.x
+        && b.max.x >= a.min.x
+        && a.max.y >= b.min.y
+        && b.max.y >= a.min.y
+}
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
+#[cfg(test)]
+mod workspace_render_bench;
+
+#[derive(Clone, Copy)]
+pub(crate) enum CanvasInteractionClearScope {
+    Transient,
+    Selection,
+    All,
+}
+
+pub fn render_central(app: &mut PlotiumApp, ui: &mut Ui) {
+    let Some(ci) = app.session.active_canvas else {
+        welcome_page(app, ui);
+        return;
+    };
+    canvas_breadcrumb(app, ci, ui);
+    let avail = ui.available_rect_before_wrap();
+    let (resp, painter) = ui.allocate_painter(avail.size(), Sense::click_and_drag());
+    let geometry = super::workspace_geometry(app, resp.rect, ui.ctx());
+    let rect = geometry.board_rect;
+    let painter = painter.with_clip_rect(rect);
+    store_navigation_rect(ui.ctx(), rect);
+    let chrome = ChromeStyle::from_visuals(ui.visuals(), app.settings.appearance.canvas_accent);
+    consume_board_reveal(app, ui.ctx());
+    drive_board_fit(app, ui, &geometry);
+
+    // Raw-pointer gestures must not start through UI layered over the canvas.
+    let pointer_hits_canvas_layer = ui
+        .input(|input| input.pointer.hover_pos())
+        .is_none_or(|pos| super::tools::task_card::pointer_allows_canvas(app, ui, pos));
+    let pointer_owned = app.session.ui.interaction.is_active()
+        || (ui.rect_contains_pointer(rect) && pointer_hits_canvas_layer);
+
+    sync_macos_trackpad_gesture(ui.ctx(), &ui.input(|i| i.events.clone()), pointer_owned);
+    let view_consumed = pointer_owned && handle_navigation(app, ci, rect, ui);
+
+    // An armed Reference pick owns the pointer over its plot: a click there
+    // sets the step's source position instead of starting any other gesture.
+    // Navigation stays ahead of it so wheel and trackpad zoom keep working
+    // while aiming at a peak.
+    let view_consumed =
+        view_consumed || handle_reference_pick(app, ci, rect, ui, pointer_owned && !view_consumed);
+
+    let frame_consumed =
+        if pointer_owned && !view_consumed && app.session.ui.interaction.allows_frame_dispatch() {
+            dispatch_frame_gesture(app, rect, ui)
+        } else {
+            false
+        };
+    // `dispatch_frame_gesture` may have switched the active frame.
+    let ci = app.session.active_canvas.unwrap_or(ci);
+
+    // Processing direct manipulation must update the document before its plots
+    // are painted, so the changed spectrum is visible in this same frame.
+    if pointer_owned && app.session.tool == Tool::ManualPhase {
+        handle_phase_before_paint(app, ci, rect, ui);
+    }
+
+    let author_active = app.session.tool.creates_object();
+    if pointer_owned && author_active && !view_consumed && !frame_consumed {
+        handle_author_create(app, ci, rect, ui);
+    }
+    let label_consumed = if !pointer_owned || view_consumed || frame_consumed || author_active {
+        false
+    } else {
+        handle_panel_label_interactions(app, ci, rect, ui)
+    };
+    let caption_consumed =
+        if !pointer_owned || view_consumed || frame_consumed || author_active || label_consumed {
+            false
+        } else {
+            handle_frame_caption_interactions(app, rect, ui)
+        };
+    let furniture_consumed = if !pointer_owned
+        || view_consumed
+        || frame_consumed
+        || author_active
+        || label_consumed
+        || caption_consumed
+    {
+        false
+    } else {
+        handle_furniture_interactions(app, ci, rect, ui)
+    };
+    if pointer_owned
+        && !view_consumed
+        && !frame_consumed
+        && !author_active
+        && !label_consumed
+        && !caption_consumed
+        && !furniture_consumed
+    {
+        if app.session.tool.is_layout_tool() {
+            handle_object_interactions(app, ci, rect, ui, &resp);
+        } else if app.session.tool.is_data_tool() {
+            handle_data_tool_target(app, ci, rect, ui, &resp);
+        }
+    }
+
+    // A tile drop may remove the now-empty source canvas and switch focus to the
+    // target in the same UI pass. Refresh both values before any post-interaction
+    // painting; the old index can otherwise refer to a different canvas or be out
+    // of bounds when the source was the last page.
+    let Some(ci) = app.session.active_canvas else {
+        return;
+    };
+    let page = page_screen_rect(app.session.board, &app.doc.canvases[ci], rect);
+
+    let frame_stroke = Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
+    // Pages float on the board the way chrome cards float on the workspace: a
+    // soft shadow keeps a white page legible on the light workspace fill.
+    let page_shadow = egui::epaint::Shadow {
+        offset: [0, 2],
+        blur: 10,
+        spread: 0,
+        color: Color32::from_black_alpha(if ui.visuals().dark_mode { 110 } else { 36 }),
+    };
+    let clip = painter.clip_rect();
+    let board_transform = BoardTransform::from_board(app.session.board, rect);
+    for other in (0..app.doc.canvases.len())
+        .filter(|&other| other != ci)
+        .chain(std::iter::once(ci))
+    {
+        let other_page = page_screen_rect(app.session.board, &app.doc.canvases[other], rect);
+        let card = frame_card_rect(other_page);
+        if finite_rect_intersects(card.expand(12.0), clip) {
+            painter.add(page_shadow.as_shape(card, header_corner_radius()));
+        }
+        let editor_bounds = board_transform.canvas_editor_screen_rect(&app.doc.canvases[other]);
+        if finite_rect_intersects(editor_bounds, clip) {
+            paint_panel_detach_background(app, other, rect, &painter);
+            paint_document(app, other, rect, &painter);
+        }
+        if finite_rect_intersects(other_page, clip) && other != ci {
+            painter.rect_stroke(other_page, 0.0, frame_stroke, StrokeKind::Inside);
+        }
+    }
+    paint_frame_headers(app, rect, ui, &painter);
+    paint_frame_captions(app, rect, ui, &painter);
+    render_inline_panel_note_editor(app, rect, ui);
+    paint_sheet_frames(app, rect, ui, &painter);
+    paint_layout_overlay(app, ci, rect, &painter, chrome);
+    paint_axis_zoom(app, ci, rect, &painter, chrome);
+    paint_author_drag(app, ci, rect, &painter, chrome);
+    paint_marquee(app, ci, rect, &painter, chrome);
+    paint_panel_label_selection(app, ci, rect, &painter, chrome);
+    paint_object_selection(app, ci, rect, page, &painter, chrome);
+    paint_property_readouts(app, ci, rect, &painter, chrome, ui.visuals().dark_mode);
+    paint_wheel_target_hint(app, ci, rect, ui, &painter, chrome, ui.visuals().dark_mode);
+    paint_tile_ghost(app, &painter, chrome);
+    paint_panel_detach(app, rect, &painter, chrome);
+    paint_tile_preview(app, rect, &painter, chrome);
+    paint_panel_swap(app, rect, &painter, chrome);
+    super::canvas_size::page_size_chrome(app, ci, page, rect, ui);
+    if pointer_owned {
+        canvas_cursor(app, ci, rect, ui);
+    }
+
+    if data_edit_target(app, ci).is_none() {
+        resp.context_menu(|ui| arrange_context_menu(app, ci, ui));
+    }
+
+    let Some(object_id) =
+        data_edit_target(app, ci).or_else(|| app.doc.canvases[ci].active_plot_object_id())
+    else {
+        return;
+    };
+    let Some(di) = app.doc.canvases[ci]
+        .object(object_id)
+        .and_then(|object| object.dataset())
+        .and_then(|id| app.doc.dataset_index(id))
+    else {
+        return;
+    };
+    let Some(outer) = object_screen_rect(app.session.board, &app.doc.canvases[ci], object_id, rect)
+    else {
+        return;
+    };
+    let outer_rect = plot_rect(outer);
+    let plot = {
+        let fig = &app.doc.canvases[ci]
+            .object(object_id)
+            .and_then(|object| object.plot())
+            .unwrap()
+            .figure();
+        let zoom = app.session.board.zoom;
+        let layout = plotium_render::axis_layout(fig, outer.width / zoom, outer.height / zoom);
+        let proj = plotium_render::Projector::new(fig, outer, &layout.margins.scaled(zoom));
+        proj.plot
+    };
+
+    if !furniture_consumed
+        && data_edit_target(app, ci) == Some(object_id)
+        && !matches!(app.session.ui.interaction, Interaction::Pan(_))
+    {
+        match app.session.tool {
+            // Ahead of the `pointer_owned` guard: the pivot line is painted here,
+            // and it stays on screen whatever the pointer is over.
+            Tool::ManualPhase => {
+                let axis = app.doc.datasets[di].active_phase_axis(app.session.ui.phase_axis);
+                if let Some(pivot_ppm) = displayed_phase_pivot_ppm(app, di, axis) {
+                    let fig = &app.doc.canvases[ci]
+                        .object(object_id)
+                        .and_then(|object| object.plot())
+                        .unwrap()
+                        .figure();
+                    match axis.orient() {
+                        PhaseOrient::Vertical => {
+                            let (mn, sp, rv) = (fig.x.min, fig.x.span(), fig.x.reversed);
+                            // Pin the line to the nearest edge when the pivot sits
+                            // outside the current view, so it never silently vanishes.
+                            let px = x_to_screen(pivot_ppm, plot, mn, sp, rv)
+                                .clamp(plot.left, plot.right());
+                            painter.line_segment(
+                                [Pos2::new(px, plot.top), Pos2::new(px, plot.bottom())],
+                                Stroke::new(1.5_f32, chrome.pivot),
+                            );
+                        }
+                        PhaseOrient::Horizontal => {
+                            let (mn, sp, rv) = (fig.y.min, fig.y.span(), fig.y.reversed);
+                            let py = y_to_screen(pivot_ppm, plot, mn, sp, rv)
+                                .clamp(plot.top, plot.bottom());
+                            painter.line_segment(
+                                [Pos2::new(plot.left, py), Pos2::new(plot.right(), py)],
+                                Stroke::new(1.5_f32, chrome.pivot),
+                            );
+                        }
+                    }
+                }
+            }
+            _ if !pointer_owned => {}
+            Tool::Select => {}
+            Tool::BrowseZoom => {
+                handle_view_interactions(app, ci, object_id, outer_rect, plot, ui, &resp)
+            }
+            Tool::SelectRegion | Tool::LineFit | Tool::Annotate | Tool::PeakAnalysis => {
+                handle_selection_drag(app, ci, object_id, di, plot, ui);
+            }
+            Tool::Regions => handle_region_drag(app, ci, object_id, di, plot, ui),
+            Tool::CraftRegions => handle_craft_region_drag(app, ci, object_id, di, plot, ui),
+            Tool::Integrate => {
+                if app.doc.datasets[di]
+                    .as_nmr2d()
+                    .is_some_and(|dataset| dataset.is_true_2d())
+                {
+                    handle_integral_2d_drag(app, ci, object_id, di, plot, ui, &resp)
+                } else {
+                    handle_integral_drag(app, ci, object_id, di, plot, ui, &resp)
+                }
+            }
+            Tool::Peaks => handle_peaks(app, ci, object_id, di, plot, ui, &resp),
+            Tool::InspectCursor | Tool::DeltaCursor => {
+                handle_cursor_tool(app, ci, object_id, di, plot, ui)
+            }
+            Tool::Symmetry => handle_symmetry(app, ci, object_id, di, plot, ui),
+            Tool::Slice => handle_slice(app, ci, object_id, di, plot, ui),
+            Tool::Text
+            | Tool::PanelLabel
+            | Tool::Rect
+            | Tool::Ellipse
+            | Tool::Line
+            | Tool::Arrow => {}
+        }
+    }
+
+    paint_zoom_drag(app, ci, object_id, plot, &painter, chrome);
+    paint_regions(app, ci, object_id, di, plot, &painter, chrome);
+    paint_craft_regions(app, ci, object_id, di, plot, &painter, chrome);
+    paint_integrals(app, ci, object_id, di, plot, &painter, chrome);
+    paint_integrals_2d(app, ci, object_id, di, plot, &painter, chrome);
+    paint_peaks(app, ci, object_id, di, plot, &painter, chrome);
+    if pointer_owned {
+        paint_reference_pick(app, ci, object_id, di, plot, ui, &painter, chrome);
+    }
+    handle_and_paint_craft_result(app, ci, object_id, plot, &painter, ui);
+    paint_cursor_tool(app, ci, object_id, di, plot, ui, &painter, chrome);
+    paint_symmetry(
+        app,
+        SymmetryPaintTarget {
+            canvas: ci,
+            object: object_id,
+            dataset: di,
+            plot,
+        },
+        ui,
+        &painter,
+        chrome,
+    );
+    paint_slice(app, ci, object_id, di, plot, &painter);
+    paint_analysis_selection(app, ci, object_id, plot, &painter, chrome);
+    paint_selection_drag(app, ci, object_id, plot, &painter, chrome);
+}
+
+fn welcome_page(app: &mut PlotiumApp, ui: &mut Ui) {
+    ui.add_space(28.0);
+    let width = ui.available_width().min(500.0);
+    ui.vertical_centered(|ui| {
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, ui.available_height()),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.label(
+                    crate::typography::large_title("Plotium")
+                        .color(ui.visuals().strong_text_color()),
+                );
+                ui.label(
+                    egui::RichText::new("Scientific data analysis and figure preparation")
+                        .color(ui.visuals().text_color()),
+                );
+                ui.add_space(22.0);
+                welcome_start(app, ui);
+            },
+        );
+    });
+}
+
+fn welcome_start(app: &mut PlotiumApp, ui: &mut Ui) {
+    use egui_phosphor::regular as icon;
+
+    welcome_heading(ui, "Start");
+    if welcome_action(ui, icon::FILE, "Open data…") {
+        crate::ui::file_dialogs::open_file(app);
+    }
+    if welcome_action(ui, icon::FOLDER, "Open data folder…") {
+        crate::ui::file_dialogs::open_folder(app);
+    }
+    if welcome_action(ui, icon::FOLDER_OPEN, "Open project…") {
+        crate::ui::file_dialogs::open_project(app);
+    }
+    if welcome_action(ui, icon::TABLE, "Import table…") {
+        crate::ui::file_dialogs::import_delimited_table(app);
+    }
+    if welcome_action(ui, icon::FILE_PLUS, "New empty data table") {
+        app.new_table_dataset();
+    }
+
+    welcome_recent(app, ui);
+
+    ui.add_space(20.0);
+    welcome_heading(ui, "Tip");
+    ui.label(
+        egui::RichText::new("Drop data anywhere in the workspace to open it.")
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+/// The most recent openable paths, straight back into work. Icons come from
+/// the path shape alone (no filesystem probing in the paint loop); a missing
+/// file surfaces through the loader's normal failure report on click.
+fn welcome_recent(app: &mut PlotiumApp, ui: &mut Ui) {
+    use egui_phosphor::regular as icon;
+    const WELCOME_RECENT_LIMIT: usize = 5;
+
+    if app.session.recent_files.is_empty() {
+        return;
+    }
+    ui.add_space(20.0);
+    welcome_heading(ui, "Recent");
+    let mut open: Option<std::path::PathBuf> = None;
+    for path in app.session.recent_files.iter().take(WELCOME_RECENT_LIMIT) {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let glyph = match path.extension() {
+            Some(extension) if extension.eq_ignore_ascii_case("plotium") => icon::FOLDER_OPEN,
+            Some(_) => icon::FILE,
+            // Bruker acquisitions (`fid`/`ser`) are extensionless *files*;
+            // other extensionless paths are folder gestures.
+            None if path.file_name().is_some_and(|name| {
+                name.eq_ignore_ascii_case("fid") || name.eq_ignore_ascii_case("ser")
+            }) =>
+            {
+                icon::FILE
+            }
+            None => icon::FOLDER,
+        };
+        let clicked = ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(format!("{glyph}  {name}"))
+                        .color(ui.visuals().hyperlink_color),
+                )
+                .frame(false),
+            )
+            .on_hover_text(path.display().to_string())
+            .clicked();
+        if clicked {
+            open = Some(path.clone());
+        }
+    }
+    if let Some(path) = open {
+        crate::ui::file_dialogs::open_recent_path(app, &path);
+    }
+}
+
+fn welcome_heading(ui: &mut Ui, text: &str) {
+    ui.label(crate::typography::title_3(text).color(ui.visuals().strong_text_color()));
+    ui.add_space(4.0);
+}
+
+fn welcome_action(ui: &mut Ui, glyph: &str, label: &str) -> bool {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(format!("{glyph}  {label}")).color(ui.visuals().hyperlink_color),
+        )
+        .frame(false),
+    )
+    .clicked()
+}
+
+fn canvas_cursor(app: &PlotiumApp, ci: usize, rect: egui::Rect, ui: &Ui) {
+    let Some(p) = ui
+        .input(|i| i.pointer.hover_pos())
+        .filter(|p| rect.contains(*p))
+    else {
+        return;
+    };
+    if matches!(app.session.ui.interaction, Interaction::Furniture(_)) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        return;
+    }
+    if matches!(app.session.ui.interaction, Interaction::Pan(_)) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        return;
+    }
+    if ui.input(|i| i.key_down(egui::Key::Space)) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        return;
+    }
+    if furniture_hovered(app, ci, rect, p) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        return;
+    }
+    let icon = if app.session.tool.is_layout_tool() {
+        let editing_panel = app
+            .session
+            .ui
+            .hierarchical_selection
+            .editing_panel()
+            .filter(|(canvas, _)| *canvas == app.doc.canvases[ci].resource_id)
+            .map(|(_, panel)| panel);
+        match screen_to_page_unbounded(app.session.board, &app.doc.canvases[ci], rect, p).and_then(
+            |page| {
+                if let Some(panel) = editing_panel {
+                    return hit_content_object(
+                        &app.doc.canvases[ci],
+                        page,
+                        app.session.board.zoom,
+                        Some(panel),
+                    )
+                    .map(|hit| hit.kind);
+                }
+                hit_panel(&app.doc.canvases[ci], page, app.session.board.zoom)
+                    .map(|hit| hit.kind)
+                    .or_else(|| {
+                        hit_object(&app.doc.canvases[ci], page, app.session.board.zoom)
+                            .map(|hit| hit.kind)
+                    })
+            },
+        ) {
+            Some(kind) => match kind {
+                ObjectDragKind::Move => egui::CursorIcon::Grab,
+                ObjectDragKind::Resize(handle) => resize_cursor(handle),
+            },
+            None => egui::CursorIcon::Default,
+        }
+    } else if app.session.tool.is_data_tool() {
+        match data_edit_target(app, ci)
+            .and_then(|id| object_screen_rect(app.session.board, &app.doc.canvases[ci], id, rect))
+        {
+            Some(frame) if plot_contains(frame, p) => egui::CursorIcon::Crosshair,
+            _ => egui::CursorIcon::Default,
+        }
+    } else {
+        return;
+    };
+    ui.ctx().set_cursor_icon(icon);
+}
+
+fn resize_cursor(handle: ResizeHandle) -> egui::CursorIcon {
+    match handle {
+        ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
+        ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
+    }
+}

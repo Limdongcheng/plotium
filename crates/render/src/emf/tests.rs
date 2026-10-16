@@ -1,0 +1,164 @@
+use super::*;
+use crate::DocumentText;
+use plotium_figure::{Axis, ErrorBar, Figure, Series};
+use std::sync::Arc;
+
+fn demo_document(fig: &Figure) -> Document<'_> {
+    Document {
+        width: 400.0,
+        height: 300.0,
+        background: Color::rgb(255, 255, 255),
+        items: vec![DocumentItem::Plot(DocumentObject {
+            id: "obj".into(),
+            frame: Rect::new(20.0, 20.0, 360.0, 260.0),
+            figure: fig,
+            geometry_generation: None,
+            visible: true,
+            title: None,
+        })],
+    }
+}
+
+#[test]
+fn exports_valid_emf_header() {
+    let fig = Figure::new(
+        "Demo",
+        Axis::new("ppm", 0.0, 10.0).reversed(true),
+        Axis::new("intensity", 0.0, 1.0),
+    )
+    .with_series(Series::line(
+        "trace",
+        vec![[0.0, 0.0], [5.0, 1.0], [10.0, 0.0]],
+    ))
+    .with_error_bar(ErrorBar::symmetric([5.0, 0.5], 0.2));
+    let doc = demo_document(&fig);
+    let bytes = export_document_emf(&doc).expect("export");
+    assert!(bytes.len() >= 88);
+    assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1);
+    assert_eq!(&bytes[40..44], b" EMF");
+    assert_eq!(
+        u32::from_le_bytes(bytes[48..52].try_into().unwrap()) as usize,
+        bytes.len()
+    );
+    let frame_right = i32::from_le_bytes(bytes[32..36].try_into().unwrap());
+    let frame_bottom = i32::from_le_bytes(bytes[36..40].try_into().unwrap());
+    assert_eq!(frame_right, (400.0f64 * 2540.0 / 72.0).round() as i32);
+    assert_eq!(frame_bottom, (300.0f64 * 2540.0 / 72.0).round() as i32);
+}
+
+#[test]
+fn round_trips_through_set_enh_meta_file_bits() {
+    let fig = Figure::new("t", Axis::new("x", 0.0, 1.0), Axis::new("y", 0.0, 1.0));
+    let doc = demo_document(&fig);
+    let bytes = export_document_emf(&doc).expect("export");
+    unsafe {
+        let hemf = windows_sys::Win32::Graphics::Gdi::SetEnhMetaFileBits(
+            bytes.len() as u32,
+            bytes.as_ptr(),
+        );
+        assert!(!hemf.is_null());
+        DeleteEnhMetaFile(hemf);
+    }
+}
+
+#[test]
+fn embedded_raster_records_alpha_blend_in_document_order() {
+    let document = Document {
+        width: 40.0,
+        height: 30.0,
+        background: Color::rgb(255, 255, 255),
+        items: vec![DocumentItem::Raster(crate::DocumentRaster {
+            source_hash: [3; 32],
+            frame: Rect::new(2.0, 3.0, 20.0, 10.0),
+            pixels: Arc::from([255, 0, 0, 128, 0, 0, 255, 255]),
+            pixel_size: [2, 1],
+            source_pixel_size: [2, 1],
+            crop: [0.0, 0.0, 1.0, 1.0],
+            fit: crate::RasterFit::Stretch,
+            quarter_turns: 0,
+            opacity: 0.5,
+            nearest: false,
+            clip: None,
+            visible: true,
+        })],
+    };
+    let bytes = export_document_emf(&document).expect("image EMF export");
+    let mut offset = 0usize;
+    let mut records = Vec::new();
+    while offset + 8 <= bytes.len() {
+        let kind = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        assert!(size >= 8 && offset + size <= bytes.len());
+        records.push(kind);
+        offset += size;
+    }
+    assert!(
+        records.contains(&114),
+        "EMR_ALPHABLEND must carry image pixels"
+    );
+}
+
+#[test]
+fn hidden_axis_text_is_absent_from_emf_while_drawing_records_remain() {
+    let mut fig = Figure::new(
+        "",
+        Axis::new("UNIQUE_X_TITLE", 0.0, 90_000.0),
+        Axis::new("UNIQUE_Y_TITLE", -90_000.0, 90_000.0),
+    );
+    fig.x.show_tick_labels = false;
+    fig.x.show_label = false;
+    fig.y.show_tick_labels = false;
+    fig.y.show_label = false;
+    let bytes = export_document_emf(&demo_document(&fig)).expect("export");
+    let contains_utf16 = |needle: &str| {
+        let encoded: Vec<u8> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        bytes.windows(encoded.len()).any(|window| window == encoded)
+    };
+    assert!(!contains_utf16("UNIQUE_X_TITLE"));
+    assert!(!contains_utf16("UNIQUE_Y_TITLE"));
+    assert!(!contains_utf16("×10"));
+    assert!(
+        bytes.len() > 88,
+        "EMF still contains axis and tick drawing records"
+    );
+}
+
+#[test]
+fn panel_label_visibility_controls_emf_text() {
+    let contains_utf16 = |bytes: &[u8], needle: &str| {
+        let encoded: Vec<u8> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        bytes.windows(encoded.len()).any(|window| window == encoded)
+    };
+    let label = "PANEL_LABEL_Ω";
+    let document = Document {
+        width: 100.0,
+        height: 80.0,
+        background: Color::rgb(255, 255, 255),
+        items: vec![DocumentItem::PanelLabel {
+            frame: Rect::new(10.0, 20.0, 50.0, 40.0),
+            text: DocumentText {
+                text: label.to_owned(),
+                position: [3.0, 4.0],
+                font_size: 9.0,
+            },
+            visible: true,
+        }],
+    };
+    let visible = export_document_emf(&document).expect("visible label export");
+    assert!(contains_utf16(&visible, label));
+
+    let hidden = Document {
+        items: vec![DocumentItem::PanelLabel {
+            frame: Rect::new(10.0, 20.0, 50.0, 40.0),
+            text: DocumentText {
+                text: label.to_owned(),
+                position: [3.0, 4.0],
+                font_size: 9.0,
+            },
+            visible: false,
+        }],
+        ..document
+    };
+    let hidden = export_document_emf(&hidden).expect("hidden label export");
+    assert!(!contains_utf16(&hidden, label));
+}
