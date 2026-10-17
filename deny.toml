@@ -20,6 +20,15 @@ ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is transitive and has no safe upgrade" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is transitive and has no safe upgrade" },
     { id = "RUSTSEC-2026-0249", reason = "smartstring is transitive through rhai; no safe upgrade is available" },
+    # Reviewed 2026-10-18: these informational maintenance advisories cover
+    # crates merged into zbus 6, rather than a reported vulnerability. The locked
+    # Linux accessibility stack (eframe/accesskit/atspi) still needs their old APIs;
+    # updating a leaf cannot migrate those callers. Keep accessibility enabled
+    # and remove these exceptions when that upstream stack moves to zbus 6.
+    # Only these advisory IDs are accepted; vulnerability checks stay enabled.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is transitive through Linux accessibility; migration to zbus 6 requires upstream API changes" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is transitive through Linux accessibility; migration to zbus 6 requires upstream API changes" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is transitive through Linux accessibility; migration to zbus 6 requires upstream API changes" },
     # Reviewed 2026-10-17: calamine 0.36.0 reads ZIP entries as streams;
     # rust_xlsxwriter 0.96.0 writes ZIPs and reads theme XML as a stream.
     # Neither calls ZipArchive::extract or ZipStreamReader::extract, the APIs

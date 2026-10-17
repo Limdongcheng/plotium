@@ -96,7 +96,15 @@ fn execute_inner(
         }
         CommandId::Export(format) => app.request_export(format),
         CommandId::CopyFigure => super::clipboard_figure::copy_figure_to_clipboard(app, ctx),
-        CommandId::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        #[cfg(target_os = "macos")]
+        CommandId::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        CommandId::Quit => {
+            #[cfg(target_os = "macos")]
+            super::native_lifecycle::show_window(ctx);
+            if app.session.ui.project_transition.is_none() {
+                app.request_project_transition(ProjectTransition::Quit);
+            }
+        }
         CommandId::Undo => app.undo(),
         CommandId::Redo => app.redo(),
         CommandId::SelectAll => select_all_in_scope(app),

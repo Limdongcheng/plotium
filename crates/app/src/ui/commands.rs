@@ -28,6 +28,8 @@ pub enum CommandId {
     NewProject,
     OpenProject,
     CloseProject,
+    #[cfg(target_os = "macos")]
+    CloseWindow,
     OpenFile,
     OpenFolder,
     ImportNmrSampling,

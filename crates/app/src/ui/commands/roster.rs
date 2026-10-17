@@ -15,6 +15,8 @@ pub(super) fn command_ids(recent_files: usize) -> Vec<CommandId> {
         CommandId::NewProject,
         CommandId::OpenProject,
         CommandId::CloseProject,
+        #[cfg(target_os = "macos")]
+        CommandId::CloseWindow,
         CommandId::OpenFile,
         CommandId::OpenFolder,
         CommandId::ImportNmrSampling,

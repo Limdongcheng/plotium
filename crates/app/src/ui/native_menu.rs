@@ -39,6 +39,7 @@ impl NativeItem {
 
 pub(crate) struct NativeMenu {
     _menu: Menu,
+    lifecycle: super::native_lifecycle::AppleEvents,
     receiver: Receiver<String>,
     events: HashMap<String, CommandId>,
     tracked: Vec<(CommandId, NativeItem)>,
@@ -68,6 +69,7 @@ impl NativeMenu {
         let menu = Menu::new();
         let mut native = Self {
             _menu: menu,
+            lifecycle: super::native_lifecycle::AppleEvents::new(ctx),
             receiver,
             events: HashMap::new(),
             tracked: Vec::new(),
@@ -117,14 +119,23 @@ impl NativeMenu {
         // applies: while a text field owns the keyboard, chords like Cmd+A or
         // Cmd+Z must not act on the canvas. The palette toggle stays exempt,
         // matching `handle_palette_shortcut`.
+        self.lifecycle.poll(app);
         let typing = ctx.egui_wants_keyboard_input();
         self.sync_recent(app);
         while let Ok(stable_id) = self.receiver.try_recv() {
             let Some(&id) = self.events.get(&stable_id) else {
                 continue;
             };
-            if typing && id != CommandId::CommandPalette {
+            if typing
+                && !matches!(
+                    id,
+                    CommandId::CommandPalette | CommandId::CloseWindow | CommandId::Quit
+                )
+            {
                 continue;
+            }
+            if id != CommandId::CloseWindow {
+                super::native_lifecycle::show_window(ctx);
             }
             commands::execute(id, app, clipboard, ctx);
         }
@@ -155,7 +166,7 @@ impl NativeMenu {
         menu.append(&PredefinedMenuItem::show_all(None))?;
         separator(menu)?;
         // A custom item intentionally replaces PredefinedMenuItem::quit: its
-        // Close command passes through Plotium's Save / Discard / Cancel guard.
+        // command passes through Plotium's Save / Discard / Cancel guard.
         self.append(app, menu, CommandId::Quit)
     }
 
@@ -333,6 +344,8 @@ fn key_code(key: egui::Key) -> Option<Code> {
         egui::Key::A => Code::KeyA,
         egui::Key::G => Code::KeyG,
         egui::Key::K => Code::KeyK,
+        egui::Key::Q => Code::KeyQ,
+        egui::Key::W => Code::KeyW,
         egui::Key::S => Code::KeyS,
         egui::Key::Y => Code::KeyY,
         egui::Key::Z => Code::KeyZ,

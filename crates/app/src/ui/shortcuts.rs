@@ -76,7 +76,12 @@ const fn tool_key(tool: Tool, key: egui::Key) -> CommandBinding {
 
 static BINDINGS: &[CommandBinding] = &[
     bound(commands::CommandId::NewProject, cmd(egui::Key::N)),
+    #[cfg(not(target_os = "macos"))]
     bound(commands::CommandId::CloseProject, cmd(egui::Key::W)),
+    #[cfg(target_os = "macos")]
+    bound(commands::CommandId::CloseWindow, cmd(egui::Key::W)),
+    #[cfg(target_os = "macos")]
+    bound(commands::CommandId::Quit, cmd(egui::Key::Q)),
     bound(commands::CommandId::SaveProject, cmd(egui::Key::S)),
     bound(commands::CommandId::Undo, cmd(egui::Key::Z)),
     CommandBinding {

@@ -52,6 +52,9 @@ libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda.workspace = true
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSObject", "NSAppleEventManager", "NSAppleEventDescriptor", "NSNotification", "NSString"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

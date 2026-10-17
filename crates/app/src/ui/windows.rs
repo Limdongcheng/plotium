@@ -9,5 +9,6 @@ use super::*;
 
 pub(super) use canvas_settings::{canvas_settings_layer, canvas_settings_window};
 pub(super) use panel_note_edit::panel_note_edit_window;
-pub(super) use project::{handle_close_request, quit_confirm_window, save_project_window};
+pub(crate) use project::handle_close_request;
+pub(super) use project::{quit_confirm_window, save_project_window};
 pub(super) use text_edit::text_edit_window;

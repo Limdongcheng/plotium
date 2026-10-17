@@ -51,6 +51,8 @@ pub(crate) fn menu_bar_spec() -> Vec<(&'static str, Vec<MenuEntry>)> {
                 Command(CommandId::NewProject),
                 Command(CommandId::OpenProject),
                 Command(CommandId::CloseProject),
+                #[cfg(target_os = "macos")]
+                Command(CommandId::CloseWindow),
                 Separator,
                 Command(CommandId::OpenFile),
                 Command(CommandId::OpenFolder),
