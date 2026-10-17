@@ -38,6 +38,10 @@ application and Window menus. The native traffic-light controls share the top
 row with the Ribbon task tabs and project name, leaving more height for the
 workspace.
 
+In macOS full screen, the task tabs move left into the space vacated by the
+hidden traffic lights. Move the pointer to the top of the screen to reveal the
+native window controls; leaving full screen restores the tabs' original spacing.
+
 **File** keeps an **Open Recent** submenu with the files, folders, and projects
 you opened or saved most recently; the same entries are listed on the welcome
 screen while no data is loaded. **Help** contains **User Manual**, which opens
