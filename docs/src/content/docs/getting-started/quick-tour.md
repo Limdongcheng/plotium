@@ -38,6 +38,10 @@ application and Window menus. The native traffic-light controls share the top
 row with the Ribbon task tabs and project name, leaving more height for the
 workspace.
 
+On macOS, drag the project name or an empty part of the top row to move the
+window. Double-click either area to maximize the window; double-click again to
+restore it. The project name is window chrome, so it does not select text.
+
 In macOS full screen, the task tabs move left into the space vacated by the
 hidden traffic lights. Move the pointer to the top of the screen to reveal the
 native window controls; leaving full screen restores the tabs' original spacing.

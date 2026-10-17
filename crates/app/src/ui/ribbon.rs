@@ -85,9 +85,7 @@ fn task_row(
         ui.id().with("macos_unified_titlebar_drag"),
         Sense::click_and_drag(),
     );
-    if drag.drag_started_by(PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
+    titlebar_interaction(&drag);
 
     let mut ui = ui.new_child(
         UiBuilder::new()
@@ -138,11 +136,11 @@ fn render_task_row_contents(
             [width, ui.spacing().interact_size.y],
             Label::new(RichText::new(title).color(ui.visuals().weak_text_color()))
                 .truncate()
+                // Window chrome must not enter egui's label-selection mode.
+                .selectable(false)
                 .sense(Sense::click_and_drag()),
         );
-        if title.drag_started_by(PointerButton::Primary) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
+        titlebar_interaction(&title);
     }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -160,6 +158,25 @@ fn render_task_row_contents(
             render_chrome_controls(app, clipboard, ui, compact_controls)
         });
     });
+}
+
+fn titlebar_interaction(response: &egui::Response) {
+    let ctx = &response.ctx;
+    if response.double_clicked_by(PointerButton::Primary) {
+        // Do not queue a windowed zoom that takes effect after leaving full screen.
+        let (fullscreen, maximized) = ctx.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.fullscreen.unwrap_or(false),
+                viewport.maximized.unwrap_or(false),
+            )
+        });
+        if !fullscreen {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+    } else if response.drag_started_by(PointerButton::Primary) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
 }
 
 fn task_tab_buttons(ui: &mut Ui, selected: WorkflowTab) -> [(WorkflowTab, egui::Response); 6] {
@@ -493,6 +510,10 @@ fn update_button(app: &mut PlotiumApp, ui: &mut Ui, compact: bool) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "ribbon_titlebar_tests.rs"]
+mod titlebar_tests;
 
 #[cfg(test)]
 mod tests {
