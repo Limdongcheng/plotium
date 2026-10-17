@@ -12,6 +12,8 @@ pub enum ProjectTransition {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectTransitionPhase {
+    /// A clean Quit must recheck after UI/compute polls and outstanding saves.
+    CheckUnsaved,
     NeedsConfirmation,
     Saving,
     Ready,
@@ -43,6 +45,8 @@ impl PlotiumApp {
     pub fn request_project_transition(&mut self, target: ProjectTransition) {
         let phase = if self.doc.dirty {
             ProjectTransitionPhase::NeedsConfirmation
+        } else if target == ProjectTransition::Quit {
+            ProjectTransitionPhase::CheckUnsaved
         } else {
             ProjectTransitionPhase::Ready
         };
@@ -115,6 +119,16 @@ mod tests {
         assert_eq!(
             app.session.ui.project_transition.unwrap().phase,
             ProjectTransitionPhase::Ready
+        );
+    }
+
+    #[test]
+    fn clean_quit_defers_unsaved_check_until_the_shell_finishes_polling() {
+        let mut app = PlotiumApp::new_with_settings(crate::settings::Settings::default());
+        app.request_project_transition(ProjectTransition::Quit);
+        assert_eq!(
+            app.session.ui.project_transition.unwrap().phase,
+            ProjectTransitionPhase::CheckUnsaved
         );
     }
 

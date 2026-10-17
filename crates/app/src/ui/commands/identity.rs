@@ -49,6 +49,8 @@ pub(super) fn command_identity(
         CommandId::NewProject => plain("New Project", Some(icon::FILE_PLUS)),
         CommandId::OpenProject => plain("Open Project…", Some(icon::FOLDER_OPEN)),
         CommandId::CloseProject => plain("Close Project", Some(icon::X)),
+        #[cfg(target_os = "macos")]
+        CommandId::CloseWindow => plain("Close Window", Some(icon::X)),
         CommandId::OpenFile => plain("Open File…", Some(icon::FILE)),
         CommandId::OpenFolder => plain("Open Folder…", Some(icon::FOLDER)),
         CommandId::ImportNmrSampling => plain("Import NMR with Sampling Table…", Some(icon::FILE)),
@@ -415,6 +417,8 @@ fn simple_stable_id(id: CommandId) -> &'static str {
         CommandId::NewProject => "file.new_project",
         CommandId::OpenProject => "file.open_project",
         CommandId::CloseProject => "file.close_project",
+        #[cfg(target_os = "macos")]
+        CommandId::CloseWindow => "file.close_window",
         CommandId::OpenFile => "file.open_file",
         CommandId::OpenFolder => "file.open_folder",
         CommandId::ImportNmrSampling => "file.import_nmr_sampling",

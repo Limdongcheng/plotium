@@ -187,3 +187,30 @@ fn escape_finishes_a_pending_wheel_property_gesture() {
     assert!(app.session.ui.wheel_property.is_none());
     assert_eq!(app.session.status, "Cancelled interaction.");
 }
+
+#[test]
+fn close_shortcut_matches_platform_window_semantics() {
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(
+            binding(commands::CommandId::CloseWindow)
+                .unwrap()
+                .primary
+                .key,
+            egui::Key::W
+        );
+        assert_eq!(
+            binding(commands::CommandId::Quit).unwrap().primary.key,
+            egui::Key::Q
+        );
+        assert!(binding(commands::CommandId::CloseProject).is_none());
+    }
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(
+        binding(commands::CommandId::CloseProject)
+            .unwrap()
+            .primary
+            .key,
+        egui::Key::W
+    );
+}

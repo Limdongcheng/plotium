@@ -4,7 +4,7 @@ description: Keyboard and mouse shortcuts.
 ---
 
 `Ctrl` means `Cmd` on macOS. Shortcuts are ignored while a text field has
-keyboard focus.
+keyboard focus, except for the native macOS Close Window and Quit commands.
 
 ## Tools
 
@@ -77,7 +77,8 @@ layer you want from the Object inspector.
 | Input | Action |
 | --- | --- |
 | `Ctrl` + `N` | Start a new project |
-| `Ctrl` + `W` | Close the current project |
+| `Ctrl` + `W` | Close the current window on macOS; close the current project on Windows / Linux |
+| `Cmd` + `Q` (macOS) | Quit Plotium, with a save prompt for unsaved changes |
 | `Ctrl` + `S` | Open project save options |
 | `Ctrl` + `Z` | Undo |
 | `Ctrl` + `Shift` + `Z` or `Ctrl` + `Y` | Redo |

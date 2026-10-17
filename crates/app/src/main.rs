@@ -7,6 +7,7 @@ mod fonts;
 mod graphics;
 mod observability;
 mod scale;
+mod shell;
 mod shot;
 mod typography;
 mod ui;
@@ -126,83 +127,6 @@ struct Shell {
     native_menu: ui::native_menu::NativeMenu,
 }
 
-impl eframe::App for Shell {
-    #[cfg(windows)]
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        ui::clipboard_native::restore_missing_paste_shortcut(raw_input);
-    }
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        observability::show_pending_crash_dialog();
-        self.scale.drive(&mut self.app, &ctx, frame);
-        let ribbon_chrome = ui::current_ribbon_chrome(&ctx, frame);
-        let recovery_blocked = self.pending_recovery.is_some();
-        #[cfg(target_os = "macos")]
-        if !recovery_blocked {
-            self.native_menu
-                .poll(&mut self.app, &mut self.clipboard_table_paste, &ctx);
-        }
-        if !recovery_blocked && let Some(driver) = &mut self.shot {
-            driver.drive(&mut self.app, &ctx);
-        }
-        self.show_recovery_prompt(&ctx);
-        self.app.poll_compute();
-        if self.app.session.updates.tick() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
-        } else if let Some(delay) = self.app.session.updates.next_check_delay() {
-            ctx.request_repaint_after(delay.max(std::time::Duration::from_millis(100)));
-        }
-        if let plotium_core::update::UpdateStatus::Installed { plan, .. } =
-            self.app.session.updates.status()
-        {
-            *PENDING_INSTALL.lock().unwrap() = Some(plan.clone());
-        }
-        let fitting = self.app.poll_line_fit() | self.app.poll_xps_fit();
-        let symmetry = self.app.poll_symmetry_audit();
-        let transforming = self.app.poll_table_transform();
-        ui::render(
-            &mut self.app,
-            &mut self.clipboard_table_paste,
-            &mut self.batch_workflow,
-            &mut self.last_window_title,
-            ui,
-            recovery_blocked,
-            ribbon_chrome,
-        );
-        // Apply save completion after every edit-producing poll. This makes the
-        // generation check below cover compute results that arrived this frame.
-        self.poll_manual_project_save(&ctx);
-        self.start_pending_project_save(&ctx);
-        self.drive_project_transition(&ctx);
-        if fitting {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        }
-        if symmetry {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        }
-        if transforming {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        }
-        if self.app.compute_busy() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(33));
-        }
-        if self.app.data_export_busy() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(33));
-        }
-        self.tick_recovery(&ctx);
-    }
-
-    #[cfg(windows)]
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.shutdown();
-    }
-
-    #[cfg(not(windows))]
-    fn on_exit(&mut self) {
-        self.shutdown();
-    }
-}
-
 impl Shell {
     fn shutdown(&mut self) {
         if let Some(job) = self.manual_save_job.take() {
@@ -313,6 +237,22 @@ impl Shell {
         let Some(mut transition) = self.app.session.ui.project_transition.clone() else {
             return;
         };
+        let phase = shell::phase_after_polls(
+            transition.phase,
+            self.app.doc.dirty,
+            self.manual_save_job.is_some() || self.recovery_job.is_some(),
+        );
+        if phase != transition.phase {
+            transition.phase = phase;
+            if let Some(pending) = self.app.session.ui.project_transition.as_mut() {
+                pending.phase = phase;
+            }
+            ctx.request_repaint();
+        }
+        if phase == ProjectTransitionPhase::CheckUnsaved {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        }
         if transition.phase == ProjectTransitionPhase::NeedsConfirmation
             && let Some(save) = self.manual_save_job.as_mut()
         {

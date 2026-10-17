@@ -51,6 +51,17 @@ pub(crate) fn toggle_present_mode(app: &mut PlotiumApp) {
 /// Drive the window's fullscreen state from `present_mode` on its rising/falling
 /// edge, so the viewport command is sent once per transition rather than per frame.
 pub(crate) fn sync_fullscreen(app: &mut PlotiumApp, ctx: &egui::Context) {
+    // Quit confirmation lives in the editing UI. Leave the slideshow before
+    // its early return can hide Save / Discard / Cancel.
+    if app
+        .session
+        .ui
+        .project_transition
+        .as_ref()
+        .is_some_and(|pending| pending.target == plotium_core::state::ProjectTransition::Quit)
+    {
+        app.session.present_mode = false;
+    }
     if app.session.present_mode && !app.session.present_fullscreen_on {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         app.session.present_fullscreen_on = true;
@@ -158,6 +169,28 @@ fn paint(app: &mut PlotiumApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quitting_a_dirty_slideshow_restores_the_confirmation_ui() {
+        let mut app = PlotiumApp::new_with_settings(Default::default());
+        app.mark_document_dirty();
+        app.session.present_mode = true;
+        app.session.present_fullscreen_on = true;
+        app.request_project_transition(plotium_core::state::ProjectTransition::Quit);
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(Default::default(), |ui| sync_fullscreen(&mut app, ui.ctx()));
+        assert!(!app.session.present_mode);
+        assert!(!app.session.present_fullscreen_on);
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Fullscreen(false))
+        );
+        assert_eq!(
+            app.session.ui.project_transition.unwrap().phase,
+            plotium_core::state::ProjectTransitionPhase::NeedsConfirmation
+        );
+    }
 
     #[test]
     fn present_nav_clamps_at_both_ends() {

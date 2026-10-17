@@ -3,7 +3,7 @@ title: 快捷键
 description: 键盘与鼠标快捷操作。
 ---
 
-`Ctrl` 在 macOS 上对应 `Cmd`。文本输入框持有键盘焦点时，快捷键不生效。
+`Ctrl` 在 macOS 上对应 `Cmd`。文本输入框持有键盘焦点时，快捷键不生效；macOS 原生的关闭窗口和退出命令除外。
 
 ## 工具
 
@@ -71,7 +71,8 @@ description: 键盘与鼠标快捷操作。
 | 操作 | 效果 |
 | --- | --- |
 | `Ctrl` + `N` | 新建项目 |
-| `Ctrl` + `W` | 关闭当前项目 |
+| `Ctrl` + `W` | macOS 上关闭当前窗口；Windows / Linux 上关闭当前项目 |
+| `Cmd` + `Q`（macOS） | 退出 Plotium，项目有未保存修改时先询问是否保存 |
 | `Ctrl` + `S` | 打开项目保存选项 |
 | `Ctrl` + `Z` | 撤销 |
 | `Ctrl` + `Shift` + `Z` 或 `Ctrl` + `Y` | 重做 |

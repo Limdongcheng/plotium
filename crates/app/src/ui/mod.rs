@@ -21,6 +21,8 @@ pub(crate) mod file_dialogs;
 pub(crate) mod file_drop;
 mod menus;
 #[cfg(target_os = "macos")]
+mod native_lifecycle;
+#[cfg(target_os = "macos")]
 pub(crate) mod native_menu;
 mod object_inspector;
 mod panel_chrome;
@@ -41,6 +43,8 @@ mod title_bar;
 pub(crate) mod tools;
 mod trace_alignment;
 mod trace_composer;
+#[cfg(any(target_os = "macos", test))]
+mod window_lifecycle;
 mod windows;
 mod workspace_geometry;
 
@@ -60,6 +64,7 @@ pub(crate) use ribbon_chrome::{
 pub(crate) use settings_dialog::apply_chrome_theme;
 use settings_dialog::{settings_window, sync_chrome_theme};
 use shortcuts::*;
+pub(crate) use windows::handle_close_request;
 use windows::*;
 use workspace_geometry::resolve as workspace_geometry;
 
@@ -87,6 +92,10 @@ pub fn render(
     file_dialogs::image_import::large_image_consent_window(app, &ctx);
     if let Some(payload) = app.poll_data_export() {
         copy_table_export(&ctx, payload);
+    }
+    #[cfg(not(target_os = "macos"))]
+    if app.session.present_mode {
+        handle_close_request(app, &ctx);
     }
     present::sync_fullscreen(app, &ctx);
     if app.session.present_mode {
@@ -214,7 +223,6 @@ pub fn render(
     batch_workflow.show(app, &ctx);
 
     file_drop::handle(app, &ctx);
-    handle_close_request(app, &ctx);
     #[cfg(not(target_os = "macos"))]
     title_bar::resize_zones(&ctx);
 
@@ -222,6 +230,8 @@ pub fn render(
     app.finish_pending_wheel_zoom(now, false);
     app.finish_pending_wheel_property(now, false);
     activity::observe(app);
+    #[cfg(not(target_os = "macos"))]
+    handle_close_request(app, &ctx);
     // Menus and drops can enqueue after this frame's poll. Schedule the first
     // worker poll even if the user stops moving the mouse immediately afterward.
     if app.session.data_imports.is_pending() {

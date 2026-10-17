@@ -75,14 +75,48 @@ pub(in crate::ui) fn save_project_window(app: &mut PlotiumApp, ctx: &egui::Conte
     }
 }
 
-/// Intercept a window-close request when the project has unsaved changes: veto the
-/// close and raise the confirm dialog. Once the user confirms (Save or Discard),
-/// `allow_close` lets the re-issued request through.
-pub(in crate::ui) fn handle_close_request(app: &mut PlotiumApp, ctx: &egui::Context) {
-    if !ctx.input(|i| i.viewport().close_requested()) {
+/// eframe normally exits when its root window closes. On macOS, retain the
+/// workspace in memory and remove only the window from the screen; an explicit
+/// Quit (or update restart) still uses the shared unsaved-changes guard.
+pub(crate) fn handle_close_request(app: &mut PlotiumApp, ctx: &egui::Context) {
+    #[cfg(target_os = "macos")]
+    if app.session.allow_close {
+        crate::ui::window_lifecycle::cancel_close(ctx);
+    } else {
+        crate::ui::window_lifecycle::finish_close(ctx);
+    }
+    if !ctx.input(|i| i.viewport().close_requested()) || app.session.allow_close {
         return;
     }
-    if app.doc.dirty && !app.session.allow_close {
+    handle_root_close(
+        app,
+        ctx,
+        cfg!(target_os = "macos"),
+        crate::RELAUNCH_REQUESTED.load(std::sync::atomic::Ordering::Relaxed),
+    );
+}
+
+fn handle_root_close(app: &mut PlotiumApp, ctx: &egui::Context, macos: bool, restarting: bool) {
+    if macos {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        if !restarting {
+            #[cfg(any(target_os = "macos", test))]
+            crate::ui::window_lifecycle::close_window(app, ctx);
+        } else {
+            // Restart is an explicit Quit, not an approved close. The logic
+            // hook runs before compute/UI polls, so even a clean project must
+            // pass through CheckUnsaved before the event loop can exit.
+            #[cfg(any(target_os = "macos", test))]
+            crate::ui::window_lifecycle::cancel_close(ctx);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            if app.session.ui.project_transition.is_none() {
+                app.request_project_transition(plotium_core::state::ProjectTransition::Quit);
+            }
+            ctx.request_repaint();
+        }
+        return;
+    }
+    if app.doc.dirty {
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         if app.session.ui.project_transition.is_none() {
             app.request_project_transition(plotium_core::state::ProjectTransition::Quit);
@@ -98,7 +132,10 @@ pub(in crate::ui) fn quit_confirm_window(app: &mut PlotiumApp, ctx: &egui::Conte
     let Some(transition) = app.session.ui.project_transition.clone() else {
         return;
     };
-    if transition.phase == ProjectTransitionPhase::Ready {
+    if matches!(
+        transition.phase,
+        ProjectTransitionPhase::Ready | ProjectTransitionPhase::CheckUnsaved
+    ) {
         return;
     }
     let saving = transition.phase == ProjectTransitionPhase::Saving;
@@ -192,3 +229,7 @@ fn project_transition_dialog(
         crate::cancel_relaunch();
     }
 }
+
+#[cfg(test)]
+#[path = "project_tests.rs"]
+mod tests;
