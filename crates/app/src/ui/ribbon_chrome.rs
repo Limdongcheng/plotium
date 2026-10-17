@@ -11,8 +11,13 @@ pub(crate) struct RibbonChrome {
 }
 
 impl RibbonChrome {
-    #[cfg(target_os = "macos")]
-    pub(crate) fn macos(traffic_lights_size: Vec2) -> Self {
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn macos(mut traffic_lights_size: Vec2, fullscreen: bool) -> Self {
+        // AppKit hides the buttons in full screen, but still reports their
+        // windowed frames. Reclaim their width without changing the row height.
+        if fullscreen {
+            traffic_lights_size.x = 0.0;
+        }
         Self {
             macos_traffic_lights: Some(traffic_lights_size),
         }
@@ -23,15 +28,14 @@ impl RibbonChrome {
 pub(crate) fn current(ctx: &egui::Context, frame: &eframe::Frame) -> RibbonChrome {
     use raw_window_handle::HasWindowHandle;
 
-    let Some(size) = frame
+    let size = frame
         .window_handle()
         .ok()
         .and_then(|handle| eframe::WindowChromeMetrics::from_window_handle(&handle.as_raw()))
         .map(|metrics| metrics.traffic_lights_size / ctx.zoom_factor())
-    else {
-        return RibbonChrome::macos(egui::vec2(76.0, 28.0));
-    };
-    RibbonChrome::macos(size)
+        .unwrap_or(egui::vec2(76.0, 28.0));
+    let fullscreen = ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
+    RibbonChrome::macos(size, fullscreen)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -231,6 +235,18 @@ mod tests {
 
     fn app() -> PlotiumApp {
         PlotiumApp::new_with_settings(plotium_core::settings::Settings::default())
+    }
+
+    #[test]
+    fn macos_fullscreen_reclaims_button_width_and_preserves_row_height() {
+        let size = egui::vec2(76.0, 28.0);
+        for fullscreen in [false, true, false] {
+            let chrome = RibbonChrome::macos(size, fullscreen);
+            assert_eq!(
+                chrome.macos_traffic_lights,
+                Some(egui::vec2(if fullscreen { 0.0 } else { size.x }, size.y))
+            );
+        }
     }
 
     #[test]
