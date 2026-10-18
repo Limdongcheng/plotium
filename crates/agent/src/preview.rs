@@ -29,6 +29,15 @@ impl Connection {
         {
             return self.dispatch_import(app, request, blocked);
         }
+        if request.name == "plotium_plan"
+            && request
+                .arguments
+                .get("tool_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("data.transform")
+        {
+            return self.dispatch_transform(app, request, blocked);
+        }
         if request.name != "plotium_render_preview" {
             let result = self.session.call_when_available(
                 app,

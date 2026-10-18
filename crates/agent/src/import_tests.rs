@@ -205,7 +205,7 @@ fn schema_discovery_permissions_and_unexposed_core_tools_are_precise() {
         caps["limits"]["table_import"]["preflight_response_bytes"],
         256 * 1024
     );
-    for tool in ["data.transform", "figure.export", "processing.apply_scheme"] {
+    for tool in ["figure.export", "processing.apply_scheme"] {
         assert_eq!(
             s.call(
                 &mut app,

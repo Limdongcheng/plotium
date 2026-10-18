@@ -337,6 +337,11 @@ pub(super) fn execute_transform(
     app: &mut PlotiumApp,
     plan: &ToolPlan,
 ) -> Result<ToolResult, AutomationError> {
+    if is_table_transform(&plan.request.parameters) {
+        let prepared = TableTransformSnapshot::capture(app, &plan.request)?
+            .prepare(&std::sync::atomic::AtomicBool::new(false))?;
+        return prepared.commit(app, plan);
+    }
     let params: TransformParams = parse(&plan.request.tool_id, plan.request.parameters.clone())?;
     if params.name.trim().is_empty() {
         return Err(AutomationError::InvalidParameters {

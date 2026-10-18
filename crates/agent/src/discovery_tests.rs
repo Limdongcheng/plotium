@@ -185,7 +185,6 @@ fn five_static_definitions_and_connection_gate_are_the_same_supported_subset() {
     let revision = app.doc.automation_revision;
     for operation in [
         "data.import",
-        "data.transform",
         "render.preview",
         "figure.export",
         "document.inspect",

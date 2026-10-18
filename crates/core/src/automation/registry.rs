@@ -68,6 +68,7 @@ pub(super) fn validate_parameters(
             parse::<TableImportParams>(tool, value)?.validate()
         }
         "data.import" => parse::<ImportParams>(tool, value).map(drop),
+        "data.transform" if is_table_transform(&value) => parse_table_transform(value).map(drop),
         "data.transform" => parse::<TransformParams>(tool, value).map(drop),
         "figure.export" => parse::<ExportParams>(tool, value).map(drop),
         "properties.inspect" | "properties.reset" => {
@@ -209,7 +210,31 @@ impl V1Schema for TableReadRowsParams {
         table_read_schema(true)
     }
 }
-schema!(TransformParams, ["plan" => "object", "name" => "string"], ["memory_limit_bytes" => "integer"]);
+impl V1Schema for TransformParams {
+    fn schema() -> serde_json::Value {
+        let legacy = object_schema(
+            &[("plan", "object"), ("name", "string")],
+            &[("memory_limit_bytes", "integer")],
+        );
+        let table = table_transform_schema();
+        let mut combined = legacy.clone();
+        combined["properties"]
+            .as_object_mut()
+            .expect("local properties")
+            .extend(
+                table["properties"]
+                    .as_object()
+                    .expect("local properties")
+                    .clone(),
+            );
+        combined["properties"]["plan"] = legacy["properties"]["plan"].clone();
+        combined["properties"]["memory_limit_bytes"] =
+            legacy["properties"]["memory_limit_bytes"].clone();
+        combined["$defs"] = table["$defs"].clone();
+        combined["oneOf"] = serde_json::json!([legacy, table]);
+        combined
+    }
+}
 schema!(ExportParams, ["directory" => "string", "format" => "string"], ["dpi" => "integer", "overwrite" => "boolean"]);
 schema!(super::properties::PropertyKeyParams, ["key" => "string"], []);
 // `value` has no single JSON type: which one is admissible is declared by the

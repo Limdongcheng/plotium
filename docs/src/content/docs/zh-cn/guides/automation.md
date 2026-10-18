@@ -205,13 +205,13 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 连接默认使用 **Read and modify**（读取和修改），agent 连接后即可执行支持的
 修改，并可通过 Plotium 的 **Undo** 与 **Redo** 撤销和重做。
 在 **Access** 中选择 **Read only**（只读）会立即阻止后续修改，包括待执行计划；
-表格查询及既有编辑预检仍可用；导入、原生曲线绑定及创建预检要求读取和修改权限。访问权限适用于所有持有该连接密钥的客户端，停止连接后
+表格查询及既有编辑预检仍可用；导入、原生曲线绑定／创建及处理预检要求读取和修改权限。访问权限适用于所有持有该连接密钥的客户端，停止连接后
 失效；重新开启连接时恢复默认的 **Read and modify**。
 
 实际 Agent 项目读取和执行均保存运行记录，使项目进入未保存状态；握手、工具
 发现及静态属性目录查询不生成运行记录。
 
-连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生单图创建、显式数值曲线绑定和
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生单图创建、显式数值曲线绑定、受支持的表格处理和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 |
@@ -222,7 +222,7 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 | `document.figure.typography.tick_pt` | `document` |
 | `document.figure.typography.label_pt` | `document` |
 
-此接口暂不支持处理参数、应用偏好、其他格式导入、计算、导出、内置聊天及
+此接口暂不支持处理参数、应用偏好、其他格式导入、其他计算、导出、内置聊天及
 stdio 连接。
 
 ### 不依赖名称发现结构
@@ -232,8 +232,8 @@ stdio 连接。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
 这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
-`data.import` 模式、`plot.create` 及 `plot.series.bind`／`plot.series.materialize_default`。
-只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建预检和所有修改执行。
+`data.import`／`data.transform` 模式、`plot.create` 及 `plot.series.bind`／`plot.series.materialize_default`。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／处理预检和所有修改执行。
 
 使用返回的 revision 列举文档画布：
 
@@ -371,6 +371,110 @@ offset 等于总量时返回空的结束页，大于总量时失败。非法 lim
 每次读取都检查两个 revision。人工编辑、Undo/Redo 会使旧文档 revision 失效，
 须重新读状态并重启分页，不能混读。无效 ID 不回退当前选择。只读连接可查询
 已有表格，但不可导入。预算和导入权限条件可从 `connection_capabilities` 发现。
+
+### 派生表格而不修改源数据
+
+可以让 Agent：“计算 `signal_x2 = y_left * 2`，排除 `x_left` 等于零的行，按 X
+降序排列，再把结果绑定到这条已有曲线。”处理操作只创建一张原生表格，不创建图。
+重绑使用[现有曲线绑定操作](#精确重绑已有曲线不影响另一张图)。
+
+1. 读取 `plotium_get_state`，再用 DatasetId 和表 revision 调用
+   `plotium_table_columns`。复制实际 ColumnId、`table_id`、`table_revision`
+   和 `snapshot_fingerprint`；名称和 `source_column_id` 不能作为身份。
+2. 从 `connection_capabilities.operation_constraints["data.transform"].schema`
+   发现原生计划格式。`ids` 恰好指定一个 DatasetId，模式为 `table_data_only`。
+   叶节点必须固定该数据集的当前快照；为 `operation_id` 和每个计算列的 `id`
+   提供新的 UUID。
+3. 调用 `plotium_plan`，检查 `transform.status: "prepared"` 及其 `output`，再将
+   返回的 `plan_id` 交给 `plotium_execute`。准备完成不代表已插入数据。成功执行返回
+   `value.status: "succeeded"`、`value.output` 和一个 `produced` 数据集；提交保留
+   准备阶段返回的输出身份。
+4. 用 `plotium_table_read_rows` 读取完整结果，再将实际 DatasetId、FieldId、TableId、
+   revision 和 X/Y ColumnId 绑定到已有曲线，用 `plotium_render_preview` 检查原生图像。若要新建图，
+   则将相同输出身份交给 [`plot.create`](#从已导入表格创建原生单图)，再预览返回的画布。
+   数据处理与建图仍是可分别撤销的两个操作。
+
+以下完整原生计划追加一个 Float64 列。将占位符替换为发现的身份或新 UUID。
+示例以 `unit: null` 明确表示未知单位；若 `y_left` 有明确单位，此处乘以无量纲常数，
+应将源列的**整个 UnitSpec**复制到输出列。
+
+```json
+{
+  "expected_revision": 7,
+  "tool_id": "data.transform",
+  "ids": ["DATASET_UUID"],
+  "parameters": {
+    "mode": "table_data_only",
+    "name": "Scaled signal",
+    "memory_limit_bytes": 16777216,
+    "plan": {
+      "version": 1,
+      "operation_id": "NEW_OPERATION_UUID",
+      "root": {
+        "op": "computed_column",
+        "input": {
+          "op": "snapshot_read",
+          "table": "TABLE_UUID",
+          "revision": "TABLE_REVISION_UUID",
+          "fingerprint": "SNAPSHOT_FINGERPRINT"
+        },
+        "column": {
+          "id": "NEW_COLUMN_UUID", "name": "signal_x2",
+          "logical_type": {"kind": "float64"}, "nullable": true, "unit": null
+        },
+        "expression": {
+          "expr": "call", "function": "multiply.v1",
+          "args": [
+            {"expr": "cast", "input": {"expr": "column", "column": "Y_COLUMN_UUID"},
+             "target": {"kind": "float64"}, "failure": "error"},
+            {"expr": "literal", "value": {"type": "float64",
+              "value": {"kind": "finite", "value": 2.0}}}
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+支持的关系节点只有 `snapshot_read`、`project`（有序 ColumnId）、`filter`（Boolean
+谓词）、`stable_sort`（按优先级排列的键，含 `column`、
+`direction: ascending|descending` 和 `nulls: first|last`），以及 `computed_column`
+（明确列 schema 和表达式）。将已有节点放入后一个节点的 `input` 即可组合。完成上述
+任务时，先用 `not.v1(eq.v1(column(X_COLUMN_UUID), literal(int64, 0)))` 包装计算节点
+进行筛选，再按 X 降序，最后投影 X、Y 和新 ColumnId；精确 JSON 形式由 schema 提供。
+
+表达式使用 `column`、`literal`、`cast` 或带版本的 `call`。可用函数是 `is_null.v1`、
+`is_finite.v1`、`eq.v1`、`not.v1`、`and.v1`、`or.v1`、`add.v1`、`subtract.v1`、
+`multiply.v1` 和 `divide.v1`，不接受任意函数、SQL 或脚本。算术要求 Float64 操作数，
+类型转换必须明确指定；`failure: error` 拒绝整次处理，`null` 将转换失败值置为缺失。
+原生 Int64 转 Float64 可能损失精度。计算列输出支持 Boolean、Int64、Float64 和 Utf8。
+单位由调用方明确声明，算术不会推导单位或自动换算。
+
+筛选只保留 true，false 和 null 都被排除。排序保留 RowId，同键按 RowId 决胜，null
+位置不受升降序影响；非 null 浮点值按 `-Inf < finite < +Inf < NaN` 排列。投影列保留
+原有 ID、类型和单位，计算列保留配方中的新 ID。源表数值、表格默认绑定、画布和已有
+人工样式不变。
+
+输出元数据包含固定的原生配方、backend、输入 revision／fingerprint、列 lineage
+和行映射契约。稍后可用 `plotium_table_columns` 的 `include_provenance: true`
+读取；在 `plotium_table_read_rows` 中加同一参数，则每行返回 `sources`：已记录的源
+DatasetId、TableId、revision、fingerprint、原始 RowId 和从零开始的 `input_position`。
+它解码本页对应的原生存储映射，不跟随源表最新 revision。导入行没有派生来源；其他
+关系计划的来源形态在请求行来源分页时明确拒绝，不带该参数的普通读取保持既有行为。
+
+准备工作不阻塞桌面线程。规划和执行均需 **Read and modify**；后台准备完成及实际
+提交前都会重新检查权限、文档 revision 和源快照。执行提交一次即消耗 plan，即使失败
+也不能重放。取消、停止连接、切换项目或输入过期会丢弃未提交结果；已经开始的原子
+提交使用普通 Undo 撤销。一次成功处理对应一次 Undo，Redo 恢复相同表和列身份。
+
+每个连接同时最多一个处理预检。参数最多 64 KiB、64 个关系／表达式节点、深度 16
+（JSON 嵌套最多 48 层）。内存预算默认和上限均为 512 MiB，含义是 reference 执行器
+**求值后检查的物化结果估算**，不是进程峰值内存限制。最多保留四个待提交结果，共享
+512 MiB 预留预算，每项按请求声明的预算计费。完整响应最多 256 KiB；准备结果摘要最多 128 KiB，为请求和计划外层预留空间。限制也可从
+`connection_capabilities.limits.table_transform` 发现。预算失败返回
+`transform_budget_exceeded`，取消返回 `request_cancelled`，均不留下派生表或成功执行
+结果。修正输入或预算后重新规划。刷新和源数据补丁不由本接口开放。
 
 ### 精确重绑已有曲线，不影响另一张图
 

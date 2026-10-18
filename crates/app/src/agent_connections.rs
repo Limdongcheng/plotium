@@ -38,6 +38,11 @@ impl AgentConnections {
             app.session.status = format!("Agent import failed ({}): {}", error.code, error.message);
             self.error = Some(app.session.status.clone());
         }
+        if let Err(error) = connection.poll_transform(app, blocked) {
+            app.session.status =
+                format!("Agent transform failed ({}): {}", error.code, error.message);
+            self.error = Some(app.session.status.clone());
+        }
         // Bound work per frame so a connected client cannot starve rendering.
         for _ in 0..8 {
             let Some(request) = connection.next_request() else {
@@ -53,7 +58,7 @@ impl AgentConnections {
                         .arguments
                         .get("tool_id")
                         .and_then(serde_json::Value::as_str)
-                        == Some("data.import"))
+                        .is_some_and(|id| matches!(id, "data.import" | "data.transform")))
             {
                 connection.dispatch_request(app, request, blocked)
             } else {
@@ -133,7 +138,7 @@ impl AgentConnections {
         }
         ui.add_space(8.0);
         ui.label("Agent project reads save run records and mark the project as unsaved.");
-        ui.label("A connected agent can read table values and import explicitly named CSV/TSV files. Import requires Read and modify; files are never changed.");
+        ui.label("A connected agent can read table values, import explicitly named CSV/TSV files and derive tables with supported plans. Import and transform require Read and modify; source files and values are never changed.");
         if !self.recent.is_empty() {
             ui.label(format!("Recent operation: {}", self.recent));
         }

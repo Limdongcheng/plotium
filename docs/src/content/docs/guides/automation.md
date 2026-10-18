@@ -232,8 +232,9 @@ server's own origin; cross-origin access is unavailable.
 Connections start with **Read and modify** access, so agents can apply supported
 edits immediately after connecting. Changes use Plotium's normal **Undo** and
 **Redo**. Choose **Read only** under **Access** to prevent further edits, including
-pending plans. Table queries and existing edit preflight remain available; import
-and native curve binding/creation preflight require Read and modify. The selected access applies
+pending plans. Table queries and existing edit preflight remain available; import,
+native curve binding/creation and transform preflight require Read and modify.
+The selected access applies
 to every client holding that connection token and lasts until the connection is
 stopped. A new connection starts with **Read and modify** again.
 
@@ -241,7 +242,7 @@ Real Agent project reads and executions save run records and mark the project as
 unsaved; handshakes, tool listing and the static property catalog do not.
 
 The connection supports CSV/TSV data-only import, native table queries, canvas previews,
-document structure, native single-plot creation, explicit numeric curve bindings and resource queries, renaming datasets,
+document structure, native single-plot creation, explicit numeric curve bindings, supported table transforms and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target |
@@ -252,7 +253,7 @@ canvases and canvas objects, and these display properties only:
 | `document.figure.typography.tick_pt` | `document` |
 | `document.figure.typography.label_pt` | `document` |
 
-Processing parameters, preferences, other import formats, computation, exports, built-in chat
+Processing parameters, preferences, other import formats, other computation, exports, built-in chat
 and stdio connections are outside this interface.
 
 ### Discover structure without relying on names
@@ -264,8 +265,10 @@ also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
 does not make that operation callable through this connection. Only
 `resource.rename`, `properties.set`, `properties.reset` and the restricted
-`data.import` mode, `plot.create` and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
-and existing property preflight, but refuses import/binding/creation preflight and all edit execution.
+`data.import` / `data.transform` modes, `plot.create` and `plot.series.bind` /
+`plot.series.materialize_default` below can be planned here. Read-only access allows
+table reads and existing property preflight, but refuses import/binding/creation/transform
+preflight and all edit execution.
 
 Use the returned revision to list the document's canvases:
 
@@ -430,6 +433,132 @@ invalidate old document revisions: read state and restart rather than mixing
 pages. Invalid IDs never use the current selection. Read-only connections can
 query existing tables but cannot import them. Limits and the import permission
 condition appear in `connection_capabilities`.
+
+### Derive a table without changing its source
+
+Ask the agent: “Calculate `signal_x2 = y_left * 2`, exclude rows whose
+`x_left` equals zero, sort X descending, then bind the result to this existing
+curve.” Table processing creates one native table, not a plot. Rebinding uses
+[the existing curve-binding operation](#rebind-an-existing-curve-without-changing-another-plot).
+
+1. Read `plotium_get_state`, then `plotium_table_columns` with the DatasetId
+   and table revision. Copy the actual ColumnIds, `table_id`, `table_revision`
+   and `snapshot_fingerprint`; names and `source_column_id` are not identities.
+2. Discover the native plan schema in
+   `connection_capabilities.operation_constraints["data.transform"].schema`.
+   Supply one DatasetId in `ids` and `mode: "table_data_only"`. The leaf must
+   pin exactly that dataset's current snapshot. Supply fresh UUIDs for
+   `operation_id` and each computed column's `id`.
+3. Call `plotium_plan`, inspect `transform.status: "prepared"` and its
+   `output`, then submit the returned `plan_id` with `plotium_execute`.
+   Preparation does not insert data. A successful execution returns
+   `value.status: "succeeded"`, `value.output` and one `produced` dataset.
+   The prepared output identity is retained when committed.
+4. Read the complete output with `plotium_table_read_rows`. Bind its actual
+   DatasetId, FieldId, TableId, revision and X/Y ColumnIds to an existing curve;
+   use `plotium_render_preview` to inspect the native result. To create a new plot,
+   pass the same output identities to [`plot.create`](#create-a-native-single-plot-from-an-imported-table)
+   instead, then preview the returned canvas. Processing and plot creation remain
+   separate, individually undoable operations.
+
+This complete native plan appends a Float64 column. Replace every placeholder
+with a discovered identity or a fresh UUID. This example declares unknown units
+with `unit: null`; when `y_left` has an explicit unit, copy its **whole UnitSpec**
+to the output column for this dimensionless multiplication.
+
+```json
+{
+  "expected_revision": 7,
+  "tool_id": "data.transform",
+  "ids": ["DATASET_UUID"],
+  "parameters": {
+    "mode": "table_data_only",
+    "name": "Scaled signal",
+    "memory_limit_bytes": 16777216,
+    "plan": {
+      "version": 1,
+      "operation_id": "NEW_OPERATION_UUID",
+      "root": {
+        "op": "computed_column",
+        "input": {
+          "op": "snapshot_read",
+          "table": "TABLE_UUID",
+          "revision": "TABLE_REVISION_UUID",
+          "fingerprint": "SNAPSHOT_FINGERPRINT"
+        },
+        "column": {
+          "id": "NEW_COLUMN_UUID", "name": "signal_x2",
+          "logical_type": {"kind": "float64"}, "nullable": true, "unit": null
+        },
+        "expression": {
+          "expr": "call", "function": "multiply.v1",
+          "args": [
+            {"expr": "cast", "input": {"expr": "column", "column": "Y_COLUMN_UUID"},
+             "target": {"kind": "float64"}, "failure": "error"},
+            {"expr": "literal", "value": {"type": "float64",
+              "value": {"kind": "finite", "value": 2.0}}}
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Supported relation nodes are `snapshot_read`, `project` (ordered ColumnIds),
+`filter` (Boolean predicate), `stable_sort` (ordered keys with `column`,
+`direction: ascending|descending`, `nulls: first|last`) and `computed_column`
+(explicit column schema and expression). Wrap an earlier node in `input` to
+compose them. For the task above, wrap the computed node in a filter using
+`not.v1(eq.v1(column(X_COLUMN_UUID), literal(int64, 0)))`, then sort X descending,
+then project X, Y and the new ColumnId. The schema defines the exact JSON forms.
+
+Expressions use `column`, `literal`, `cast` or versioned `call`. Available
+functions are `is_null.v1`, `is_finite.v1`, `eq.v1`, `not.v1`, `and.v1`, `or.v1`,
+`add.v1`, `subtract.v1`, `multiply.v1` and `divide.v1`; no arbitrary function,
+SQL or script is accepted. Arithmetic requires Float64 operands. Casts are
+explicit and may fail; `failure: error` rejects the transform, while `null`
+produces a missing value. Native Int64-to-Float64 casts can lose precision.
+Computed outputs support Boolean, Int64, Float64 and Utf8. Units are explicitly
+declared, not inferred or converted by arithmetic.
+
+Filter keeps only true predicates; false and null are excluded. Sorting preserves
+RowIds, resolves equal keys by RowId and places nulls independently of direction.
+Non-null float order is `-Inf < finite < +Inf < NaN`. Projected columns retain
+their IDs, types and units; computed columns retain the new IDs in the recipe.
+Source values, table defaults, canvases and existing styles are unchanged.
+
+Output metadata includes the frozen native recipe, backend, input revisions and
+fingerprints, column lineage and row-mapping contract. To inspect it later, call
+`plotium_table_columns` with `include_provenance: true`. The same flag on
+`plotium_table_read_rows` returns per-row `sources`: source DatasetId (when
+recorded), TableId, revision, fingerprint, original RowId and zero-based
+`input_position`. This decodes the stored native mapping for the returned page;
+it does not follow the latest source revision. Imported rows have no derived
+sources. Other relational lineage shapes are explicitly rejected for row-source
+paging; ordinary reads without the flag retain their existing behavior.
+
+Preparation runs off the desktop thread. Planning and execution require **Read
+and modify**. Permission, document revision and source snapshot are rechecked
+when preparation finishes and immediately before commit. Each execution consumes
+the plan, including a failed submission. Cancellation, stopping the connection,
+project transitions and stale inputs discard uncommitted results. An already
+started atomic commit is undone with normal Undo. One successful transform is
+one Undo step; Redo restores the same table and column identities.
+
+There is one transform preflight in flight per connection. Parameters are limited
+to 64 KiB, 64 relation/expression nodes and depth 16 (JSON nesting at most 48).
+The memory budget defaults to and is capped at 512 MiB; it is the reference
+executor's **materialized-result estimate**, checked after evaluation, not a
+peak-process-memory limit. At most four prepared transforms share a 512 MiB
+reservation budget, charged at each request's declared budget. Complete
+responses are limited to 256 KiB; the prepared output summary is limited to
+128 KiB, leaving room for the request and plan envelope. Limits are discoverable in
+`connection_capabilities.limits.table_transform`. Budget failure returns
+`transform_budget_exceeded`; cancellation returns `request_cancelled`. Neither
+leaves a derived table or a successful execution result. Plan again after fixing
+the input or budget. Refresh and source-data patching are separate operations
+and are not exposed by this interface.
 
 ### Rebind an existing curve without changing another plot
 

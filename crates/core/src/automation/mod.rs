@@ -3,9 +3,12 @@
 //! select and invoke registered tools, but cannot construct document actions.
 
 mod table_import;
+mod table_provenance;
 mod table_read;
+mod table_transform;
 pub use table_import::*;
 pub use table_read::*;
+pub use table_transform::*;
 mod curve_bindings;
 mod plot_creation;
 pub use plot_creation::*;

@@ -5,6 +5,7 @@ mod imports;
 mod preview;
 mod protocol;
 mod session;
+mod transforms;
 
 use axum::{
     Router,
@@ -50,6 +51,7 @@ pub struct Connection {
     pub session: Session,
     preview: Option<preview::PreviewFlight>,
     import: Option<imports::ImportFlight>,
+    transform: Option<transforms::TransformFlight>,
 }
 impl Connection {
     pub fn start(wake: impl Fn() + Send + Sync + 'static) -> std::io::Result<Self> {
@@ -139,6 +141,7 @@ impl Connection {
             session,
             preview: None,
             import: None,
+            transform: None,
         })
     }
     pub fn connection_info(&self) -> String {
@@ -173,6 +176,9 @@ impl Connection {
         }
         self.preview = None;
         self.import = None;
+        if let Some(flight) = self.transform.take() {
+            flight.cancel.store(true, Ordering::Relaxed);
+        }
         self.session = Session::default();
         self.token.clear();
     }

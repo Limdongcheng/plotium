@@ -530,6 +530,10 @@ pub enum AutomationError {
     InvalidWorkflow(String),
     #[error("document response exceeds the 256 KiB budget; query a smaller target or page")]
     ResponseTooLarge,
+    #[error("table transform cancelled")]
+    TableTransformCancelled,
+    #[error("table transform budget exceeded: {0}")]
+    TableTransformBudget(String),
     #[error("preview request cancelled")]
     PreviewCancelled,
     #[error("preview budget exceeded: {0}")]
