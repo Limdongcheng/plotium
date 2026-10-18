@@ -51,6 +51,7 @@ pub(super) fn validate_parameters(
         "project.get_blueprint" | "resources.inspect" | "render.preview" => {
             parse::<EmptyParams>(tool, value).map(drop)
         }
+        "document.inspect" => parse::<DocumentInspectParams>(tool, value).map(drop),
         "resources.search" => parse::<SearchParams>(tool, value).map(drop),
         "data.preview" => parse::<PreviewParams>(tool, value).map(drop),
         "results.compare" => parse::<CompareParams>(tool, value).map(drop),
@@ -205,8 +206,24 @@ macro_rules! tool {
     };
 }
 
+impl V1Schema for DocumentInspectParams {
+    fn schema() -> serde_json::Value {
+        document_inspect_schema()
+    }
+}
+
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!(
+            "document.inspect",
+            "Inspect document structure",
+            "Read bounded structure and source bindings for an exact target",
+            DocumentInspectParams,
+            [],
+            [],
+            EffectLevel::ReadOnly,
+            true
+        ),
         tool!(
             "project.get_blueprint",
             "Get project blueprint",

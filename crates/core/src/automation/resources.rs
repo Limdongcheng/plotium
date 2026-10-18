@@ -709,7 +709,7 @@ fn top_ref(id: impl ToString, kind: &str) -> ResourceRef {
     }
 }
 
-fn child_ref(parent: impl ToString, local: &str, kind: &str) -> ResourceRef {
+pub(super) fn child_ref(parent: impl ToString, local: &str, kind: &str) -> ResourceRef {
     let parent = parent.to_string();
     ResourceRef {
         id: format!("{parent}/{local}"),

@@ -38,6 +38,7 @@ impl From<AutomationError> for Failure {
     fn from(error: AutomationError) -> Self {
         let code = match error {
             AutomationError::StaleRevision { .. } => "stale_revision",
+            AutomationError::ResponseTooLarge => "response_too_large",
             AutomationError::InsufficientAuthority { .. } => "permission_denied",
             AutomationError::UnknownTool(_) | AutomationError::ToolVersion { .. } => {
                 "unsupported_operation"
@@ -142,9 +143,7 @@ fn request(
     }
 }
 pub fn property_catalog() -> Value {
-    json!({"properties": PROPERTIES.iter().filter_map(|id| properties::definition(*id)).map(|d|
-        json!({"id": d.id.as_str(), "label": d.canonical_label, "scope": format!("{:?}", d.scope_kind)})
-    ).collect::<Vec<_>>()})
+    json!({"properties": PROPERTIES.iter().filter_map(|id| property_definition_description(*id)).collect::<Vec<_>>()})
 }
 impl Session {
     pub fn call(
@@ -216,15 +215,12 @@ impl Session {
             )?;
             return Ok(
                 json!({"revision": app.doc.automation_revision, "project": result.value,
-                "selection": selection, "permissions": {"allow_reversible_modify": self.allow_modify}}),
+                "selection": selection, "connection_capabilities": crate::capabilities::manifest(self.allow_modify), "permissions": {"allow_reversible_modify": self.allow_modify}}),
             );
         }
         if name == "plotium_plan" {
             let args: Plan = decode(arguments)?;
-            if !matches!(
-                args.tool_id.as_str(),
-                "resource.rename" | TOOL_SET | TOOL_RESET
-            ) {
+            if !crate::capabilities::EDIT_OPERATIONS.contains(&args.tool_id.as_str()) {
                 return Err(Failure::new(
                     "unsupported_operation",
                     "Only rename and supported display properties can be planned",
@@ -273,6 +269,37 @@ impl Session {
             let result = json!({"plan_id": id, "preflight": plan});
             self.plans.insert(id, plan);
             return Ok(result);
+        }
+        if name == "plotium_document_inspect" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Query {
+                expected_revision: DocumentRevision,
+                #[serde(flatten)]
+                inspection: DocumentInspectParams,
+            }
+            let query: Query = decode(arguments)?;
+            let target = &query.inspection.target;
+            let mut req = request(
+                DOCUMENT_INSPECT,
+                json!(query.inspection),
+                vec![],
+                query.expected_revision,
+            );
+            req.targets = if target.component.is_some() {
+                TargetSelector::Components {
+                    targets: vec![target.clone()],
+                }
+            } else {
+                TargetSelector::Explicit {
+                    ids: vec![target.resource.id.clone()],
+                }
+            };
+            return Ok(json!(execute_tool(
+                app,
+                plan_tool(app, req)?,
+                ExecutionAuthority::Read
+            )?));
         }
         let (tool, parameters, ids, revision) = match name {
             "plotium_resources_search" => {

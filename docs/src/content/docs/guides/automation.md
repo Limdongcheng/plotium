@@ -239,7 +239,7 @@ stopped. A new connection starts with **Read and modify** again.
 Real Agent project reads and executions save run records and mark the project as
 unsaved; handshakes, tool listing and the static property catalog do not.
 
-The first version supports project and resource queries, renaming datasets,
+The connection supports document structure, source-binding and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target |
@@ -252,6 +252,71 @@ canvases and canvas objects, and these display properties only:
 
 Processing parameters, preferences, imports, computation, exports, image
 previews, built-in chat and stdio connections are outside this interface.
+
+### Discover structure without relying on names
+
+Start with `plotium_get_state {}`. Its `connection_capabilities` describes this
+connection's eight tools, input schemas, result contracts, supported operations,
+property IDs, limits and current execution permission. Standard MCP `tools/list`
+also lists their input schemas. Resource descriptors describe **core** data and
+rendering capabilities; a capability such as `figure.export` or `data.transform`
+does not make that operation callable through this connection. Only
+`resource.rename`, `properties.set` and `properties.reset` can be planned here.
+Read-only access still permits inspection and preflight, but prevents execution.
+
+Use the returned revision to list the document's canvases:
+
+```json
+{
+  "expected_revision": 7,
+  "target": {"resource":{"id":"document","kind":"plotium.document"}},
+  "view": "children",
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Call `plotium_document_inspect` with this request. Copy a complete
+`value.items[].target` into the next request to descend from canvas to panel,
+content, and Series. A canvas lists its panels followed by loose content;
+parented content appears only under its panel. `view: "self"`, with pagination
+arguments omitted, reads one target's details, `ancestors` and `child_count`.
+The content kinds are plot, text, shape and raster image; image pixels and data
+rows are not returned. Frames use points: a panel is page-relative, while content
+inside it is panel-local. Canvas dimensions are in millimetres.
+
+A Series detail includes its complete property-compatible target, encoding,
+visibility, explicit label, and `source`: dataset and field resource references,
+owner-local `field_id`, optional `item_id`, units and binding status. Use the
+returned resource IDs with `plotium_resources_inspect` for field/column
+descriptors. A missing field retains its `field_id` but has no resolvable field
+reference. A source can report `resolved`, `missing_dataset`, `missing_field`,
+`missing_item`, `incompatible_encoding`, `unbound` or `missing_column`.
+
+For tables, `binding_mode: "table_default"` reports the shared `x_column` and
+all `series_columns` Y/error bindings. One logical Series may expand to several
+rendered table traces; those traces do not gain separate Series IDs here.
+`per_plot_explicit_binding_supported: false` means independent per-plot X/Y
+bindings are not available. Names, including identical curve names, are display
+text, never identity. Panels use `CANVAS_UUID/panels/PANEL_ID`; content and Series
+retain the existing addresses shown below.
+
+Children queries default to 50 entries, accept 1–200, and return `total`,
+`next_offset` and `truncated`. Follow `next_offset` with the **same revision and
+target**, including when the 256 KiB structured-response budget shortens a page.
+A detail or single entry that exceeds that budget returns `response_too_large`.
+There is no recursive whole-project dump. Revision changes reject continuation;
+read state and restart the listing. Missing targets and forged identities return
+`invalid_parameters`, without using the current selection.
+
+`plotium_properties_list {}` returns exactly the five supported definitions:
+`schema`, `unit` (empty for dimensionless values), `scope`, `access` and static
+`applicability`. It contains no current target values. Use
+`plotium_properties_inspect` to resolve values, defaults, bounds and applicability
+for explicit targets. Property applicability and connection write permission
+are separate facts.
+
+### Inspect and edit an exact curve
 
 An example agent task is: “Find my line plot, inspect its stroke width, preflight
 changing it to 1.5 pt, then apply the saved plan.” The tool sequence is:
@@ -331,7 +396,7 @@ roll back an edit that has already started its atomic commit; use **Undo**.
 
 Errors include stable codes: `permission_denied`, `expired_plan`,
 `stale_revision`, `busy`, `invalid_parameters`, `unsupported_operation`,
-`plan_limit`, `request_cancelled`, `connection_stopped` and `execution_failed`.
+`plan_limit`, `request_cancelled`, `connection_stopped`, `response_too_large` and `execution_failed`.
 A `busy` response is retryable after the active edit, recovery confirmation or background project
 operation finishes. For stale or expired plans, read state and preflight again.
 The Agent connections settings page shows recent operations and errors without

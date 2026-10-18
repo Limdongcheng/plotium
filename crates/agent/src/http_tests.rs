@@ -58,7 +58,7 @@ fn real_http_mcp_handshake_discovery_bridge_and_authentication() {
                     .await
                     .unwrap();
             let tools = client.list_all_tools().await.unwrap();
-            assert_eq!(tools.len(), 7);
+            assert_eq!(tools.len(), 8);
             assert!(
                 tools
                     .iter()
@@ -170,6 +170,11 @@ fn external_client_finds_inspects_plans_and_modifies_a_line_with_undo() {
             let client = ().serve(StreamableHttpClientTransport::with_client(http, config)).await.unwrap();
             let state = client.call_tool(CallToolRequestParams::new("plotium_get_state")).await.unwrap();
             let revision = state.structured_content.unwrap()["revision"].clone();
+            let root = client.call_tool(CallToolRequestParams::new("plotium_document_inspect").with_arguments(
+                json!({"expected_revision":revision,"target":plotium_core::automation::document_root_target(),"view":"children"}).as_object().unwrap().clone()
+            )).await.unwrap();
+            assert_eq!(root.is_error,Some(false));
+            assert_eq!(root.structured_content.unwrap()["value"]["total"],2);
             let search = client.call_tool(CallToolRequestParams::new("plotium_resources_search").with_arguments(
                 json!({"expected_revision": revision, "query": {"kinds":["plotium.canvas.object"], "name_contains":"Plot"}}).as_object().unwrap().clone()
             )).await.unwrap();
@@ -182,6 +187,11 @@ fn external_client_finds_inspects_plans_and_modifies_a_line_with_undo() {
             )).await.unwrap();
             assert_eq!(inspect.is_error, Some(false));
             let target = inspect.structured_content.unwrap()["value"]["readings"][0]["target"].clone();
+            let structure = client.call_tool(CallToolRequestParams::new("plotium_document_inspect").with_arguments(
+                json!({"expected_revision":revision,"target":target,"view":"self"}).as_object().unwrap().clone()
+            )).await.unwrap();
+            assert_eq!(structure.is_error,Some(false));
+            assert_eq!(structure.structured_content.unwrap()["value"]["node"]["source"]["status"],"resolved");
             let plan = client.call_tool(CallToolRequestParams::new("plotium_plan").with_arguments(
                 json!({"expected_revision": revision, "targets":[target],"tool_id":"properties.set","parameters":{"key":"series.line.stroke_width","value":1.5}}).as_object().unwrap().clone()
             )).await.unwrap();
@@ -190,6 +200,11 @@ fn external_client_finds_inspects_plans_and_modifies_a_line_with_undo() {
                 json!({"plan_id":plan_id}).as_object().unwrap().clone()
             )).await.unwrap();
             assert_eq!(result.structured_content.unwrap()["targets"][0]["outcome"], "succeeded");
+            let stale = client.call_tool(CallToolRequestParams::new("plotium_document_inspect").with_arguments(
+                json!({"expected_revision":revision,"target":target,"view":"self"}).as_object().unwrap().clone()
+            )).await.unwrap();
+            assert_eq!(stale.is_error,Some(true));
+            assert_eq!(stale.structured_content.unwrap()["error"]["code"],"stale_revision");
             client.cancel().await.unwrap();
         });
         tokio::time::timeout(Duration::from_secs(15), async {

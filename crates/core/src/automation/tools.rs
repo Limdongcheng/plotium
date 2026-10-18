@@ -34,13 +34,25 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
     }
     if matches!(request.targets, TargetSelector::Components { .. })
         && !properties::is_property_tool(&request.tool_id)
+        && request.tool_id != DOCUMENT_INSPECT
     {
         return Err(AutomationError::InvalidSelector(
-            "components are only supported by property tools".into(),
+            "components are only supported by property and document inspection tools".into(),
         ));
     }
-    let frozen_targets = freeze_targets(&provider, &request.targets)?;
-    let targets = if frozen_targets.component_targets.is_empty() {
+    let frozen_targets = if request.tool_id == DOCUMENT_INSPECT {
+        super::document::freeze(app, &request)?
+    } else {
+        freeze_targets(&provider, &request.targets)?
+    };
+    let targets = if request.tool_id == DOCUMENT_INSPECT {
+        let params: DocumentInspectParams = parse(DOCUMENT_INSPECT, request.parameters.clone())?;
+        vec![PlannedTarget {
+            target: params.target,
+            status: TargetCompatibility::Compatible,
+            reason: "validated document identity".into(),
+        }]
+    } else if frozen_targets.component_targets.is_empty() {
         declared_targets(&provider, descriptor, &frozen_targets)
     } else {
         frozen_targets
@@ -305,6 +317,7 @@ pub(super) fn execute_planned_tool(
             serde_json::to_value(ProjectResourceProvider::new(app).blueprint())
                 .map_err(|error| AutomationError::Execution(error.to_string()))?,
         ),
+        "document.inspect" => super::document::execute(app, &plan)?,
         "resources.search" => execute_search(app, &plan)?,
         "resources.inspect" => execute_inspect(app, &plan)?,
         "data.preview" => execute_data_preview(app, &plan)?,

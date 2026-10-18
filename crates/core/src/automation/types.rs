@@ -524,6 +524,8 @@ pub enum AutomationError {
     },
     #[error("workflow is invalid: {0}")]
     InvalidWorkflow(String),
+    #[error("document response exceeds the 256 KiB budget; query a smaller target or page")]
+    ResponseTooLarge,
     #[error("tool execution failed: {0}")]
     Execution(String),
     #[error("I/O failed for {}: {source}", path.display())]

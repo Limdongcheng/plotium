@@ -293,3 +293,13 @@ mod export_dpi_tests;
 #[cfg(test)]
 #[path = "ilt_tests.rs"]
 pub(crate) mod ilt_tests;
+
+/// Context-free schema: enum choices are not filtered by any current target.
+pub(crate) fn static_schema(definition: &'static PropertyDefinition) -> ResolvedSchema {
+    match definition.value_schema {
+        ValueSchema::Enum { variants } => ResolvedSchema::Enum {
+            variants: variants.iter().collect(),
+        },
+        _ => target::resolved_schema(definition, &crate::state::FieldCapabilities::default()),
+    }
+}
