@@ -56,6 +56,7 @@ pub(super) fn validate_parameters(
         "resources.search" => parse::<SearchParams>(tool, value).map(drop),
         "data.preview" => parse::<PreviewParams>(tool, value).map(drop),
         "results.compare" => parse::<CompareParams>(tool, value).map(drop),
+        PLOT_CREATE => parse::<crate::state::PlotCreateParams>(tool, value).map(drop),
         CURVE_BIND => parse::<CurveBindParams>(tool, value).map(drop),
         CURVE_MATERIALIZE => parse::<CurveMaterializeParams>(tool, value).map(drop),
         "resource.rename" => parse::<RenameParams>(tool, value).map(drop),
@@ -267,8 +268,15 @@ impl V1Schema for CurveMaterializeParams {
         curve_binding_schema(true)
     }
 }
+impl V1Schema for crate::state::PlotCreateParams {
+    fn schema() -> serde_json::Value {
+        plot_create_schema()
+    }
+}
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!("plot.create", "Create native single plot", "Atomically create a native single plot and required containers using explicit table curves", crate::state::PlotCreateParams,
+            [KIND_DOCUMENT,KIND_CANVAS,KIND_PANEL], [], EffectLevel::Reversible, true),
         tool!(
             "plot.series.bind",
             "Bind curve columns",

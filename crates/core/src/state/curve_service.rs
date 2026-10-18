@@ -70,8 +70,26 @@ pub struct CurveEditPlan {
     pub bindings: Vec<CurveBindingSummary>,
     #[serde(skip)]
     changes: Vec<CurvePlotChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation: Option<PlotCreationSummary>,
+    #[serde(skip)]
+    pub(crate) insertion: Option<Box<crate::actions::NativePlotInsertion>>,
 }
 impl CurveEditPlan {
+    pub(crate) fn for_creation(
+        revision: DocumentRevision,
+        bindings: Vec<CurveBindingSummary>,
+        creation: PlotCreationSummary,
+        insertion: crate::actions::NativePlotInsertion,
+    ) -> Self {
+        Self {
+            expected_revision: revision,
+            bindings,
+            changes: vec![],
+            creation: Some(creation),
+            insertion: Some(Box::new(insertion)),
+        }
+    }
     pub fn curve_rows(&self) -> usize {
         self.bindings.iter().map(|b| b.diagnostics.total_rows).sum()
     }
@@ -86,7 +104,9 @@ impl std::fmt::Debug for CurveEditPlan {
 }
 impl PartialEq for CurveEditPlan {
     fn eq(&self, b: &Self) -> bool {
-        self.expected_revision == b.expected_revision && self.bindings == b.bindings
+        self.expected_revision == b.expected_revision
+            && self.bindings == b.bindings
+            && self.creation == b.creation
     }
 }
 
@@ -277,75 +297,22 @@ impl PlotiumApp {
             }
             change.after.binding.series.splice(pos..=pos, expanded);
         }
-        let mut rows = 0_u64;
-        for change in &changes {
-            for series in &change.after.binding.series {
-                let (table, columns) = self.table_curve_sources(series.source)?;
-                rows = rows
-                    .checked_add(
-                        table
-                            .typed_state
-                            .envelope
-                            .revision
-                            .snapshot
-                            .row_count
-                            .saturating_mul(columns.len() as u64),
-                    )
-                    .ok_or("Binding row budget overflowed.")?;
-            }
-        }
-        if rows > 2_000_000 {
-            return Err(
-                "Binding batch exceeds 2,000,000 curve-row visits; use a smaller batch.".into(),
-            );
-        }
+        self.check_curve_row_budget(changes.iter().map(|c| &c.after.binding))?;
         let mut bindings = Vec::new();
         for change in &mut changes {
             self.finish_curve_candidate(change)?;
-            let resource = canvas_object_ref(change.canvas, change.object);
-            for series in &change.after.binding.series {
-                let (table, columns) = self.table_curve_sources(series.source)?;
-                for columns in columns {
-                    let diagnostics = extract_table_curve(
-                        table,
-                        columns,
-                        change
-                            .after
-                            .binding
-                            .coordinates
-                            .as_ref()
-                            .expect("candidate has coordinates"),
-                    )?
-                    .diagnostics;
-                    bindings.push(CurveBindingSummary {
-                        binding_mode: if series.source.columns().is_some() {
-                            "table_explicit"
-                        } else {
-                            "table_default"
-                        }
-                        .into(),
-                        target: TargetRef {
-                            resource: resource.clone(),
-                            component: Some(ComponentRef::Series(series.id)),
-                        },
-                        source: TableCurveSource {
-                            dataset_id: series.source.resource,
-                            field_id: series.source.field,
-                            table_id: columns.table_id,
-                            table_revision: table.typed_state.envelope.revision.id,
-                            x_column_id: columns.x_column_id,
-                            y_column_id: columns.y_column_id,
-                            y_error_column_id: columns.y_error_column_id,
-                        },
-                        diagnostics,
-                    });
-                }
-            }
+            bindings.extend(self.curve_binding_summaries(
+                change.canvas,
+                change.object,
+                &change.after.binding,
+            )?);
         }
         Ok(CurveEditPlan {
             expected_revision: revision,
             bindings,
             changes,
+            creation: None,
+            insertion: None,
         })
     }
     fn finish_curve_candidate(&self, change: &mut CurvePlotChange) -> Result<(), String> {
@@ -445,20 +412,24 @@ impl PlotiumApp {
             expected_revision: revision,
             bindings: Vec::new(),
             changes: vec![change],
+            creation: None,
+            insertion: None,
         })
     }
     pub fn commit_curve_bindings(&mut self, plan: CurveEditPlan) -> Result<(), String> {
-        if plan.changes.is_empty() {
+        if plan.changes.is_empty() && plan.insertion.is_none() {
             return Err("Prepare a new native binding plan before execution.".into());
         }
         if plan.expected_revision.0 != self.doc.automation_revision {
             return Err("Document revision is stale.".into());
         }
         for summary in &plan.bindings {
-            let (table, _) = self.table_curve_sources(summary.source.source())?;
-            if table.typed_state.envelope.revision.id != summary.source.table_revision {
-                return Err("Table revision is stale.".into());
-            }
+            self.check_table_curve_revision(&summary.source)?;
+        }
+        if let Some(insertion) = plan.insertion {
+            return self
+                .try_execute_action(crate::actions::Action::CreatePlot { insertion })
+                .map_err(|e| e.to_string());
         }
         for change in &plan.changes {
             let current = self.curve_plot(change.canvas, change.object)?;

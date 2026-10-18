@@ -89,6 +89,7 @@ pub(super) fn validate_action(
                 .validate_structure()
                 .map_err(ActionApplyError::InvalidValue)?;
         }
+        Action::CreatePlot { insertion } => app.validate_plot_insertion(insertion)?,
         Action::Composite(actions) => {
             for child in actions {
                 validate_action(app, child, shape)?;

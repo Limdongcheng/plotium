@@ -59,8 +59,11 @@ mod data_import;
 mod dataset_identity;
 pub use data_import::DataImports;
 mod curve_binding;
+mod curve_candidate;
 mod curve_extract;
 mod curve_service;
+mod plot_creation;
+pub use plot_creation::*;
 mod dataset_trace;
 mod datasets;
 mod datasets_2d_figure;
@@ -280,3 +283,6 @@ mod tests {
 
 #[cfg(test)]
 mod curve_tests;
+
+#[cfg(test)]
+mod plot_creation_tests;

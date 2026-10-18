@@ -46,12 +46,16 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
             "components are only supported by property and document inspection tools".into(),
         ));
     }
-    let binding_plan = if is_curve_binding_tool(&request.tool_id) {
+    let binding_plan = if request.tool_id == PLOT_CREATE {
+        Some(super::plot_creation::prepare(app, &request)?)
+    } else if is_curve_binding_tool(&request.tool_id) {
         Some(super::curve_bindings::prepare(app, &request)?)
     } else {
         None
     };
-    let frozen_targets = if is_curve_binding_tool(&request.tool_id) {
+    let frozen_targets = if request.tool_id == PLOT_CREATE {
+        super::plot_creation::freeze(&request)?
+    } else if is_curve_binding_tool(&request.tool_id) {
         super::curve_bindings::freeze(&request)?
     } else if matches!(request.tool_id.as_str(), TABLE_COLUMNS | TABLE_READ_ROWS) {
         super::table_read::freeze_table(app, &request)?
@@ -388,6 +392,7 @@ pub(super) fn execute_planned_tool(
         "results.compare" => execute_compare(app, &plan)?,
         "resource.rename" => execute_rename(app, &plan)?,
         "figure.apply_theme" => execute_theme(app, &plan)?,
+        PLOT_CREATE => super::plot_creation::execute(app, &plan)?,
         CURVE_BIND | CURVE_MATERIALIZE => super::curve_bindings::execute(app, &plan)?,
         "processing.apply_scheme" => execute_scheme(app, &plan)?,
         TABLE_COLUMNS | TABLE_READ_ROWS => super::table_read::execute_table_read(app, &plan)?,

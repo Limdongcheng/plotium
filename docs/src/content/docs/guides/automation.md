@@ -233,7 +233,7 @@ Connections start with **Read and modify** access, so agents can apply supported
 edits immediately after connecting. Changes use Plotium's normal **Undo** and
 **Redo**. Choose **Read only** under **Access** to prevent further edits, including
 pending plans. Table queries and existing edit preflight remain available; import
-preflight requires Read and modify. The selected access applies
+and native curve binding/creation preflight require Read and modify. The selected access applies
 to every client holding that connection token and lasts until the connection is
 stopped. A new connection starts with **Read and modify** again.
 
@@ -241,7 +241,7 @@ Real Agent project reads and executions save run records and mark the project as
 unsaved; handshakes, tool listing and the static property catalog do not.
 
 The connection supports CSV/TSV data-only import, native table queries, canvas previews,
-document structure, explicit numeric curve bindings and resource queries, renaming datasets,
+document structure, native single-plot creation, explicit numeric curve bindings and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target |
@@ -264,8 +264,8 @@ also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
 does not make that operation callable through this connection. Only
 `resource.rename`, `properties.set`, `properties.reset` and the restricted
-`data.import` mode and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
-and existing property preflight, but refuses import/binding preflight and all edit execution.
+`data.import` mode, `plot.create` and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
+and existing property preflight, but refuses import/binding/creation preflight and all edit execution.
 
 Use the returned revision to list the document's canvases:
 
@@ -508,7 +508,91 @@ are checked before one atomic commit and one Undo. There is no partial success
 or skipped invalid target. Read-only connections reject binding preflight and
 execution. Failed or stale execution consumes the plan; discover current state
 and plan again. GUI save/reopen preserves the native bindings and units; MCP
-save, export and general plot creation are not exposed by these operations.
+save and export are not exposed; use `plot.create` below to create a new plot.
+
+### Create a native single plot from an imported table
+
+Ask the agent: “Import this CSV, use time in s and current/error in mA, and create
+one editable line plot with symmetric Y error bars. Preview it, then change only
+that curve's line width to 1.5 pt and preview again.” Supply an absolute input path
+and explicit units. The agent can discover the complete import and creation
+schemas through `plotium_get_state` and the `plotium_plan` tool schema.
+
+After data-only import, read the actual DatasetId, FieldId, TableId, table revision
+and ColumnIds from import results / table metadata. Plan `plot.create` without
+top-level `ids` or `targets`:
+
+```json
+{
+  "expected_revision": 1,
+  "tool_id": "plot.create",
+  "parameters": {
+    "parent": {"resource": {"id": "document", "kind": "plotium.document"}},
+    "name": "Current",
+    "series": [{
+      "kind": "line",
+      "source": {
+        "dataset_id": "RETURNED_DATASET_UUID",
+        "field_id": 0,
+        "table_id": "RETURNED_TABLE_UUID",
+        "table_revision": "RETURNED_TABLE_REVISION_UUID",
+        "x_column_id": "RETURNED_TIME_COLUMN_UUID",
+        "y_column_id": "RETURNED_CURRENT_COLUMN_UUID",
+        "y_error_column_id": "RETURNED_ERROR_COLUMN_UUID"
+      }
+    }]
+  }
+}
+```
+
+Replace every identity, including the example FieldId, with the actual returned
+identity. `kind` is `line` or `scatter`; explicitly set `y_error_column_id` to a
+ColumnId or `null`. Multiple entries create independent native Series in this
+one plot, not separate plots. Source extraction and all numeric, missing-value,
+error and unit rules are the same as explicit curve binding above. Table-wide
+X/Y defaults and other plots are untouched; no source table is copied.
+
+The exact `parent` determines which objects are new:
+
+- Document root: create canvas, single panel and plot. Optional
+  `canvas: {name, size_mm: [width, height]}` sets the new canvas (10–1000 mm per
+  dimension); omission freezes the native default size and plot name.
+- Existing canvas without a panel or plot: create panel and plot using native
+  GUI empty-page placement and the canvas's existing layout settings/margins.
+  Do not supply `canvas` options.
+- Its sole empty, visible, unlocked free-layout panel: create only the plot,
+  preserving the panel's page position and size. Omit `canvas` and `panel_name`.
+
+`panel_name` optionally names a newly created panel; otherwise it uses the plot
+name. Names must be nonblank and at most 1024 UTF-8 bytes. This operation cannot
+create a second panel/plot on an existing plotted canvas or rebuild existing
+content. Placement is a native service decision, not an agent-supplied grid,
+whitespace or collision algorithm.
+
+`preflight.binding_plan.creation` returns proposed complete targets in
+`canvas`, `panel`, `plot` and `created`, plus `size_mm`, `panel_frame_pt`
+(page coordinates), `frame_pt` (panel-local content coordinates),
+`coordinate_units` and `series_defaults` (kind and line width in pt).
+`binding_plan.bindings` returns each exact owner+SeriesId target, actual source
+mapping/revision and full-row diagnostics. Preflight creates nothing. Execute
+the one-use plan; `ToolResult.value` returns the same identities and native
+binding summary, with committed `after_revision` on the result.
+
+The creation is atomic: a bad source, incompatible units, invalid error or
+changed parent/revision leaves no new canvas, panel or partial plot. Read-only
+connections reject creation preflight and execution. There are 1–200 curves per
+plot, at most 2,000,000 curve-row visits, a shared 2,000,000-row pending-plan
+budget with binding edits, 32 pending plans and a 256 KiB structured-response
+limit. Failed submissions consume their plan too. After a lost execute response,
+query current state and the proposed targets before deciding what to do; do not
+blindly make a new creation request.
+
+Use returned targets with document inspection and properties; preview the
+returned whole-canvas target at the current revision. The result is selectable
+and editable in the GUI. One Undo removes the created subtree but keeps existing
+parents and imported data; Redo restores the same IDs. Existing native resize
+and layout controls retain plot/Series identities and source bindings. Fetch a
+fresh revision after any edit or Undo/Redo.
 
 ### Read the actual canvas image
 
