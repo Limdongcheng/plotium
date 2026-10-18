@@ -164,7 +164,10 @@ impl PlotiumApp {
 
         let x_range_changed = before.x_range != after.x_range;
         let y_range_changed = before.y_range != after.y_range;
-        let needs_automatic_rebuild = cleared(&before.x_label, &after.x_label)
+        let needs_automatic_rebuild = before.x_display_unit != after.x_display_unit
+            || before.y_display_unit != after.y_display_unit
+            || before.typography != after.typography
+            || cleared(&before.x_label, &after.x_label)
             || cleared(&before.y_label, &after.y_label)
             || cleared(&before.x_range, &after.x_range)
             || cleared(&before.y_range, &after.y_range)

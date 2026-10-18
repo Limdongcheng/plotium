@@ -21,10 +21,12 @@ pub mod guide;
 pub mod heatmap;
 pub mod ilt;
 pub mod line;
+pub mod line_display;
 mod model;
 pub mod normalize;
 pub mod object;
 pub mod phase;
+pub mod plot_display;
 mod processing_common;
 mod provider;
 mod readout;
@@ -50,6 +52,12 @@ use std::sync::LazyLock;
 /// definitions; adding one here is what makes it addressable, searchable and
 /// resettable everywhere at once.
 pub(crate) static GROUPS: &[PropertyProviderGroup] = &[
+    PropertyProviderGroup {
+        provider: &line_display::PROVIDER,
+    },
+    PropertyProviderGroup {
+        provider: &plot_display::PROVIDER,
+    },
     PropertyProviderGroup {
         provider: &apodization::PROVIDER,
     },

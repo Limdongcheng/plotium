@@ -100,6 +100,18 @@ fn every_derived_default_read_reports_a_reset_target() {
     });
     let object = crate::automation::TargetRef::resource(series.resource.clone());
     let text = app.object_target(0, text_id).expect("text target");
+    app.doc.datasets.push(Dataset::Nmr(Box::new(
+        NmrDataset::load(nmr1d_with("line defaults")).unwrap(),
+    )));
+    let line_id = app.doc.canvases[0].allocate_object_id();
+    let line_object = app.build_plot_object(
+        1,
+        ObjectFrame::new(0., 0., 100., 40.),
+        line_id,
+        "Line defaults".into(),
+    );
+    app.doc.canvases[0].objects.push(line_object);
+    let line = app.series_targets(0, line_id).into_iter().next().unwrap();
     let application = app.app_target();
     for definition in catalog()
         .iter()
@@ -107,6 +119,8 @@ fn every_derived_default_read_reports_a_reset_target() {
     {
         let target = if definition.applicability.encoding == Some(EncodingKind::Heatmap) {
             heatmap.clone()
+        } else if definition.applicability.component == ComponentKind::Series {
+            line.clone()
         } else if definition.scope_kind == ScopeKind::App {
             application.clone()
         } else if matches!(

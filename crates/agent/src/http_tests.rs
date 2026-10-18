@@ -81,7 +81,7 @@ fn real_http_mcp_handshake_discovery_bridge_and_authentication() {
                     .as_array()
                     .unwrap()
                     .len(),
-                5
+                crate::session::PROPERTIES.len()
             );
             client.cancel().await.unwrap();
         });

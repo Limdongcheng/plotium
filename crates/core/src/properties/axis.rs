@@ -179,10 +179,10 @@ impl PropertyProvider for AxisProvider {
                 overrides.lock_aspect = Some(*value)
             }
             (X_LABEL, EditOp::Set(PropertyValue::Text(value))) => {
-                overrides.x_label = Some(value.clone())
+                overrides.x_label = (!value.trim().is_empty()).then(|| value.clone())
             }
             (Y_LABEL, EditOp::Set(PropertyValue::Text(value))) => {
-                overrides.y_label = Some(value.clone())
+                overrides.y_label = (!value.trim().is_empty()).then(|| value.clone())
             }
             (X_SHOW_TICK_LABELS, EditOp::Set(PropertyValue::Bool(value))) => {
                 overrides.x_show_tick_labels = Some(*value)
@@ -269,8 +269,8 @@ fn require_2d_nmr_plot(
 
 fn default_value(id: PropertyId, plot: &PlotObject) -> Result<PropertyValue, PropertyError> {
     match id {
-        X_LABEL => Ok(PropertyValue::Text(plot.derived_axes().x_label.clone())),
-        Y_LABEL => Ok(PropertyValue::Text(plot.derived_axes().y_label.clone())),
+        X_LABEL => Ok(PropertyValue::Text(plot.automatic_axis_label(true))),
+        Y_LABEL => Ok(PropertyValue::Text(plot.automatic_axis_label(false))),
         X_SHOW_TICK_LABELS => Ok(PropertyValue::Bool(plot.derived_axes().x_show_tick_labels)),
         X_SHOW_LABEL => Ok(PropertyValue::Bool(plot.derived_axes().x_show_label)),
         Y_SHOW_TICK_LABELS => Ok(PropertyValue::Bool(plot.derived_axes().y_show_tick_labels)),

@@ -256,6 +256,7 @@ impl super::Dataset {
                             "line",
                         )
                         .with_line_x_unit(self.trace_x_unit())
+                        .with_curve_kind(plotium_figure::SeriesKind::Points)
                     })
                     .collect()
             }

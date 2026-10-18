@@ -2,7 +2,9 @@
 //! coordinates. Both renderers (egui screen, SVG export) consume this model.
 
 mod colormap;
+mod display;
 mod encoding;
+pub use display::*;
 
 pub use colormap::ColormapId;
 pub use encoding::{
@@ -101,6 +103,8 @@ impl Default for FigureTypography {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Axis {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<AxisDisplay>,
     pub label: String,
     #[serde(default = "default_true")]
     pub show_tick_labels: bool,
@@ -122,6 +126,7 @@ pub struct Axis {
 impl Axis {
     pub fn new(label: impl Into<String>, min: f64, max: f64) -> Self {
         Self {
+            display: None,
             label: label.into(),
             show_tick_labels: true,
             show_label: true,
@@ -137,6 +142,7 @@ impl Axis {
     pub fn categorical(label: impl Into<String>, names: Vec<String>) -> Self {
         let n = names.len().max(1) as f64;
         Self {
+            display: None,
             label: label.into(),
             show_tick_labels: true,
             show_label: true,
@@ -155,7 +161,7 @@ impl Axis {
     /// Axis span, forced non-zero to avoid divide-by-zero in renderers.
     pub fn span(&self) -> f64 {
         let s = self.max - self.min;
-        if s.abs() < f64::EPSILON { 1.0 } else { s }
+        if s == 0.0 { 1.0 } else { s }
     }
 
     /// Map a value to a normalized `[0,1]` position, honoring `reversed`.
@@ -171,6 +177,8 @@ const fn default_true() -> bool {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Series {
+    #[serde(default)]
+    pub appearance: CurveAppearance,
     pub name: String,
     pub points: Vec<[f64; 2]>,
     pub color: Color,
@@ -248,6 +256,7 @@ pub enum SeriesKind {
 impl Series {
     pub fn line(name: impl Into<String>, points: Vec<[f64; 2]>) -> Self {
         Self {
+            appearance: CurveAppearance::default(),
             name: name.into(),
             points,
             color: Color::TRACE,
@@ -258,6 +267,7 @@ impl Series {
 
     pub fn points(name: impl Into<String>, points: Vec<[f64; 2]>) -> Self {
         Self {
+            appearance: CurveAppearance::default(),
             name: name.into(),
             points,
             color: Color::TRACE,
@@ -268,6 +278,7 @@ impl Series {
 
     pub fn sticks(name: impl Into<String>, points: Vec<[f64; 2]>) -> Self {
         Self {
+            appearance: CurveAppearance::default(),
             name: name.into(),
             points,
             color: Color::TRACE,

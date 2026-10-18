@@ -389,6 +389,7 @@ impl PlotiumApp {
                 series.color = color;
             }
             series.width = line.width.get();
+            series.appearance = line.appearance;
             for point in &mut series.points {
                 point[0] += x_shift;
                 point[1] *= line.scale;

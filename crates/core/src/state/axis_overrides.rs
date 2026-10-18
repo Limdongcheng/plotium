@@ -162,6 +162,9 @@ impl CanvasViewport {
 /// `None` keeps the corresponding value derived by the chart builder.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AxisOverrides {
+    pub x_display_unit: Option<Box<plotium_data::UnitSpec>>,
+    pub y_display_unit: Option<Box<plotium_data::UnitSpec>>,
+    pub typography: plotium_figure::FigureTypographyOverrides,
     pub x_label: Option<String>,
     pub y_label: Option<String>,
     pub x_range: Option<AxisRange>,
@@ -180,6 +183,7 @@ pub struct AxisOverrides {
 
 impl AxisOverrides {
     pub fn apply_to(&self, figure: &mut Figure) {
+        self.typography.apply_to(&mut figure.typography);
         if let Some(label) = &self.x_label {
             figure.x.label.clone_from(label);
         }

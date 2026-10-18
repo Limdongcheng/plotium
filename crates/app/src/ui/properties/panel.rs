@@ -194,12 +194,23 @@ fn resolve_rows_for(app: &PlotiumApp, targets: &[TargetRef], section: &str) -> V
             continue;
         }
         let set = app.resolve_property_set(presentation.id, targets);
-        let Some(first) = set.applicable_targets.first() else {
+        // A mixed selection stays editable when any target accepts the edit;
+        // the shared planner reports the other targets as skipped on commit.
+        let mut resolved = set
+            .applicable_targets
+            .iter()
+            .filter_map(|address| app.resolve_property(address).ok());
+        let Some(mut representative) = resolved.next() else {
             continue;
         };
-        let Ok(representative) = app.resolve_property(first) else {
-            continue;
-        };
+        if representative.availability != plotium_core::properties::Availability::Editable
+            && let Some(editable) = resolved.find(|property| {
+                property.availability == plotium_core::properties::Availability::Editable
+            })
+        {
+            representative = editable;
+        }
+        let first = &representative.address;
         // A readout is a statement about *the* current value, and it is read
         // from one target. When the sources disagree there is no such value, so
         // the row is given none: resolving one target's level and captioning it

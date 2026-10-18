@@ -21,6 +21,29 @@ pub struct FieldDescriptor {
 }
 
 impl FieldDescriptor {
+    /// Native geometry emitted for a curve field, independent of the persisted
+    /// line encoding used to style it. Descriptors never materialize its data.
+    pub fn curve_kind(&self) -> plotium_figure::SeriesKind {
+        match self.metadata.0.get("curve_kind").map(String::as_str) {
+            Some("points") => plotium_figure::SeriesKind::Points,
+            Some("stick") => plotium_figure::SeriesKind::Stick,
+            _ => plotium_figure::SeriesKind::Line,
+        }
+    }
+
+    pub(crate) fn with_curve_kind(mut self, kind: plotium_figure::SeriesKind) -> Self {
+        self.metadata.0.insert(
+            "curve_kind".into(),
+            match kind {
+                plotium_figure::SeriesKind::Line => "line",
+                plotium_figure::SeriesKind::Points => "points",
+                plotium_figure::SeriesKind::Stick => "stick",
+            }
+            .into(),
+        );
+        self
+    }
+
     pub(crate) fn with_line_x_unit(mut self, unit: impl Into<String>) -> Self {
         self.metadata
             .0

@@ -136,6 +136,8 @@ pub enum EstimatorSelection {
 #[serde(deny_unknown_fields)]
 pub struct LineEncoding {
     #[serde(default)]
+    pub appearance: crate::CurveAppearance,
+    #[serde(default)]
     pub kind: crate::SeriesKind,
     pub color: ColorSource,
     pub scale: f64,
@@ -147,6 +149,7 @@ pub struct LineEncoding {
 impl Default for LineEncoding {
     fn default() -> Self {
         Self {
+            appearance: crate::CurveAppearance::default(),
             kind: crate::SeriesKind::Line,
             color: ColorSource::Explicit(Color::TRACE),
             scale: 1.0,

@@ -150,9 +150,12 @@ fn new_queries_reject_forgery_stale_selection_and_invalid_shape() {
     );
 }
 #[test]
-fn five_static_definitions_and_connection_gate_are_the_same_supported_subset() {
+fn static_definitions_and_connection_gate_are_the_same_supported_subset() {
     let catalog = property_catalog();
-    assert_eq!(catalog["properties"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        catalog["properties"].as_array().unwrap().len(),
+        crate::session::PROPERTIES.len()
+    );
     for (i, id) in crate::session::PROPERTIES.iter().enumerate() {
         let row = &catalog["properties"][i];
         let d = properties::definition(*id).unwrap();
@@ -165,8 +168,13 @@ fn five_static_definitions_and_connection_gate_are_the_same_supported_subset() {
         );
         assert!(row.get("value").is_none());
         assert!(row.get("availability").is_none());
-        assert!(row["schema"]["min"].is_number());
-        assert!(row["schema"]["max"].is_number());
+        if matches!(
+            d.value_schema,
+            properties::ValueSchema::Float { .. } | properties::ValueSchema::Int { .. }
+        ) {
+            assert!(row["schema"]["min"].is_number());
+            assert!(row["schema"]["max"].is_number());
+        }
     }
     assert_eq!(catalog["properties"][0]["schema"]["unit"], "pt");
     assert_eq!(catalog["properties"][0]["schema"]["min"], 0.05);

@@ -111,9 +111,10 @@ without matching on wording:
 Rows already ruled out at preflight carry the sentence alone. They are never
 same-value no-ops, so the absence of the token is itself the distinction.
 
-A **Set a property** whose every target already holds the value writes nothing
-at all: each target is reported as skipped, the document revision does not move,
-and nothing is added to the undo stack.
+A **Set a property** whose every target already stores the requested value and
+override state writes nothing: each target is reported as skipped, the document revision does not move,
+and nothing is added to the undo stack. Setting an inherited value as an explicit
+override still records that author choice.
 
 A value outside the range is refused at **Preflight**, before you confirm, and
 names both the value you gave and the limit that rejected it. Past that point
@@ -138,7 +139,7 @@ A setting the current state does not allow you to write is still read back:
 first, such as switching the phase mode to *Manual* before φ0 can be set.
 
 Schemas are tagged by `type`: `bool`, `text`, `int`, `stepped_int`, `float`,
-`enum`, or `color`.
+`enum`, `color`, `unit_code`, or `axis_range`.
 
 - `int` and `stepped_int` carry `min` and `max`, plus a `unit` where the setting
   has one. `stepped_int` also carries the `step` its values must land on — a
@@ -233,8 +234,9 @@ Use plain language in your AI client. For example:
 The connection can import CSV/TSV tables, read table values, inspect project
 structure, preview canvases, create line or scatter plots, change a curve's
 source columns, derive tables with supported native plans, and rename datasets,
-canvases or objects. Display edits cover line width, contour width and count, and
-figure tick-label and axis-label sizes. Processing parameters, fitting and other
+canvases or objects. Display edits cover exact-curve color, width, stroke style, markers, visibility
+and legend text; axis titles, display units and auto/manual ranges; plot-local
+tick, axis-title and legend sizes; and the existing contour/document font controls. Processing parameters, fitting and other
 computations beyond supported table transforms, other import formats, saving and
 exporting are not available through this connection. Use Plotium's interface for
 those tasks. There is no built-in chat window.

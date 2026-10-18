@@ -1,14 +1,6 @@
-use egui::{DragValue, Response, Ui};
-use plotium_core::actions::Action;
+use egui::Ui;
 use plotium_core::properties::axis;
-use plotium_core::state::{AxisOverrides, AxisRange, ObjectId, PlotiumApp};
-use plotium_figure::AxisFrame;
-
-#[derive(Clone, Copy)]
-enum AxisKind {
-    X,
-    Y,
-}
+use plotium_core::state::{ObjectId, PlotiumApp};
 
 pub(super) fn commit_if_target_changed(app: &mut PlotiumApp, target: Option<(usize, ObjectId)>) {
     let pending_target = app
@@ -28,53 +20,8 @@ pub(super) fn axes_section(
     object: ObjectId,
     ui: &mut Ui,
 ) -> bool {
-    let Some((hidden, x_categorical, y_categorical)) = app.doc.canvases[canvas]
-        .object(object)
-        .and_then(|object| object.plot())
-        .map(|plot| {
-            (
-                plot.figure().axis_frame == AxisFrame::Hidden,
-                plot.figure().x.categories.is_some(),
-                plot.figure().y.categories.is_some(),
-            )
-        })
-    else {
-        return false;
-    };
-
-    let hidden_reason = "Choose a chart with visible axes to edit axis settings.";
-    let x_reason = if hidden {
-        hidden_reason
-    } else {
-        "Choose a chart with a numeric x axis to set its range."
-    };
-    let y_reason = if hidden {
-        hidden_reason
-    } else {
-        "Choose a chart with a numeric y axis to set its range."
-    };
-    range_row(
-        app,
-        canvas,
-        object,
-        AxisKind::X,
-        "X range",
-        !hidden && !x_categorical,
-        x_reason,
-        ui,
-    );
-    range_row(
-        app,
-        canvas,
-        object,
-        AxisKind::Y,
-        "Y range",
-        !hidden && !y_categorical,
-        y_reason,
-        ui,
-    );
     if ui
-        .button("Automatic")
+        .button("Automatic visibility")
         .on_hover_text("Clear all axis visibility overrides")
         .clicked()
         && let Some(target) = app.object_target(canvas, object)
@@ -97,155 +44,6 @@ pub(super) fn axes_section(
         }
     }
     false
-}
-
-#[allow(clippy::too_many_arguments)]
-fn range_row(
-    app: &mut PlotiumApp,
-    canvas: usize,
-    object: ObjectId,
-    axis: AxisKind,
-    label: &str,
-    enabled: bool,
-    disabled_reason: &str,
-    ui: &mut Ui,
-) {
-    let Some((overrides, view)) = app.doc.canvases[canvas]
-        .object(object)
-        .and_then(|object| object.plot())
-        .map(|plot| {
-            let view = match axis {
-                AxisKind::X => plot.viewport.view_x,
-                AxisKind::Y => plot.viewport.view_y,
-            };
-            (plot.axis_overrides.clone(), view)
-        })
-    else {
-        return;
-    };
-    let manual = match axis {
-        AxisKind::X => overrides.x_range,
-        AxisKind::Y => overrides.y_range,
-    };
-    let mut automatic = manual.is_none();
-    ui.horizontal(|ui| {
-        ui.label(label);
-        // A range retained across a switch to a categorical/hidden axis stays
-        // inactive, but its Auto control remains available so it can be cleared.
-        let auto_enabled = enabled || manual.is_some();
-        let auto_response = ui
-            .add_enabled(auto_enabled, egui::Checkbox::new(&mut automatic, "Auto"))
-            .on_disabled_hover_text(disabled_reason);
-        if auto_response.changed() {
-            commit_edit(app);
-            let before = current_overrides(app, canvas, object);
-            let mut after = before.clone();
-            let value = (!automatic).then_some(view);
-            match axis {
-                AxisKind::X => after.x_range = value,
-                AxisKind::Y => after.y_range = value,
-            }
-            app.execute_action(Action::set_axis_overrides(canvas, object, before, after));
-        }
-    });
-
-    let mut range = manual.unwrap_or(view);
-    let span = range.span();
-    let min_span = range.min.abs().max(range.max.abs()).max(span).max(1.0) * 1e-12;
-    let min_upper = range.max - min_span;
-    let max_lower = range.min + min_span;
-    let auto_reason = match axis {
-        AxisKind::X => "Turn off Auto to set a manual x range.",
-        AxisKind::Y => "Turn off Auto to set a manual y range.",
-    };
-    let drag_reason = if enabled && automatic {
-        auto_reason
-    } else {
-        disabled_reason
-    };
-    ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        let min_response = ui
-            .add_enabled(
-                enabled && !automatic,
-                range_drag(&mut range.min, span).range(f64::MIN..=min_upper),
-            )
-            .on_hover_text("Minimum")
-            .on_disabled_hover_text(drag_reason);
-        let max_response = ui
-            .add_enabled(
-                enabled && !automatic,
-                range_drag(&mut range.max, span).range(max_lower..=f64::MAX),
-            )
-            .on_hover_text("Maximum")
-            .on_disabled_hover_text(drag_reason);
-        handle_range_response(
-            app,
-            canvas,
-            object,
-            axis,
-            range,
-            &min_response,
-            &max_response,
-        );
-    });
-}
-
-fn range_drag(value: &mut f64, span: f64) -> DragValue<'_> {
-    DragValue::new(value)
-        .speed((span / 200.0).max(1e-9))
-        .max_decimals(8)
-}
-
-fn handle_range_response(
-    app: &mut PlotiumApp,
-    canvas: usize,
-    object: ObjectId,
-    axis: AxisKind,
-    range: AxisRange,
-    min_response: &Response,
-    max_response: &Response,
-) {
-    if min_response.drag_started() || max_response.drag_started() {
-        begin_edit(app, canvas, object);
-    }
-    let changed = min_response.changed() || max_response.changed();
-    if changed && range.is_valid() {
-        let mut after = current_overrides(app, canvas, object);
-        match axis {
-            AxisKind::X => after.x_range = Some(range),
-            AxisKind::Y => after.y_range = Some(range),
-        }
-        apply_live(app, canvas, object, after);
-    }
-    let drag_stopped = min_response.drag_stopped() || max_response.drag_stopped();
-    let typed_value = changed && !min_response.dragged() && !max_response.dragged();
-    if drag_stopped || typed_value {
-        commit_edit(app);
-    }
-}
-
-fn current_overrides(app: &PlotiumApp, canvas: usize, object: ObjectId) -> AxisOverrides {
-    app.doc
-        .canvases
-        .get(canvas)
-        .and_then(|canvas| canvas.object(object))
-        .and_then(|object| object.plot())
-        .map(|plot| plot.axis_overrides.clone())
-        .unwrap_or_default()
-}
-
-fn begin_edit(app: &mut PlotiumApp, canvas: usize, object: ObjectId) {
-    if app.session.ui.axis_overrides_before.is_none() {
-        app.session.ui.axis_overrides_before =
-            Some((canvas, object, current_overrides(app, canvas, object)));
-    }
-}
-
-fn apply_live(app: &mut PlotiumApp, canvas: usize, object: ObjectId, after: AxisOverrides) {
-    begin_edit(app, canvas, object);
-    app.set_axis_overrides_value(canvas, object, &after);
-    app.mark_document_dirty();
 }
 
 fn commit_edit(app: &mut PlotiumApp) {

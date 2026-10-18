@@ -49,13 +49,22 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生单图创建、显式数值曲线绑定、受支持的表格处理和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
-| 属性 ID | 目标 |
-| --- | --- |
-| `series.line.stroke_width` | 图对象中的线图序列 |
-| `series.contour.line_width` | 图对象中的等高线序列 |
-| `series.contour.count` | 图对象中的等高线序列 |
-| `document.figure.typography.tick_pt` | `document` |
-| `document.figure.typography.label_pt` | `document` |
+| 属性 ID | 目标 | 取值 |
+| --- | --- | --- |
+| `series.line.color` | 图对象＋Series | `#RRGGBB` |
+| `series.line.stroke_width` | 图对象＋Series | 0.05–10 pt |
+| `series.line.style` | 图对象＋Series | `solid`, `dashed`, `dotted`, `dash_dot` |
+| `series.line.marker` | 图对象＋Series | `none`, `circle`, `square`, `diamond`, `triangle_up`, `triangle_down`, `plus`, `cross` |
+| `series.line.marker_size` | 图对象＋Series | 0.1–20 pt，直径 |
+| `series.visible` | 图对象＋Series | 布尔值 |
+| `series.label` | 图对象＋Series | 文本 |
+| `object.axes.x_label / object.axes.y_label` | 图对象 | 文本 |
+| `object.axes.x_display_unit / object.axes.y_display_unit` | 图对象 | 属性查询返回的兼容单位代码 |
+| `object.axes.x_range / object.axes.y_range` | 图对象 | 自动或手动范围对象 |
+| `object.figure.typography.tick_pt / object.figure.typography.label_pt / object.figure.typography.legend_pt` | 图对象 | 1–72 pt |
+| `series.contour.line_width` | 图对象＋Series | 0.05–10 pt |
+| `series.contour.count` | 图对象＋Series | 1–256 |
+| `document.figure.typography.tick_pt / document.figure.typography.label_pt` | document | 1–72 pt |
 
 此接口暂不支持处理参数、应用偏好、其他格式导入、其他计算、导出及内置聊天。
 
@@ -116,7 +125,7 @@ Series 详情包含可直接用于属性查询的完整 target、编码、可见
 不提供递归展开整个项目的接口。revision 变化会拒绝续页，须重读状态并重新列举。
 目标失效或身份伪造返回 `invalid_parameters`，不会改用当前选择。
 
-`plotium_properties_list {}` 只返回当前五项静态定义，包括 `schema`、`unit`
+`plotium_properties_list {}` 只返回当前允许的静态定义，包括 `schema`、`unit`
 （无量纲时为空）、`scope`、`access` 和静态 `applicability`，不混入当前目标值。
 用 `plotium_properties_inspect` 查询明确目标的当前值、默认值、范围和适用性。
 属性是否适用与连接是否允许修改分别表达。
@@ -498,12 +507,72 @@ Series 身份和来源绑定。编辑或 Undo/Redo 后先读取最新 revision�
 每连接最多同时渲染一张预览，重复请求返回 `busy`；渲染期间其他已有工具仍可用。
 取消请求或停止连接后不交付图像；停止连接、切换项目会丢弃旧任务。
 
+## 精确修改显示，不重建图对象
+
+直接使用 `creation.series_defaults[].target`，或通过 `plotium_document_inspect`
+发现完整目标。所属图对象与稳定 SeriesId 必须共同传递，同名曲线仍是不同目标。
+`plotium_properties_list` 列出允许的属性；`plotium_properties_inspect` 返回当前值、
+默认值、目标适用的单位选项和范围输入 schema。
+
+先调用 `plotium_get_state`，取其 `project_context` 和当前 revision，再调用
+`plotium_plan`。将以下占位符和数值身份替换为实际发现结果：
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "tool_id": "properties.set",
+  "targets": [{
+    "resource": {"id":"CANVAS_UUID/OBJECT_ID","kind":"plotium.canvas.object",
+      "parent_id":"CANVAS_UUID","local_id":"OBJECT_ID"},
+    "component": {"kind":"series","id":1}
+  }],
+  "parameters": {"key":"series.line.color","value":"#0072B2"}
+}
+```
+
+检查预检后，仅以返回的 `plan_id` 调用 `plotium_execute`。
+只改变该曲线及其误差线的颜色，不改变线宽或来源列。轴和单图字号使用
+`ids:[PLOT_OBJECT_ID]`。
+
+每次请求修改一个 key，可包含多个目标，原子提交并合为一次 Undo。已有但不适用
+的目标报告跳过；失效或伪造身份拒绝整次请求。非法颜色、非有限数值及非法范围
+在预检拒绝；执行重查 revision 和权限，失败执行也消费 plan，须重读并重新规划。
+
+范围值明确区分：
+
+- `{"mode":"auto"}`：仅清除该轴手动范围。
+- `{"mode":"manual","min":0,"max":10,"unit":"mA"}`：在明确的兼容单位内设置
+  有限且递增的范围。`unit:null` 只用于坐标单位未知的图，不能凭显示修改引入单位。
+- 重置**全部**轴设置是另一个原生操作，不是 Auto 的副作用；`properties.reset`
+  只重置指定属性。
+
+显示单位接受属性查询返回的兼容代码，例如 s→ms、mA→A。图对象仍保持 R4 坐标单位契约：
+原始数据、手动范围存储、位移及误差幅度的含义不变；刻度及自动派生的单位文字改变，
+人工轴标题保持原文。重绑、重排和删除首条曲线不重新定义坐标。隐藏轴或分类轴不能
+设置数值手动范围，但可清除已保留的范围。`unit_code.codes` 返回兼容选项；
+`axis_range.input_schema` 描述输入，`view` 和 `unit` 表示当前显示窗口。
+
+符号大小以 pt **直径**表示，显式设置后独立于线宽。没有覆盖时，原生点图仍沿用
+现有基于 width 的半径，原线宽接口含义不变；reset 恢复原生符号/大小。
+显式空图例文字使该图例项不显示。线型仅适用于折线，散点目标会按规则跳过。
+符号适用于折线和散点，不适用于 stick；颜色由图型语义决定时，单曲线改色按不适用跳过。
+
+单图刻度、轴标题和图例字号在未覆盖时继承文档设置，reset 只移除相应覆盖；
+改单图字体不影响其他图。字体/标题测量沿用原生渲染，不重排页面，不改变面板及
+内容的位置、尺寸。GUI 在现有 Line、Axes、Legend & scales 中使用同一属性控制，单图单位、范围及
+字号位于 Advanced。
+已有文档级字号仍保持项目范围。
+
+修改后读取新 revision，再为实际画布调用 `plotium_render_preview`，查看 PNG 并
+核对 `render_revision`；用 GUI Undo/Redo 检查同一原生对象。MCP 保存/导出仍未开放。
+
 ## 查询并修改一条明确曲线
 
 示例任务：“找到我的线图，读取线宽，预检改为 1.5 pt，再执行保存的计划。”
 工具调用顺序如下：
 
-1. 用 `{}` 调用 `plotium_get_state`，取得 `revision`、项目概况、选择和连接权限。
+1. 用 `{}` 调用 `plotium_get_state`，取得 `project_context`、`revision`、项目概况、选择和连接权限。
 2. `plotium_resources_search` 接受 `expected_project_context`、`expected_revision` 和 `query`，例如
    `{"kinds":["plotium.canvas.object"],"name_contains":"Plot"}`。先将结果解析为
    显式稳定 ID；`plotium_resources_inspect` 用 `ids` 和 `expected_revision` 读取描述。
@@ -559,7 +628,7 @@ Series ID 仅在所属图对象内唯一，因此务必复制包含资源信息�
 重复目标仅处理一次；组件不存在或资源身份被伪造时整次请求拒绝；曲线存在但属性
 不适用时报告为跳过。查询会返回当前值、默认值、范围及可用性；只查询一条曲线时，
 也可将查询参数改为 `targets`。恢复默认值时，用同一 target 预检 `properties.reset`，
-参数为 `{"key":"series.line.stroke_width"}`。组件寻址仅支持所列五项显示属性，
+参数为 `{"key":"series.line.stroke_width"}`。组件寻址仅支持所列显示属性，
 不开放处理参数。`resource.rename` 仍须使用 `ids`。
 
 工具结果同时提供结构化内容及 JSON 文本。项目读取与预检要求当前
