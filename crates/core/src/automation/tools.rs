@@ -25,6 +25,12 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
         });
     }
     validate_parameters(&request.tool_id, request.parameters.clone())?;
+    if request.tool_id == "data.import"
+        && is_table_import(&request.parameters)
+        && request.targets != (TargetSelector::Explicit { ids: Vec::new() })
+    {
+        return Err(AutomationError::InvalidSelector("Data-only import requires an explicitly empty project target; paths identify its inputs.".into()));
+    }
     let provider = ProjectResourceProvider::new(app);
     if request.expected_revision != provider.revision() {
         return Err(AutomationError::StaleRevision {
@@ -40,7 +46,9 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
             "components are only supported by property and document inspection tools".into(),
         ));
     }
-    let frozen_targets = if request.tool_id == IMAGE_PREVIEW {
+    let frozen_targets = if matches!(request.tool_id.as_str(), TABLE_COLUMNS | TABLE_READ_ROWS) {
+        super::table_read::freeze_table(app, &request)?
+    } else if request.tool_id == IMAGE_PREVIEW {
         super::preview::freeze(app, &request)?
     } else if request.tool_id == DOCUMENT_INSPECT {
         super::document::freeze(app, &request)?
@@ -373,6 +381,7 @@ pub(super) fn execute_planned_tool(
         "resource.rename" => execute_rename(app, &plan)?,
         "figure.apply_theme" => execute_theme(app, &plan)?,
         "processing.apply_scheme" => execute_scheme(app, &plan)?,
+        TABLE_COLUMNS | TABLE_READ_ROWS => super::table_read::execute_table_read(app, &plan)?,
         "data.import" => execute_import(app, &plan)?,
         "data.transform" => execute_transform(app, &plan)?,
         "figure.export" => execute_export(app, &plan)?,

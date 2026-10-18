@@ -175,7 +175,7 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 3. 将命令原样粘贴到终端执行：macOS 和 Linux 使用 zsh 或 bash，Windows
    使用 PowerShell。命令自动填入当前地址和密钥，启动新的 Codex 会话，
    无需手动替换内容，也无需另行执行 `export` 或 `codex mcp add`。
-4. 在 Codex 中输入 `/mcp`，确认 `plotium` 已连接且有九个工具。
+4. 在 Codex 中输入 `/mcp`，确认 `plotium` 已连接且有十一个工具。
    可以先发送：“使用 plotium 查看当前 Plotium 项目，暂时不要修改。”
 
 命令使用临时启动配置和仅对本次调用生效的密钥环境变量，并启动独立 Codex
@@ -205,13 +205,14 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 连接默认使用 **Read and modify**（读取和修改），agent 连接后即可执行支持的
 修改，并可通过 Plotium 的 **Undo** 与 **Redo** 撤销和重做。
 在 **Access** 中选择 **Read only**（只读）会立即阻止后续修改，包括待执行计划；
-查询和预检仍然可用。访问权限适用于所有持有该连接密钥的客户端，停止连接后
+表格查询及既有编辑预检仍可用；导入预检要求读取和修改权限。访问权限适用于所有持有该连接密钥的客户端，停止连接后
 失效；重新开启连接时恢复默认的 **Read and modify**。
 
 实际 Agent 项目读取和执行均保存运行记录，使项目进入未保存状态；握手、工具
 发现及静态属性目录查询不生成运行记录。
 
-连接支持文档结构、来源绑定和资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、来源绑定和
+资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 |
 | --- | --- |
@@ -221,17 +222,18 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 | `document.figure.typography.tick_pt` | `document` |
 | `document.figure.typography.label_pt` | `document` |
 
-此接口暂不支持处理参数、应用偏好、导入、计算、导出、内置聊天及
+此接口暂不支持处理参数、应用偏好、其他格式导入、计算、导出、内置聊天及
 stdio 连接。
 
 ### 不依赖名称发现结构
 
 先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
-九个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+十一个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
-这里仍只能预检 `resource.rename`、`properties.set` 和 `properties.reset`。
-只读权限允许查询与预检，但不允许执行修改。
+这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
+`data.import` 模式。
+只读权限允许表格查询及既有编辑预检，但拒绝导入预检和所有修改执行。
 
 使用返回的 revision 列举文档画布：
 
@@ -276,6 +278,92 @@ Series 详情包含可直接用于属性查询的完整 target、编码、可见
 （无量纲时为空）、`scope`、`access` 和静态 `applicability`，不混入当前目标值。
 用 `plotium_properties_inspect` 查询明确目标的当前值、默认值、范围和适用性。
 属性是否适用与连接是否允许修改分别表达。
+
+### 导入 CSV/TSV 数据，不创建图
+
+让 agent 导入明确指定的 UTF-8 CSV/TSV，检查列信息，再分页读完整张表。先调用
+`plotium_get_state {}`，然后调用 `plotium_plan`：
+
+```json
+{
+  "expected_revision": 7,
+  "tool_id": "data.import",
+  "parameters": {
+    "mode": "table_data_only",
+    "paths": ["/absolute/path/measurement.csv"],
+    "header": "present"
+  }
+}
+```
+
+导入不提供 `ids` 或 `targets`。`header` 可为默认的 `auto`、`present` 或 `absent`；
+自动判断有歧义则失败。`.csv` 与 `.tsv` 分别选择逗号和制表符；可显式用
+`format: "csv" | "tsv"` 指定。只读所列普通文件，不扫描目录、不自动寻找邻接
+sidecar、不回写源文件、不创建图或 X/Y 绑定。
+
+预检在后台完成准备后才返回。`import.items` 逐文件报告 `prepared` 或 `failed`，
+包含拟建原生 ID、元数据和诊断，此时项目尚未新增数据集。确认结果后调用
+`plotium_execute {"plan_id":"RETURNED_PLAN_ID"}`。执行使用预检冻结的字节和 typed
+snapshot，不重新读取可能已变化的文件；提交前重验 revision 和权限，将全部已准备
+成功项作为一次原子修改提交。`value.status` 为 `succeeded`、`partial` 或 `failed`，
+须逐项查看结果和已创建 ID；失败文件不留下半成品。一次 Undo 移除本批成功项，
+Redo 恢复同一 DatasetId、FieldId、ColumnId 和 RowId。既有 GUI/CLI 导入行为不变。
+
+元数据包含 DatasetId、TableId、表 RevisionId、字段身份、稳定 ColumnId、逻辑
+类型、nullable、单位、总行数及诊断。字段和列是不同的原生身份。缺失值保持 null，
+混合数值/文本列保留文本；超出有符号 64 位范围的整数字样保留文本，不舍入。
+不根据数值或表头拼写猜单位。`type_source` 区分 `file/user/inferred/unknown`，
+`unit_source` 区分 `file/user/unknown`。
+
+可选 `schema` 为有序原生 TableSchema，包含 typed ColumnSchema ID、逻辑类型、
+nullable 和可选 UnitSpec；也可用 `schema_path` 明确指定 v1 PlotiumDelimitedSchema
+JSON 文件。声明必须与表头及顺序完全对应，非法值明确失败，不回退自动推断。
+支持声明 null、boolean、int64、float64、utf8、date 和 timestamp；本导入不接受
+唯一性/业务键约束及不确定度关系，也不从 `_sigma` 列名赋予科研误差含义。每次
+导入分配新的原生 ID，文件/用户 schema 中的 ID 仅描述来源，不寻址已有项目目标。
+
+每批最多 16 个文件、每文件 16 MiB、指定输入合计 64 MiB，每文件最多 256 列、
+1000000 行；明确指定的元数据文件最多 256 KiB。已准备项摘要上限 128 KiB，
+完整预检响应上限 256 KiB，超出时缩小批次或 schema。每连接最多保留 4 个已准备导入
+和总计 32 个计划，同时只运行一个导入预检。这些是输入预算，不是进程总内存
+上限。取消、切换项目、撤销权限或期间发生编辑，都会阻止待完成预检成为可执行
+计划。排队或运行不代表完成；失败或过期提交也会消费计划，须重新读状态并预检，
+不能盲目重放创建请求。
+
+### 有界分页读完整张表
+
+从导入元数据或数据集资源描述符复制 DatasetId 和表 RevisionId。将它们与
+`expected_revision` 传给 `plotium_table_columns` 查看元数据，再调用
+`plotium_table_read_rows`：
+
+```json
+{
+  "expected_revision": 8,
+  "dataset_id": "DATASET_UUID",
+  "table_revision": "TABLE_REVISION_UUID",
+  "offset": 0,
+  "limit": 200
+}
+```
+
+用返回的 ID 替换占位符。可选 `column_ids` 按稳定 ColumnId 投影并保持所给顺序；
+省略或空数组表示 schema 顺序的全部列。行按不可变原生 snapshot 顺序读取。
+结果包含 `column_ids`、`rows: [{row_id, values}]`、`total_rows`、`requested_rows`、
+`returned_rows`、`next_offset` 和 `end`。每个值以 `kind` 标明类型，null 无 value。
+Int64、time、timestamp 和 duration 用十进制字符串避免 JSON 舍入；date 为 Unix
+纪元以来天数，后三种时间类型为纳秒。非有限浮点值明确返回 `NaN/+Inf/-Inf`
+字符串，不转为 null。
+
+保持数据集、文档 revision、表 revision 和投影不变，沿 `next_offset` 连续读取，
+直到 `end: true` 且 `next_offset: null`。默认每页 200 行，最多 1000 行和 20000 个
+投影单元格；完整结构化 ToolResult 上限 256 KiB。字节预算可缩短整页，但不截断
+单元格；以实际数量和继续位置为准。单行超预算返回 `response_too_large`。
+offset 等于总量时返回空的结束页，大于总量时失败。非法 limit、重复/不存在列及
+超预算请求直接拒绝，不静默裁剪参数。
+
+每次读取都检查两个 revision。人工编辑、Undo/Redo 会使旧文档 revision 失效，
+须重新读状态并重启分页，不能混读。无效 ID 不回退当前选择。只读连接可查询
+已有表格，但不可导入。预算和导入权限条件可从 `connection_capabilities` 发现。
 
 ### 读取实际画布图像
 
@@ -370,7 +458,7 @@ Series 详情包含可直接用于属性查询的完整 target、编码、可见
    `plotium_execute`。桌面立即显示修改；**Undo** 恢复原值，**Redo** 重新应用。
    相同值报告为跳过；整批修改合并为一次撤销。
 
-属性查询和预检必须且只能提供一个非空的 `ids` 或 `targets` 数组。
+属性查询和属性编辑预检必须且只能提供一个非空的 `ids` 或 `targets` 数组。
 `ids` 将每个资源展开为该属性对应的所有组件；`targets` 只操作指定的 Series 组件。
 Series ID 仅在所属图对象内唯一，因此务必复制包含资源信息的完整 target。
 重复目标仅处理一次；组件不存在或资源身份被伪造时整次请求拒绝；曲线存在但属性

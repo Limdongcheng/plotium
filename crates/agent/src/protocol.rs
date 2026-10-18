@@ -112,7 +112,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
         ("plotium_resources_inspect", "Read descriptors for explicit stable resource IDs.", json!({"expected_revision": revision, "ids": ids}), json!(["expected_revision", "ids"])),
         ("plotium_properties_list", "List supported display property definitions: schema, units, scope and static applicability. Does not create a run record.", json!({}), json!([])),
         ("plotium_properties_inspect", "Read property values, defaults, bounds and applicability.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "key": key}), json!(["expected_revision", "key"])),
-        ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": crate::capabilities::EDIT_OPERATIONS}, "parameters": {"type": "object", "description": "Core tool arguments: rename {name}; properties.set {key,value}; properties.reset {key}."}}), json!(["expected_revision", "tool_id", "parameters"])),
+        ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": crate::capabilities::EDIT_OPERATIONS}, "parameters": {"type": "object", "description": "Core arguments: rename {name}; properties.set {key,value}; properties.reset {key}; data.import {mode:table_data_only,paths,header?,format?,schema?,schema_path?} without ids/targets."}}), json!(["expected_revision", "tool_id", "parameters"])),
         ("plotium_execute", "Submit a saved plan once. Requires current desktop write permission and unchanged revision. Undo is available in Plotium.", json!({"plan_id": {"type": "string"}}), json!(["plan_id"])),
     ].into_iter().map(|(name, description, properties, required)| {
         let mut schema = json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
@@ -125,6 +125,11 @@ pub(crate) fn definitions() -> Vec<Tool> {
                 schema["allOf"] = json!([{"if":{"properties":{"tool_id":{"const":"resource.rename"}}},"then":{"required":["ids"],"not":{"required":["targets"]}}}]);
             }
         }
+        if name == "plotium_plan" {
+            schema["oneOf"][0]["properties"] = json!({"tool_id":{"not":{"const":"data.import"}}});
+            schema["oneOf"][1]["properties"] = json!({"tool_id":{"not":{"const":"data.import"}}});
+            schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"data.import"},"parameters":plotium_core::automation::table_import_schema()}}));
+        }
         Tool::new(name, description, schema.as_object().expect("local schema is an object").clone())
     }).collect();
     tools.push(Tool::new("plotium_document_inspect", "Inspect bounded document structure and source bindings by full stable target. view self returns details; children pages direct children. Never uses selection.", document.as_object().expect("local schema is an object").clone()));
@@ -132,6 +137,18 @@ pub(crate) fn definitions() -> Vec<Tool> {
     preview["properties"]["expected_revision"] = json!({"type":"integer","minimum":0});
     preview["required"] = json!(["expected_revision", "target"]);
     tools.push(Tool::new("plotium_render_preview", "Read a whole-canvas PNG image with full target identity, frozen render_revision and pixel dimensions. No file I/O. Rejects missing assets and budget overflow.", preview.as_object().expect("local schema is an object").clone()));
+    for (name, rows) in [
+        ("plotium_table_columns", false),
+        ("plotium_table_read_rows", true),
+    ] {
+        let mut schema = plotium_core::automation::table_read_schema(rows);
+        schema["properties"]["expected_revision"] = json!({"type":"integer","minimum":0});
+        schema["required"]
+            .as_array_mut()
+            .expect("local required fields")
+            .push(json!("expected_revision"));
+        tools.push(Tool::new(name,"Read native table data at explicit document and table revisions; no selection fallback.",schema.as_object().expect("local schema").clone()));
+    }
     tools
 }
 
@@ -184,13 +201,19 @@ mod tests {
             )
         }) {
             let schema = Value::Object((*tool.input_schema).clone());
-            assert_eq!(
-                schema["oneOf"],
-                json!([
-                    {"required":["ids"],"not":{"required":["targets"]}},
-                    {"required":["targets"],"not":{"required":["ids"]}}
-                ])
-            );
+            assert_eq!(schema["oneOf"][0]["required"], json!(["ids"]));
+            assert_eq!(schema["oneOf"][0]["not"], json!({"required":["targets"]}));
+            assert_eq!(schema["oneOf"][1]["required"], json!(["targets"]));
+            assert_eq!(schema["oneOf"][1]["not"], json!({"required":["ids"]}));
+            if tool.name == "plotium_plan" {
+                assert_eq!(schema["oneOf"].as_array().unwrap().len(), 3);
+                assert_eq!(
+                    schema["oneOf"][2]["properties"]["parameters"]["properties"]["mode"]["const"],
+                    "table_data_only"
+                );
+            } else {
+                assert_eq!(schema["oneOf"].as_array().unwrap().len(), 2);
+            }
             assert_eq!(schema["properties"]["ids"]["minItems"], 1);
             let targets = &schema["properties"]["targets"];
             assert_eq!(targets["minItems"], 1);

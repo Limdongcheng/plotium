@@ -230,6 +230,10 @@ pub(super) fn execute_import(
     app: &mut PlotiumApp,
     plan: &ToolPlan,
 ) -> Result<ToolResult, AutomationError> {
+    if is_table_import(&plan.request.parameters) {
+        let params = parse::<TableImportParams>("data.import", plan.request.parameters.clone())?;
+        return PreparedTableImport::prepare(params, || false)?.commit(app, plan);
+    }
     let params: ImportParams = parse(&plan.request.tool_id, plan.request.parameters.clone())?;
     if params.paths.is_empty() {
         return Err(AutomationError::InvalidParameters {

@@ -34,6 +34,10 @@ impl AgentConnections {
                 format!("Agent preview failed ({}): {}", error.code, error.message);
             self.error = Some(app.session.status.clone());
         }
+        if let Err(error) = connection.poll_import(app, blocked) {
+            app.session.status = format!("Agent import failed ({}): {}", error.code, error.message);
+            self.error = Some(app.session.status.clone());
+        }
         // Bound work per frame so a connected client cannot starve rendering.
         for _ in 0..8 {
             let Some(request) = connection.next_request() else {
@@ -43,7 +47,14 @@ impl AgentConnections {
                 continue;
             }
             self.recent = request.name.clone();
-            let result = if request.name == "plotium_render_preview" {
+            let result = if request.name == "plotium_render_preview"
+                || (request.name == "plotium_plan"
+                    && request
+                        .arguments
+                        .get("tool_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("data.import"))
+            {
                 connection.dispatch_request(app, request, blocked)
             } else {
                 let result = connection.session.call_when_available(
@@ -122,6 +133,7 @@ impl AgentConnections {
         }
         ui.add_space(8.0);
         ui.label("Agent project reads save run records and mark the project as unsaved.");
+        ui.label("A connected agent can read table values and import explicitly named CSV/TSV files. Import requires Read and modify; files are never changed.");
         if !self.recent.is_empty() {
             ui.label(format!("Recent operation: {}", self.recent));
         }

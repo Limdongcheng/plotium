@@ -336,6 +336,16 @@ impl PlotiumApp {
             Action::SetFigureTypography { after, .. } => {
                 self.set_figure_typography_value(*after);
             }
+            Action::InsertTableData { dataset } => {
+                let id = dataset.resource_id();
+                if self.doc.dataset_index(id).is_some() {
+                    return Err(ActionApplyError::StaleTarget(format!(
+                        "dataset {id} already exists"
+                    )));
+                }
+                self.doc.datasets.push(dataset.as_ref().clone());
+                self.session.dataset_epoch += 1;
+            }
             Action::InsertDatasetWithCanvas {
                 dataset_index,
                 canvas_index,

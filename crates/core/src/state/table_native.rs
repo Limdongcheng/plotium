@@ -174,7 +174,20 @@ impl super::TableDataset {
         limit: usize,
         projection: &[ColumnId],
     ) -> Result<TypedTableRows, String> {
+        self.typed_rows_page(0, limit, projection)
+    }
+
+    /// Read a range in immutable snapshot order, skipping whole preceding batches.
+    pub fn typed_rows_page(
+        &self,
+        offset: u64,
+        limit: usize,
+        projection: &[ColumnId],
+    ) -> Result<TypedTableRows, String> {
         let snapshot = &self.typed_state.envelope.revision.snapshot;
+        if offset > snapshot.row_count {
+            return Err("Row offset exceeds table length.".into());
+        }
         let selected = if projection.is_empty() {
             snapshot
                 .schema
@@ -215,16 +228,28 @@ impl super::TableDataset {
         let reader =
             plotium_data::SnapshotReader::new(snapshot, self.typed_state.store.as_ref(), &codecs)
                 .map_err(|error| error.to_string())?;
-        for batch_index in 0..snapshot.batch_count() {
+        for (batch_index, descriptor) in snapshot.row_id_chunks.iter().enumerate() {
+            if descriptor.row_start + descriptor.row_count <= offset {
+                continue;
+            }
+            let start = usize::try_from(offset.saturating_sub(descriptor.row_start))
+                .map_err(|e| e.to_string())?;
             let batch = reader
                 .read_batch(batch_index, &selected)
                 .map_err(|error| error.to_string())?;
-            let take = (limit - result.row_ids.len()).min(batch.row_ids.len());
-            result.row_ids.extend_from_slice(&batch.row_ids[..take]);
+            let take = (limit - result.row_ids.len()).min(batch.row_ids.len() - start);
+            result
+                .row_ids
+                .extend_from_slice(&batch.row_ids[start..start + take]);
             for (target, (_, chunk)) in result.columns.iter_mut().zip(batch.columns) {
                 target.values.extend(
-                    (0..take)
-                        .map(|row| chunk.value(row).unwrap_or(plotium_data::ScalarValue::Null)),
+                    (start..start + take)
+                        .map(|row| {
+                            chunk.value(row).ok_or_else(|| {
+                                "Typed chunk is shorter than its row identities.".to_owned()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
                 );
             }
             if result.row_ids.len() == limit {

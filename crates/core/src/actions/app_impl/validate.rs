@@ -217,6 +217,18 @@ pub(super) fn validate_action(
                 return Err(ActionApplyError::StaleTarget(format!("canvas {canvas}")));
             }
         }
+        Action::InsertTableData { dataset } => {
+            let id = dataset.resource_id();
+            if !matches!(dataset.as_ref(), crate::state::Dataset::Table(_))
+                || shape.has_dataset(app, id)
+            {
+                return Err(ActionApplyError::InvalidValue(format!(
+                    "invalid or duplicate table {id}"
+                )));
+            }
+            shape.datasets += 1;
+            shape.inserted.push(id);
+        }
         Action::InsertDatasetWithCanvas {
             dataset_index,
             canvas_index,

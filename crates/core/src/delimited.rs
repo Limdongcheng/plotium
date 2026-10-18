@@ -101,6 +101,14 @@ pub fn parse_delimited(
     input: &str,
     options: ParseOptions,
 ) -> Result<DelimitedTable, DelimitedError> {
+    parse_delimited_columns(input, options, 2)
+}
+
+pub fn parse_delimited_columns(
+    input: &str,
+    options: ParseOptions,
+    minimum_columns: usize,
+) -> Result<DelimitedTable, DelimitedError> {
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     if input.trim().is_empty() {
         return Err(DelimitedError::EmptyInput);
@@ -110,7 +118,7 @@ pub fn parse_delimited(
         Some(delimiter) => (delimiter, rectangular_rows(input, delimiter)?),
         None => detect_delimiter(input)?,
     };
-    if raw_rows.first().map_or(0, |(_, row)| row.len()) < 2 {
+    if raw_rows.first().map_or(0, |(_, row)| row.len()) < minimum_columns {
         return Err(DelimitedError::TooFewColumns);
     }
 
