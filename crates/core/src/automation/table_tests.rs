@@ -437,7 +437,7 @@ fn import_and_page_budgets_and_duplicate_columns_are_enforced() {
     let mut request = request(
         &app,
         "data.import",
-        json!({"mode":"table_data_only","paths":["/tmp/unused.csv"]}),
+        json!({"mode":"table_data_only","paths":[f.0.join("unused.csv")]}),
     );
     request.targets = TargetSelector::CurrentSelection;
     assert!(matches!(
