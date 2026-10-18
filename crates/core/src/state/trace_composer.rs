@@ -26,7 +26,7 @@ impl PlotiumApp {
                         .to_owned();
                 return;
             };
-            let Some(item_id) = source.item else {
+            let Some(item_id) = source.item() else {
                 self.session.status = "The trace selection contains a non-item source.".to_owned();
                 return;
             };
@@ -56,6 +56,7 @@ impl PlotiumApp {
             series.push(binding);
         }
         let binding = DataBinding {
+            coordinates: None,
             series: series.clone(),
         };
         if !self.series_stackable(&binding) || !self.trace_stack_fields_compatible(&binding) {
@@ -133,6 +134,7 @@ impl PlotiumApp {
             }
         }
         let binding = DataBinding {
+            coordinates: None,
             series: items.iter().map(|item| item.series.clone()).collect(),
         };
         (self.series_stackable(&binding) && self.trace_stack_fields_compatible(&binding)).then_some(
@@ -183,7 +185,7 @@ impl PlotiumApp {
             else {
                 return false;
             };
-            series.source.item.is_some()
+            series.source.item().is_some()
                 && trace_field_contract_matches(&descriptor, &series.encoding, &mut expected_units)
         }) && expected_units.is_some()
     }

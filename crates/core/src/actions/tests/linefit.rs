@@ -455,6 +455,7 @@ fn stacked_figures_exclude_line_fit_overlays() {
     ));
 
     let binding = DataBinding {
+        coordinates: None,
         series: vec![
             SeriesBinding::from_dataset(&app.doc.datasets[0]).unwrap(),
             SeriesBinding::from_dataset(&app.doc.datasets[1]).unwrap(),

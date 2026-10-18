@@ -19,12 +19,12 @@ pub(super) fn initial_figure(
         .filter(|series| series.source.resource == dataset.resource_id())
         .filter(|series| series.source.field == field)
         .collect::<Vec<_>>();
-    if !active.iter().any(|series| series.source.item.is_some()) {
+    if !active.iter().any(|series| series.source.item().is_some()) {
         return fallback;
     }
     let parts = active
         .into_iter()
-        .filter_map(|series| dataset.trace_item_figure(series.source.field, series.source.item?))
+        .filter_map(|series| dataset.trace_item_figure(series.source.field, series.source.item()?))
         .collect::<Vec<_>>();
     let Some(first) = parts.first() else {
         return fallback;

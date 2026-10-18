@@ -40,6 +40,7 @@ pub(super) fn configure_fields(
     plot.chart.type_id = chart_type.to_owned();
     let palette = &crate::state::OVERLAY_PALETTE;
     plot.binding = DataBinding {
+        coordinates: None,
         series: fields
             .iter()
             .enumerate()
@@ -47,7 +48,7 @@ pub(super) fn configure_fields(
                 let mut series = SeriesBinding::with_source(SeriesSource {
                     resource: dataset.resource_id(),
                     field: *field,
-                    item: None,
+                    selection: crate::state::SeriesSelection::from_item(None),
                 });
                 series.set_primary_color(palette[index % palette.len()]);
                 series.label = Some(label.clone());

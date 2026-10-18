@@ -203,6 +203,7 @@ fn overlay_only_dataset_does_not_contribute_integrals() {
     secondary.as_nmr_mut().unwrap().integrals = vec![sample_integral(4, 2.0, None)];
     app.doc.datasets.push(secondary);
     let binding = DataBinding {
+        coordinates: None,
         series: vec![
             SeriesBinding::from_dataset(&app.doc.datasets[0]).unwrap(),
             SeriesBinding::from_dataset(&app.doc.datasets[1]).unwrap(),

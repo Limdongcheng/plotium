@@ -56,6 +56,8 @@ pub(super) fn validate_parameters(
         "resources.search" => parse::<SearchParams>(tool, value).map(drop),
         "data.preview" => parse::<PreviewParams>(tool, value).map(drop),
         "results.compare" => parse::<CompareParams>(tool, value).map(drop),
+        CURVE_BIND => parse::<CurveBindParams>(tool, value).map(drop),
+        CURVE_MATERIALIZE => parse::<CurveMaterializeParams>(tool, value).map(drop),
         "resource.rename" => parse::<RenameParams>(tool, value).map(drop),
         "figure.apply_theme" => parse::<ThemeParams>(tool, value).map(drop),
         "processing.apply_scheme" => parse::<SchemeParams>(tool, value).map(drop),
@@ -255,8 +257,38 @@ impl V1Schema for DocumentInspectParams {
     }
 }
 
+impl V1Schema for CurveBindParams {
+    fn schema() -> serde_json::Value {
+        curve_binding_schema(false)
+    }
+}
+impl V1Schema for CurveMaterializeParams {
+    fn schema() -> serde_json::Value {
+        curve_binding_schema(true)
+    }
+}
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!(
+            "plot.series.bind",
+            "Bind curve columns",
+            "Atomically rebind exact native Series without editing table defaults",
+            CurveBindParams,
+            [KIND_CANVAS_OBJECT],
+            [],
+            EffectLevel::Reversible,
+            true
+        ),
+        tool!(
+            "plot.series.materialize_default",
+            "Materialize default curves",
+            "Expand existing default table curves into stable per-curve bindings",
+            CurveMaterializeParams,
+            [KIND_CANVAS_OBJECT],
+            [],
+            EffectLevel::Reversible,
+            true
+        ),
         tool!(
             "render.preview_image",
             "Preview canvas image",

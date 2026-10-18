@@ -383,7 +383,7 @@ fn mixed_or_cross_dataset_chromatogram_overlays_do_not_declare_interactions() {
         .push(SeriesBinding::with_source(SeriesSource {
             resource: dataset_id,
             field: spectrum,
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         }));
     assert!(app.plot_interaction_descriptor(0, object).is_none());
 
@@ -414,7 +414,7 @@ fn mixed_or_cross_dataset_chromatogram_overlays_do_not_declare_interactions() {
         .push(SeriesBinding::with_source(SeriesSource {
             resource: other_id,
             field: other_field,
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         }));
     assert!(app.plot_interaction_descriptor(0, object).is_none());
 }

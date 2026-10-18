@@ -10,7 +10,7 @@ use plotium_figure::Color;
 pub struct SeriesSource {
     pub resource: DatasetId,
     pub field: FieldId,
-    pub item: Option<plotium_data::TraceItemId>,
+    pub selection: SeriesSelection,
 }
 
 /// One overlaid series and its concrete visual encoding. Encoding-specific
@@ -23,6 +23,32 @@ pub struct SeriesBinding {
     pub visible: bool,
     pub label: Option<String>,
     pub encoding: plotium_figure::SeriesEncoding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeriesSelection {
+    FieldDefault,
+    TraceItem(plotium_data::TraceItemId),
+    TableColumns(super::TableCurveColumns),
+}
+impl SeriesSelection {
+    pub fn from_item(item: Option<plotium_data::TraceItemId>) -> Self {
+        item.map_or(Self::FieldDefault, Self::TraceItem)
+    }
+}
+impl SeriesSource {
+    pub fn item(&self) -> Option<plotium_data::TraceItemId> {
+        match self.selection {
+            SeriesSelection::TraceItem(item) => Some(item),
+            _ => None,
+        }
+    }
+    pub fn columns(&self) -> Option<super::TableCurveColumns> {
+        match self.selection {
+            SeriesSelection::TableColumns(columns) => Some(columns),
+            _ => None,
+        }
+    }
 }
 
 impl SeriesBinding {
@@ -83,7 +109,7 @@ impl SeriesBinding {
             source: SeriesSource {
                 resource: dataset.resource_id(),
                 field,
-                item,
+                selection: SeriesSelection::from_item(item),
             },
             visible: true,
             label: None,

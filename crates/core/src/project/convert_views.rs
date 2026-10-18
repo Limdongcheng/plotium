@@ -6,6 +6,8 @@ use crate::state::{AssetId, ImageFit, ImageInterpolation, QuarterTurn, RasterIma
 use crate::state::{CanvasAnalysisBinding, CraftRunId, XViewportLinkGroup, XViewportLinkId};
 #[path = "convert_views_panel.rs"]
 mod panel_convert;
+#[path = "convert_series.rs"]
+mod series_convert;
 use crate::state::{AxisProjection, AxisProjections, ProjectionSource};
 use crate::state::{
     GroupMember, LayoutGroup, Panel, PanelId, PanelLabelMode, PanelLabelSpec, PanelLayout,
@@ -107,6 +109,7 @@ pub fn canvas_to_view(
                 input: String::new(),
                 next_series_id: 0,
                 series: Vec::new(),
+                coordinate_units: None,
                 chart_type: None,
                 chart_column: None,
                 chart_bins: None,
@@ -159,53 +162,11 @@ pub fn canvas_to_view(
                         Dataset::Xrd(_) => "line_plot",
                         Dataset::Xps(_) => "line_plot",
                     };
-                    let mut ids = std::collections::BTreeSet::new();
-                    let series = plot
-                        .binding
-                        .series
-                        .iter()
-                        .map(|sb| {
-                            if !ids.insert(sb.id) {
-                                return Err(ProjectError::Invalid(format!(
-                                    "view {view_id} plot {} has duplicate series id {}",
-                                    object.id, sb.id
-                                )));
-                            }
-                            let dataset = datasets
-                                .iter()
-                                .find(|dataset| dataset.resource_id() == sb.source.resource)
-                                .ok_or_else(|| {
-                                ProjectError::Invalid(format!(
-                                    "view {view_id} plot {} references missing series dataset {}",
-                                    object.id, sb.source.resource
-                                ))
-                            })?;
-                            validate_series_source(
-                                dataset,
-                                sb.source.field,
-                                sb.source.item,
-                                &sb.encoding,
-                                &format!("view {view_id} plot {} series {}", object.id, sb.id),
-                            )?;
-                            Ok(SeriesBindingDto {
-                                id: sb.id.get(),
-                                source: match sb.source.item {
-                                    Some(item) => SeriesSourceDto::TraceItem {
-                                        input: format!("recipe_{}", dataset.resource_id()),
-                                        field: sb.source.field.get(),
-                                        item,
-                                    },
-                                    None => SeriesSourceDto::Field {
-                                        input: format!("recipe_{}", dataset.resource_id()),
-                                        field: sb.source.field.get(),
-                                    },
-                                },
-                                label: sb.label.clone(),
-                                encoding: sb.encoding.clone(),
-                                visible: sb.visible,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                    let series = series_convert::save_series(
+                        datasets,
+                        plot,
+                        &format!("view {view_id} plot {}", object.id),
+                    )?;
                     let stack = (plot.stack != StackSpec::default())
                         .then(|| StackDto::from_spec(&plot.stack));
                     Ok(ViewCanvasObject {
@@ -214,6 +175,7 @@ pub fn canvas_to_view(
                             .map(|owner| format!("recipe_{owner}"))
                             .unwrap_or_default(),
                         next_series_id: plot.next_series_id.get(),
+                        coordinate_units: plot.binding.coordinates.clone(),
                         series,
                         chart_type: Some(plot.chart.type_id.clone()),
                         chart_column: plot.chart.column.map(|column| column.to_string()),
@@ -478,7 +440,7 @@ pub fn view_to_canvas(
                             view_object.id, sb.id
                         )));
                     }
-                    let (input, stored_field, item) = sb.source.parts();
+                    let (input, stored_field, selection) = sb.source.parts();
                     let index = resolve(input)?;
                     let dataset = app.doc.datasets.get(index).ok_or_else(|| {
                         ProjectError::Invalid(format!(
@@ -489,7 +451,10 @@ pub fn view_to_canvas(
                     validate_series_source(
                         dataset,
                         field,
-                        item,
+                        match selection {
+                            crate::state::SeriesSelection::TraceItem(id) => Some(id),
+                            _ => None,
+                        },
                         &sb.encoding,
                         &format!("view {view_id} series {}", sb.id),
                     )?;
@@ -498,14 +463,18 @@ pub fn view_to_canvas(
                         source: crate::state::SeriesSource {
                             resource: dataset.resource_id(),
                             field,
-                            item,
+                            selection,
                         },
                         label: sb.label.clone(),
                         encoding: sb.encoding.clone(),
                         visible: sb.visible,
                     });
                 }
-                let binding = DataBinding { series };
+                let binding = DataBinding {
+                    coordinates: view_object.coordinate_units.clone(),
+                    series,
+                };
+                series_convert::validate_columns(&app.doc.datasets, &binding)?;
                 let display_owner = if view_object.input.is_empty() {
                     None
                 } else {

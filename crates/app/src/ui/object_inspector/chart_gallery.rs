@@ -12,6 +12,10 @@ pub(super) fn chart_gallery(app: &mut PlotiumApp, ci: usize, object: ObjectId, u
     let Some(plot) = app.doc.canvases[ci].object(object).and_then(|o| o.plot()) else {
         return;
     };
+    if plot.binding.coordinates.is_some() {
+        ui.label("Explicit line / point curves");
+        return;
+    }
     let current = plot.chart.clone();
     let binding = plot.binding.clone();
     let Some(primary) = plot

@@ -1,4 +1,5 @@
 use super::*;
+use crate::PseudoDisplay;
 use crate::state::*;
 use plotium_data::{ColumnChunk, ColumnSchema, ColumnValues, LogicalType};
 
@@ -172,7 +173,7 @@ fn traverse_same_named_panels_objects_series_and_actual_source_columns() {
             );
             assert_eq!(n["source"]["status"], "resolved");
             assert_eq!(n["source"]["binding_mode"], "table_default");
-            assert_eq!(n["source"]["per_plot_explicit_binding_supported"], false);
+            assert_eq!(n["source"]["per_plot_explicit_binding_supported"], true);
             assert_eq!(n["source"]["series_columns"].as_array().unwrap().len(), 2);
             assert!(!n["source"]["series_columns"][0]["error_column"].is_null());
             let source_id = n["source"]["field"]["id"].as_str().unwrap();
@@ -361,7 +362,7 @@ fn content_details_and_damaged_item_are_explicit() {
         .binding
         .series[0]
         .source
-        .item = Some(plotium_data::TraceItemId::new());
+        .selection = crate::state::SeriesSelection::TraceItem(plotium_data::TraceItemId::new());
     assert_eq!(
         read(&mut app, target.clone(), DocumentView::SelfOnly, 0, 50).value["node"]["source"]["status"],
         "missing_item"
@@ -373,4 +374,212 @@ fn content_details_and_damaged_item_are_explicit() {
         plan_tool(&app, implicit),
         Err(AutomationError::InvalidSelector(_))
     ));
+}
+
+fn app_with_live_plot(dataset: Dataset) -> PlotiumApp {
+    let mut app = PlotiumApp::new_with_settings(crate::settings::Settings::default());
+    app.doc.datasets.push(dataset);
+    let canvas = crate::workflow::build_default_canvas(&app.doc.datasets[0], "Live discovery");
+    app.doc.canvases.push(canvas);
+    app.session.active_canvas = Some(0);
+    app
+}
+
+fn assert_discovery_matches_property_targets(app: &mut PlotiumApp) -> Vec<TargetRef> {
+    let expected = app.series_targets(0, app.doc.canvases[0].objects[0].id);
+    assert!(!expected.is_empty());
+    let owner = object_target(&app.doc.canvases[0], &app.doc.canvases[0].objects[0]);
+    let detail = read(app, owner.clone(), DocumentView::SelfOnly, 0, 50);
+    assert_eq!(detail.value["node"]["child_count"], expected.len());
+    let mut found = Vec::new();
+    for offset in 0..expected.len() {
+        let page = read(app, owner.clone(), DocumentView::Children, offset, 1);
+        assert_eq!(page.value["total"], expected.len());
+        let target: TargetRef =
+            serde_json::from_value(page.value["items"][0]["target"].clone()).unwrap();
+        assert!(ProjectResourceProvider::new(app).component_exists(&target));
+        let detail = read(app, target.clone(), DocumentView::SelfOnly, 0, 50);
+        assert_eq!(detail.value["node"]["target"], json!(target));
+        let key = if detail.value["node"]["encoding"] == "contour" {
+            crate::properties::contour::LINE_WIDTH.as_str()
+        } else {
+            crate::properties::line::STROKE_WIDTH.as_str()
+        };
+        for tool in [TOOL_INSPECT, TOOL_SET] {
+            let parameters = if tool == TOOL_SET {
+                json!({"key":key,"value":1.5})
+            } else {
+                json!({"key":key})
+            };
+            let request = ToolRequest {
+                tool_id: tool.into(),
+                tool_version: 1,
+                parameters,
+                targets: TargetSelector::Components {
+                    targets: vec![target.clone()],
+                },
+                expected_revision: DocumentRevision(app.doc.automation_revision),
+                caller: CallerType::Agent,
+            };
+            let plan = plan_tool(app, request).unwrap();
+            assert_eq!(plan.targets.len(), 1);
+            assert_eq!(plan.targets[0].status, TargetCompatibility::Compatible);
+            let authority = plan.required_authority;
+            execute_tool(app, plan, authority).unwrap();
+        }
+        found.push(target);
+    }
+    assert_eq!(found, expected);
+    found
+}
+
+fn assert_dormant_series_is_not_addressable(app: &PlotiumApp, target: TargetRef) {
+    assert!(!ProjectResourceProvider::new(app).component_exists(&target));
+    assert!(matches!(
+        plan_tool(app, query(app, target, DocumentView::SelfOnly, 0, 50)),
+        Err(AutomationError::InvalidSelector(_))
+    ));
+}
+
+#[test]
+fn live_discovery_follows_recording_channel_without_exposing_dormant_series() {
+    let recording = ElectrophysiologyDataset::load(plotium_io::ElectrophysiologyData {
+        abf_version: "2.9".into(),
+        sample_rate_hz: 10_000.,
+        channels: ["pA", "mV"]
+            .into_iter()
+            .map(|unit| plotium_io::RecordedChannel {
+                name: unit.into(),
+                unit: plotium_io::ElectricalUnit::from_symbol(unit),
+            })
+            .collect(),
+        sweeps: (0..2)
+            .map(|i| plotium_io::Sweep {
+                start_time_s: i as f64,
+                channels: vec![vec![1., 2.], vec![10., 20.]],
+                commands: vec![],
+            })
+            .collect(),
+        protocol: None,
+        source: "live-discovery.abf".into(),
+        import_warnings: vec![],
+    });
+    let mut app = app_with_live_plot(Dataset::Electrophysiology(Box::new(recording)));
+    assert_eq!(
+        app.doc.canvases[0].objects[0]
+            .plot()
+            .unwrap()
+            .binding
+            .series
+            .len(),
+        4
+    );
+    // An authored hidden Series is still active/addressable, unlike a dormant channel.
+    app.doc.canvases[0].objects[0]
+        .plot_mut()
+        .unwrap()
+        .binding
+        .series[0]
+        .visible = false;
+    let first = assert_discovery_matches_property_targets(&mut app);
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        read(&mut app, first[0].clone(), DocumentView::SelfOnly, 0, 50).value["node"]["visible"],
+        false
+    );
+    app.doc.datasets[0]
+        .as_electrophysiology_mut()
+        .unwrap()
+        .selected_channel = 1;
+    let second = assert_discovery_matches_property_targets(&mut app);
+    assert_eq!(second.len(), 2);
+    assert!(second.iter().all(|target| !first.contains(target)));
+    for target in &first {
+        assert_dormant_series_is_not_addressable(&app, target.clone());
+    }
+    app.doc.datasets[0]
+        .as_electrophysiology_mut()
+        .unwrap()
+        .selected_channel = 0;
+    assert_eq!(assert_discovery_matches_property_targets(&mut app), first);
+}
+
+#[test]
+fn live_discovery_follows_pseudo_display_and_preserves_external_series() {
+    let dim = plotium_io::Dim {
+        spectral_width_hz: 4000.,
+        observe_freq_mhz: 400.,
+        carrier_ppm: 0.,
+        nucleus: "1H".into(),
+        group_delay: 0.,
+    };
+    let diffusion = plotium_io::DiffusionMeta {
+        gamma: 2.675_222e8,
+        delta: 2e-3,
+        big_delta: 0.1,
+        tau: 0.,
+        shape_factor: 1. / 3.,
+    };
+    let gradients = (0..16).map(|i| 0.02 + i as f64 * 0.02).collect::<Vec<_>>();
+    let values = gradients
+        .iter()
+        .flat_map(|g| {
+            let attenuation = (-1.2e-9 * diffusion.b_factor(*g)).exp();
+            (0..64).map(move |j| {
+                let time = j as f64 / 4000.;
+                num_complex::Complex64::from_polar(
+                    attenuation * (-time / 0.2).exp(),
+                    std::f64::consts::TAU * 400. * time,
+                )
+            })
+        })
+        .collect();
+    let mut data = crate::nmr_test_support::load_2d(plotium_io::NmrData2D {
+        data: values,
+        rows: 16,
+        cols: 64,
+        domain: plotium_io::Domain::Time,
+        direct: dim.clone(),
+        indirect: dim,
+        quad: plotium_io::QuadMode::Complex,
+        indirect_conjugate: false,
+        experiment: Some("diffusion".into()),
+        pseudo_axis: Some(plotium_io::PseudoAxis {
+            name: "g".into(),
+            kind: plotium_io::PseudoKind::Gradient,
+            values: gradients,
+            unit: "T/m".into(),
+            source: plotium_io::AxisSource::EmbeddedList,
+        }),
+        diffusion: Some(diffusion),
+        nus: None,
+        source: "live-discovery-dosy".into(),
+    })
+    .unwrap();
+    assert!(data.build_dosy_map());
+    data.display = PseudoDisplay::Stack;
+    let mut app = app_with_live_plot(Dataset::Nmr2D(Box::new(data)));
+    let mut table_app = fixture();
+    let table = table_app.doc.datasets.remove(0);
+    let mut external = SeriesBinding::from_dataset(&table).unwrap();
+    let plot = app.doc.canvases[0].objects[0].plot_mut().unwrap();
+    external.id = plot.allocate_series_id();
+    let external_id = external.id;
+    plot.binding.series.push(external);
+    app.doc.datasets.push(table);
+    let stack = assert_discovery_matches_property_targets(&mut app);
+    assert!(
+        stack
+            .iter()
+            .any(|t| t.component == Some(ComponentRef::Series(external_id)))
+    );
+    app.set_pseudo_display(0, PseudoDisplay::DosyMap);
+    let map = assert_discovery_matches_property_targets(&mut app);
+    assert_eq!(map.len(), 1);
+    assert!(map.iter().all(|target| !stack.contains(target)));
+    for target in &stack {
+        assert_dormant_series_is_not_addressable(&app, target.clone());
+    }
+    app.set_pseudo_display(0, PseudoDisplay::Stack);
+    assert_eq!(assert_discovery_matches_property_targets(&mut app), stack);
 }

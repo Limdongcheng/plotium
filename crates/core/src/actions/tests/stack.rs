@@ -20,6 +20,7 @@ fn stacked_figure_is_domain_generic_with_offset_scale_and_hide() {
     ] {
         let chart = ChartSpec::default_for(domain);
         let binding = DataBinding {
+            coordinates: None,
             series: vec![
                 SeriesBinding::from_dataset(&app.doc.datasets[0]).unwrap(),
                 SeriesBinding::from_dataset(&app.doc.datasets[1]).unwrap(),
@@ -91,6 +92,7 @@ fn field_overlay_stacks_two_2d_contours_in_distinct_colors() {
     )));
     let (a, b) = (app.doc.datasets.len() - 2, app.doc.datasets.len() - 1);
     let mut binding = DataBinding {
+        coordinates: None,
         series: vec![
             SeriesBinding::from_dataset(&app.doc.datasets[a]).unwrap(),
             SeriesBinding::from_dataset(&app.doc.datasets[b]).unwrap(),
@@ -204,6 +206,7 @@ fn selecting_canvas_populates_data_selection_with_its_datasets() {
     )));
     let object = app.doc.canvases[0].objects[0].id;
     let binding = crate::state::DataBinding {
+        coordinates: None,
         series: vec![
             crate::state::SeriesBinding::from_dataset(&app.doc.datasets[0]).unwrap(),
             crate::state::SeriesBinding::from_dataset(&app.doc.datasets[1]).unwrap(),
@@ -239,6 +242,7 @@ fn plot_object_reports_every_bound_dataset_for_selection_mirroring() {
     )));
     let object = app.doc.canvases[0].objects[0].id;
     let binding = DataBinding {
+        coordinates: None,
         series: vec![
             SeriesBinding::from_dataset(&app.doc.datasets[0]).unwrap(),
             SeriesBinding::from_dataset(&app.doc.datasets[1]).unwrap(),
@@ -274,6 +278,7 @@ fn shear_sign_flips_the_pseudo_3d_lean_direction() {
         .push(Dataset::Table(Box::new(second_table())));
     let chart = ChartSpec::default_for(DataDomain::Table);
     let binding = DataBinding {
+        coordinates: None,
         series: vec![
             SeriesBinding::from_dataset(&table.doc.datasets[0]).unwrap(),
             SeriesBinding::from_dataset(&table.doc.datasets[1]).unwrap(),

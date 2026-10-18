@@ -62,8 +62,12 @@ fn the_planning_of_pre_existing_tools_is_unchanged() {
     ];
     assert_eq!(
         cases.len(),
-        ToolRegistry::built_in().descriptors().count() - 7,
-        "every tool that predates property, document discovery, image preview and table read tools is covered here"
+        ToolRegistry::built_in()
+            .descriptors()
+            .filter(|d| !is_curve_binding_tool(&d.id))
+            .count()
+            - 7,
+        "every tool that predates property, document discovery, image preview, table read and explicit curve binding tools is covered here"
     );
     for (tool_id, parameters, target) in cases {
         let plan = plan_tool(

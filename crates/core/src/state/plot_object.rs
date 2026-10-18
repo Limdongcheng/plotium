@@ -305,7 +305,10 @@ mod tests {
         let mut plot = PlotObject::new(
             None,
             SeriesId::new(1),
-            DataBinding { series: Vec::new() },
+            DataBinding {
+                coordinates: None,
+                series: Vec::new(),
+            },
             ChartSpec::default(),
             StackSpec::default(),
             AxisProjections::default(),

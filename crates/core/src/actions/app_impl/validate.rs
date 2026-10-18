@@ -307,6 +307,19 @@ pub(super) fn validate_action(
                 }
             }
         }
+        Action::SetCurveBinding { canvas, object, .. } => {
+            if app
+                .doc
+                .canvas_index(*canvas)
+                .and_then(|i| app.doc.canvases[i].object(*object))
+                .and_then(|o| o.plot())
+                .is_none()
+            {
+                return Err(ActionApplyError::StaleTarget(format!(
+                    "curve plot {canvas}/{object}"
+                )));
+            }
+        }
         Action::SetSeriesPresentation { .. } => validate_presentation_targets(app, action)?,
         Action::SetObjectViewport { canvas, object, .. }
         | Action::SetAxisOverrides { canvas, object, .. }
@@ -358,7 +371,8 @@ pub(super) fn validate_presentation_targets(
     action: &Action,
 ) -> Result<(), ActionApplyError> {
     match action {
-        Action::SetSeriesPresentation { canvas, object, .. } => {
+        Action::SetSeriesPresentation { canvas, object, .. }
+        | Action::SetCurveBinding { canvas, object, .. } => {
             if app
                 .doc
                 .canvas_index(*canvas)

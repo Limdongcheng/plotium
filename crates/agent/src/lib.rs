@@ -236,3 +236,6 @@ mod discovery_tests;
 
 #[cfg(test)]
 mod preview_tests;
+
+#[cfg(test)]
+mod binding_tests;

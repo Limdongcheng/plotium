@@ -12,6 +12,7 @@ fn stacked_binding_builds_distinctly_coloured_series_with_legend() {
     let mut second = crate::state::SeriesBinding::from_dataset(&app.doc.datasets[1]).unwrap();
     second.set_primary_color(plotium_figure::Color::rgb(0x8a, 0x1c, 0x1c));
     let binding = crate::state::DataBinding {
+        coordinates: None,
         series: vec![
             crate::state::SeriesBinding::from_dataset(&app.doc.datasets[0]).unwrap(),
             second,
@@ -47,6 +48,7 @@ fn single_table_color_override_recolors_points_and_error_bars() {
     series.set_primary_color(color);
     let figure = app.build_binding_figure(
         &DataBinding {
+            coordinates: None,
             series: vec![series],
         },
         &ChartSpec::default_for(DataDomain::Table),
@@ -71,6 +73,7 @@ fn single_table_color_override_recolors_bar_polygons() {
     series.set_primary_color(color);
     let figure = app.build_binding_figure(
         &DataBinding {
+            coordinates: None,
             series: vec![series],
         },
         &ChartSpec {

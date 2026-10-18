@@ -32,7 +32,7 @@ impl PlotiumApp {
         let item_addressed = binding
             .series
             .iter()
-            .all(|series| series.source.item.is_some());
+            .all(|series| series.source.item().is_some());
         let all_lines = binding
             .series
             .iter()
@@ -281,12 +281,32 @@ impl PlotiumApp {
     }
 
     pub fn series_label(&self, sb: &SeriesBinding) -> String {
+        if let Some(columns) = sb.source.columns() {
+            return sb
+                .label
+                .clone()
+                .or_else(|| {
+                    self.doc
+                        .dataset_by_id(sb.source.resource)
+                        .and_then(|d| d.as_table())
+                        .and_then(|t| {
+                            t.typed_state
+                                .envelope
+                                .revision
+                                .snapshot
+                                .schema
+                                .column(columns.y_column_id)
+                        })
+                        .map(|c| c.name.clone())
+                })
+                .unwrap_or_else(|| "Missing curve column".into());
+        }
         sb.label.clone().unwrap_or_else(|| {
             self.doc
                 .dataset_by_id(sb.source.resource)
                 .map(|dataset| {
                     sb.source
-                        .item
+                        .item()
                         .and_then(|item| dataset.trace_item_label(sb.source.field, item))
                         .unwrap_or_else(|| dataset.display_name())
                 })
@@ -310,7 +330,7 @@ impl PlotiumApp {
             && !binding
                 .series
                 .iter()
-                .all(|series| series.source.item.is_some())
+                .all(|series| series.source.item().is_some())
         {
             return Vec::new();
         }
@@ -318,7 +338,7 @@ impl PlotiumApp {
         let item_addressed = binding
             .series
             .iter()
-            .all(|series| series.source.item.is_some());
+            .all(|series| series.source.item().is_some());
         (0..self.doc.datasets.len())
             .filter(|di| {
                 self.doc.datasets.get(*di).map(Dataset::domain) == Some(domain)
@@ -350,7 +370,7 @@ impl PlotiumApp {
         if binding
             .series
             .iter()
-            .all(|series| series.source.item.is_some())
+            .all(|series| series.source.item().is_some())
         {
             let Some(field) = trace_collection_field(dataset) else {
                 return Vec::new();
@@ -561,7 +581,10 @@ impl PlotiumApp {
         for (index, series) in series.iter_mut().enumerate() {
             series.set_primary_color(OVERLAY_PALETTE[index % OVERLAY_PALETTE.len()]);
         }
-        let binding = DataBinding { series };
+        let binding = DataBinding {
+            coordinates: None,
+            series,
+        };
         let series_count = binding.series.len();
         let mode =
             if trace_items {

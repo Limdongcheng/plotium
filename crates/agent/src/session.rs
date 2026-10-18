@@ -259,6 +259,63 @@ impl Session {
                     "Only rename and supported display properties can be planned",
                 ));
             }
+            if is_curve_binding_tool(&args.tool_id) {
+                if !self.allow_modify {
+                    return Err(Failure::new(
+                        "permission_denied",
+                        "Switch to Read and modify before planning curve bindings",
+                    ));
+                }
+                if args.ids.is_some() || args.targets.is_some() {
+                    return Err(Failure::new(
+                        "invalid_parameters",
+                        "Binding edits carry their own exact targets",
+                    ));
+                }
+                if self.plans.len() >= 32 {
+                    return Err(Failure::new(
+                        "plan_limit",
+                        "Execute a pending plan before preparing another",
+                    ));
+                }
+                let plan = plan_tool(
+                    app,
+                    request(
+                        &args.tool_id,
+                        args.parameters,
+                        vec![],
+                        args.expected_revision,
+                    ),
+                )?;
+                let pending_rows = self
+                    .plans
+                    .values()
+                    .filter_map(|p| p.binding_plan.as_ref())
+                    .map(|p| p.curve_rows())
+                    .sum::<usize>();
+                if pending_rows + plan.binding_plan.as_ref().map_or(0, |p| p.curve_rows())
+                    > 2_000_000
+                {
+                    return Err(Failure::new(
+                        "plan_limit",
+                        "Pending curve plans exceed 2,000,000 curve rows; execute a pending plan first",
+                    ));
+                }
+                let id = uuid::Uuid::new_v4().to_string();
+                let value = json!({"plan_id":id,"preflight":plan});
+                if serde_json::to_vec(&value)
+                    .map_err(|e| Failure::new("execution_failed", e.to_string()))?
+                    .len()
+                    > DOCUMENT_RESPONSE_BYTES
+                {
+                    return Err(Failure::new(
+                        "response_too_large",
+                        "Use a smaller binding batch",
+                    ));
+                }
+                self.plans.insert(id, plan);
+                return Ok(value);
+            }
             let targets = selector(args.ids, args.targets)?;
             if args.tool_id == "resource.rename"
                 && matches!(targets, TargetSelector::Components { .. })

@@ -252,6 +252,7 @@ fn hidden_and_stale_requests_are_atomic() {
 fn manual_shift_moves_single_trace_and_preserves_provider_bounds() {
     let dataset = recording("pA", None);
     let mut binding = DataBinding {
+        coordinates: None,
         series: vec![DataBinding::single(&dataset).series[0].clone()],
     };
     assert!(binding.series[0].set_line_x_shift(2.5));
@@ -372,6 +373,7 @@ fn stacked_shift_bounds_union_each_provider_range() {
         .map(|series| {
             app.build_binding_figure(
                 &DataBinding {
+                    coordinates: None,
                     series: vec![series.clone()],
                 },
                 &chart,
@@ -403,6 +405,7 @@ fn pseudo_increment_uses_the_same_plot_owned_plan() {
     );
     let plot = plot_object.plot_mut().unwrap();
     plot.binding = DataBinding {
+        coordinates: None,
         series: SeriesBinding::from_field_all(&app.doc.datasets[0], field)[..2].to_vec(),
     };
     plot.mint_series_ids();
@@ -591,6 +594,7 @@ fn ordinary_scalar_line_stack_uses_the_same_alignment_planner() {
     let plot = plot_object.plot_mut().unwrap();
     plot.display_owner = None;
     plot.binding = DataBinding {
+        coordinates: None,
         series: app
             .doc
             .datasets
@@ -604,7 +608,7 @@ fn ordinary_scalar_line_stack_uses_the_same_alignment_planner() {
         plot.binding
             .series
             .iter()
-            .all(|series| series.source.item.is_none())
+            .all(|series| series.source.item().is_none())
     );
     canvas.objects.push(plot_object);
     canvas.selected_object = Some(object);

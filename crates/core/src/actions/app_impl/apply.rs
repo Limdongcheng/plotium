@@ -141,6 +141,12 @@ impl PlotiumApp {
             Action::BoardViewRemove { index, view } => {
                 self.board_view_do_remove(*index, view);
             }
+            Action::SetCurveBinding {
+                canvas,
+                object,
+                after,
+                ..
+            } => self.restore_curve_binding(*canvas, *object, after),
             Action::SetDataBinding {
                 canvas,
                 object,

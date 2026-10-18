@@ -137,7 +137,7 @@ pub(crate) fn select_regions_on_canvas(app: &mut PlotiumApp, index: usize) {
                         plot.binding.series.iter().any(|series| {
                             series.source.resource == dataset_id
                                 && series.source.field == source_field
-                                && series.source.item.is_none()
+                                && series.source.item().is_none()
                         })
                     })
                     .map(|_| object.id)

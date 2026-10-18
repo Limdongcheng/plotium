@@ -92,6 +92,7 @@ fn live_binding_projects_the_current_field_and_keeps_external_series() {
         Some(owner_id),
         &raw,
         DataBinding {
+            coordinates: None,
             series: vec![retained],
         },
     );
@@ -105,7 +106,7 @@ fn live_binding_projects_the_current_field_and_keeps_external_series() {
     let mut external = app
         .stack_candidate_series(&initial, 1)
         .expect("a map-displaying pseudo dataset still contributes a trace item");
-    assert!(external.source.item.is_some());
+    assert!(external.source.item().is_some());
     external.id = app.doc.canvases[0].objects[0]
         .plot_mut()
         .unwrap()
@@ -202,6 +203,7 @@ fn live_binding_projects_the_current_field_and_keeps_external_series() {
     assert_eq!(app.display_binding(Some(owner_id), &stored), displayed);
 
     let external_only = DataBinding {
+        coordinates: None,
         series: vec![external.clone()],
     };
     let merged = app.merge_display_binding(Some(owner_id), &stored, external_only.clone());
@@ -209,7 +211,14 @@ fn live_binding_projects_the_current_field_and_keeps_external_series() {
     assert!(merged.series.iter().any(|series| {
         series.source.resource == owner_id && series.source.field != owner_stack
     }));
-    let empty = app.merge_display_binding(Some(owner_id), &stored, DataBinding { series: vec![] });
+    let empty = app.merge_display_binding(
+        Some(owner_id),
+        &stored,
+        DataBinding {
+            coordinates: None,
+            series: vec![],
+        },
+    );
     assert!(
         app.display_binding(Some(owner_id), &empty)
             .series
@@ -260,6 +269,7 @@ fn dosy_map_honors_non_default_contour_levels_and_style() {
     let mut app = PlotiumApp::new_with_settings(crate::settings::Settings::default());
     app.doc.datasets.push(Dataset::Nmr2D(Box::new(dataset)));
     let mut binding = DataBinding {
+        coordinates: None,
         series: SeriesBinding::from_field_all(&app.doc.datasets[0], field),
     };
     let color = Color::rgb(17, 93, 201);
@@ -327,6 +337,7 @@ fn ilt_map_honors_non_default_contour_style() {
     let mut app = PlotiumApp::new_with_settings(crate::settings::Settings::default());
     app.doc.datasets.push(Dataset::Nmr2D(Box::new(dataset)));
     let mut binding = DataBinding {
+        coordinates: None,
         series: SeriesBinding::from_field_all(&app.doc.datasets[0], field),
     };
     let color = Color::rgb(31, 151, 87);

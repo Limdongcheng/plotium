@@ -317,8 +317,14 @@ pub enum Action {
         index: usize,
         view: NamedView,
     },
-    /// Replace a plot's data binding (add/remove/reorder overlaid series),
-    /// rebuilding its figure and refitting the viewport.
+    /// Commit a validated column-binding edit and its exact viewport/identity snapshot.
+    SetCurveBinding {
+        canvas: crate::state::CanvasId,
+        object: ObjectId,
+        before: Box<crate::state::PlotObject>,
+        after: Box<crate::state::PlotObject>,
+    },
+    /// Replace a default binding (add/remove/reorder) and refit its viewport.
     SetDataBinding {
         canvas: usize,
         object: ObjectId,
@@ -620,6 +626,7 @@ impl Action {
             Self::MoveResizeObject { .. }
             | Self::SetObjectFrames { .. }
             | Self::ArrangeObjects { .. } => "object layout",
+            Self::SetCurveBinding { .. } => "curve binding",
             Self::SetDataBinding { .. } => "plot data",
             Self::SetChartType { .. } => "chart type",
             Self::SetStackSpec { .. } => "stack setting",
@@ -660,6 +667,7 @@ impl Action {
             Self::SetObjectFlags { before, after, .. } => before == after,
             // Inserting or removing a bookmark always changes the list.
             Self::BoardViewInsert { .. } | Self::BoardViewRemove { .. } => false,
+            Self::SetCurveBinding { before, after, .. } => before.binding == after.binding,
             Self::SetDataBinding { before, after, .. } => before == after,
             Self::SetSeriesPresentation { before, after, .. } => before == after,
             Self::SetAxisOverrides { before, after, .. } => before == after,

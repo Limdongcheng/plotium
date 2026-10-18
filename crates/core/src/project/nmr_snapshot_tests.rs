@@ -393,7 +393,7 @@ fn nus_reconstruction_changes_live_bindings_and_reopens_with_grid_identities() {
                 binding
                     .series
                     .iter()
-                    .all(|series| series.source.item != observations.item)
+                    .all(|series| series.source.item() != observations.item())
             );
         }
         let project = path("reconstructed.plotium");

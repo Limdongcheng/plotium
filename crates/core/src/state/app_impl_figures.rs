@@ -14,7 +14,7 @@ impl PlotiumApp {
                 let plotium_figure::SeriesEncoding::Contour(spec) = &series.encoding else {
                     return false;
                 };
-                if series.source.item.is_some()
+                if series.source.item().is_some()
                     || !self
                         .doc
                         .dataset_by_id(series.source.resource)
@@ -102,6 +102,7 @@ impl PlotiumApp {
                 .cloned(),
         );
         DataBinding {
+            coordinates: binding.coordinates.clone(),
             series: owner_series,
         }
     }
@@ -137,7 +138,10 @@ impl PlotiumApp {
                 .filter(|series| !previous_ids.contains(&series.id))
                 .cloned(),
         );
-        DataBinding { series }
+        DataBinding {
+            coordinates: persisted.coordinates.clone(),
+            series,
+        }
     }
 
     fn live_display_source(&self, owner: Option<DatasetId>) -> Option<(DatasetId, FieldId)> {
@@ -243,6 +247,21 @@ impl PlotiumApp {
         stack: &StackSpec,
         size_mm: [f32; 2],
     ) -> Figure {
+        if binding.coordinates.is_some() {
+            return self
+                .build_explicit_binding_figure(binding, stack, size_mm)
+                .unwrap_or_else(|error| {
+                    self.session.status = format!("Curve binding: {error}");
+                    self.normalize_binding_figure(
+                        Figure::new(
+                            "Curve binding unavailable",
+                            plotium_figure::Axis::new("x", 0., 1.),
+                            plotium_figure::Axis::new("y", 0., 1.),
+                        ),
+                        size_mm,
+                    )
+                });
+        }
         if !binding.series.iter().any(|series| series.visible) {
             return self.normalize_binding_figure(
                 Figure::new(
@@ -432,7 +451,7 @@ impl PlotiumApp {
         prepare_only: bool,
     ) -> Option<Figure> {
         let dataset = self.doc.dataset_by_id(series.source.resource)?;
-        if let Some(item) = series.source.item {
+        if let Some(item) = series.source.item() {
             return dataset.trace_item_figure(series.source.field, item);
         }
         if !dataset.supports_encoding(series.source.field, &series.encoding) {
@@ -558,7 +577,7 @@ impl PlotiumApp {
     }
 
     pub(super) fn series_uses_encoded_curve(&self, series: &SeriesBinding) -> bool {
-        if series.source.item.is_some() {
+        if series.source.item().is_some() {
             return true;
         }
         self.doc

@@ -66,9 +66,10 @@ impl PlotiumApp {
             return Ok(false);
         }
         selected.source.field = field;
-        selected.source.item = None;
+        selected.source.selection = super::SeriesSelection::FieldDefault;
         selected.label = None;
         let after = DataBinding {
+            coordinates: None,
             series: vec![selected],
         };
         self.try_execute_action(Action::set_data_binding(canvas, object, before, after))

@@ -211,7 +211,7 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 实际 Agent 项目读取和执行均保存运行记录，使项目进入未保存状态；握手、工具
 发现及静态属性目录查询不生成运行记录。
 
-连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、来源绑定和
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、显式数值曲线绑定和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 |
@@ -232,8 +232,8 @@ stdio 连接。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
 这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
-`data.import` 模式。
-只读权限允许表格查询及既有编辑预检，但拒绝导入预检和所有修改执行。
+`data.import` 模式及 `plot.series.bind`／`plot.series.materialize_default`。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定预检和所有修改执行。
 
 使用返回的 revision 列举文档画布：
 
@@ -254,6 +254,11 @@ stdio 连接。
 栅格图片，不返回图片像素或数据行。frame 使用 pt：面板相对页面，面板内内容相对
 面板；画布尺寸使用 mm。
 
+Series 发现与属性寻址一样，使用图对象的当前显示绑定。非当前通道或显示模式的
+替代 Series 仍保存在项目中，但在重新激活前不列出、也不可寻址。当前绑定中由
+用户隐藏的 Series 仍会列出，`visible` 为 false。切换通道或显示模式后，须读取
+当前 revision，再发现当前有效目标。
+
 Series 详情包含可直接用于属性查询的完整 target、编码、可见性、显式标签，以及
 `source` 中的数据集和字段资源引用、所属数据集内的 `field_id`、可选 `item_id`、
 单位和绑定状态。用返回的资源 ID 调用 `plotium_resources_inspect`，可读取字段和
@@ -264,7 +269,9 @@ Series 详情包含可直接用于属性查询的完整 target、编码、可见
 表格的 `binding_mode: "table_default"` 返回共享的 `x_column` 和全部
 `series_columns` Y／误差列绑定。一个逻辑 Series 可能展开为多条表格显示曲线，
 这些显示曲线不会因此获得独立 Series ID。
-`per_plot_explicit_binding_supported: false` 表明尚不支持逐图独立 X/Y 绑定。
+显式来源返回 `binding_mode: "table_explicit"`、TableId、当前表 revision、
+`x_column`、`y_column` 和可选 `error_column`，不把默认值误报为其来源。
+`coordinate_units` 返回图坐标单位契约。
 名称（包括同名曲线）仅作显示，不能代替身份。面板地址为
 `CANVAS_UUID/panels/PANEL_ID`；内容与 Series 保持下文既有地址。
 
@@ -364,6 +371,73 @@ offset 等于总量时返回空的结束页，大于总量时失败。非法 lim
 每次读取都检查两个 revision。人工编辑、Undo/Redo 会使旧文档 revision 失效，
 须重新读状态并重启分页，不能混读。无效 ID 不回退当前选择。只读连接可查询
 已有表格，但不可导入。预算和导入权限条件可从 `connection_capabilities` 发现。
+
+### 精确重绑已有曲线，不影响另一张图
+
+两个图可以引用同一张原生表，各自选择不同的数值 X、Y 和可选对称 Y 误差列。
+在 GUI 中选中图对象，展开其 Series 的 **Data → Curve columns**，选列后点击
+**Apply curve binding**。表格共享的默认绑定不会改变。
+
+MCP 先通过 `plotium_document_inspect` 取得完整 Series target，再从
+`plotium_table_columns` 复制 DatasetId、TableId、FieldId、表 revision 和 ColumnId。
+使用项目 ColumnId，不使用 `source_column_id`、名称或显示 trace 的位置，也不猜字段
+资源地址。调用 `plotium_plan`：
+
+```json
+{
+  "expected_revision": 8,
+  "tool_id": "plot.series.bind",
+  "parameters": {
+    "edits": [{
+      "target": {
+        "resource": {"id":"CANVAS_UUID/OBJECT_ID","kind":"plotium.canvas.object",
+          "parent_id":"CANVAS_UUID","local_id":"OBJECT_ID"},
+        "component": {"kind":"series","id":0}
+      },
+      "source": {
+        "dataset_id":"DATASET_UUID", "field_id":0,
+        "table_id":"TABLE_UUID", "table_revision":"TABLE_REVISION_UUID",
+        "x_column_id":"X_COLUMN_UUID", "y_column_id":"Y_COLUMN_UUID",
+        "y_error_column_id":null
+      }
+    }]
+  }
+}
+```
+
+将占位符和示例中的数值 ID 全部换成实际发现结果。不要另传顶层 `ids` 或
+`targets`，每项编辑已携带完整目标。`y_error_column_id` 为 ColumnId，或明确的
+null，后者移除误差绑定。检查 `preflight.binding_plan.bindings` 中的来源映射和
+逐行诊断，再以返回的一次性 `plan_id` 调用 `plotium_execute`。
+
+一个默认表格 Series 可能代表多条显示曲线，须先调用
+`plot.series.materialize_default`，参数为
+`{"edits":[{"target":EXACT_SERIES_TARGET,
+"retain_y_column_id":"EXISTING_Y_COLUMN_UUID",
+"table_revision":"TABLE_REVISION_UUID"}]}`。
+GUI 对应 **Expand default curves**：选择保留原 SeriesId 的 Y 列，其余已有曲线
+获得新的对象内 SeriesId，预检和执行结果均返回映射。此操作只展开已有内容，不创建
+图对象。拟合叠加及归一化／偏移的多曲线默认组合无法无损展开，因而明确拒绝；
+未展开的旧默认绘图入口仍可使用。
+
+只接受 Int64 和 Float64 列；无法在 f64 图坐标中精确表达的整数明确拒绝。
+X/Y 为 null 或非有限值时形成断点，不补零、不跨断点连线。误差为 null 时保留
+有效点但不画该点误差线；零误差合法。负值或非有限误差使整批失败，即使该行的
+X/Y 缺失也不忽略非法误差。误差表示非负绝对幅度，不从列名赋予标准差、标准误或
+置信区间含义。诊断统计全部行，每条曲线最多附 20 个受影响 RowId；绑定校验和
+原生曲线提取不抽样行。
+
+兼容单位换算到图对象持久化的坐标单位；误差幅度仅使用比例，不应用仿射偏移。
+已知单位与未知单位不能混用。重绑、删除首条曲线和重排后，手动范围及位移保持
+原坐标含义；不兼容时拒绝，而不是重新解释原数字。人工标签、颜色、线／散点编码、
+可见性、面板位置及轴设置随原目标保留。显式图保持线／散点编码，不切换到无关
+表格图型。
+
+每批允许 1–200 项编辑，受影响图合计最多 2,000,000 次曲线行访问；待执行 MCP
+曲线计划共享同样的行预算，完整响应最多 256 KiB。全部目标、列、单位、行和
+revision 检查通过后才一次原子提交、一次 Undo，不部分成功、不跳过无效目标。
+只读连接拒绝绑定预检和执行。失败或过期执行也消费计划，须重读状态并重新规划。
+GUI 保存重开保留原生绑定和单位；这些操作不开放 MCP 保存、导出或通用建图。
 
 ### 读取实际画布图像
 

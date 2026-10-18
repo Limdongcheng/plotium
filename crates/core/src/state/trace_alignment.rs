@@ -94,7 +94,11 @@ impl PlotiumApp {
             .series
             .iter()
             .find(|candidate| candidate.id == series)?;
-        line_x_unit(self, series)
+        plot.binding
+            .coordinates
+            .as_ref()
+            .map(|c| c.x.as_ref().map(|u| u.display_unit.clone()))
+            .unwrap_or_else(|| line_x_unit(self, series))
     }
 
     pub fn default_trace_alignment_reference(
@@ -106,11 +110,19 @@ impl PlotiumApp {
         let plot = self.doc.canvases[ci].object(object)?.plot()?;
         let displayed = self.display_binding(plot.display_owner, &plot.binding);
         displayed.series.iter().find_map(|candidate| {
-            let unit = eligible_trace_unit(self, candidate)?;
+            let unit = displayed
+                .coordinates
+                .as_ref()
+                .map(|c| c.x.as_ref().map(|u| u.display_unit.clone()))
+                .unwrap_or_else(|| eligible_trace_unit(self, candidate))?;
             (displayed
                 .series
                 .iter()
-                .filter(|series| eligible_trace_unit(self, series).as_ref() == Some(&unit))
+                .filter(|series| {
+                    series.visible
+                        && (displayed.coordinates.is_some()
+                            || eligible_trace_unit(self, series).as_ref() == Some(&unit))
+                })
                 .count()
                 >= 2)
                 .then_some(candidate.id)
@@ -157,7 +169,11 @@ impl PlotiumApp {
         {
             return Err("The reference must be a visible line series.".into());
         }
-        let reference_unit = line_x_unit(self, reference)
+        let reference_unit = binding
+            .coordinates
+            .as_ref()
+            .and_then(|c| c.x.as_ref().map(|u| u.display_unit.clone()))
+            .or_else(|| line_x_unit(self, reference))
             .ok_or_else(|| "The reference trace has no x-axis unit contract.".to_owned())?;
         for series in &binding.series {
             validate_live_line_source(self, series)?;
@@ -172,6 +188,7 @@ impl PlotiumApp {
             materialized.visible = true;
             let figure = self.build_binding_figure(
                 &DataBinding {
+                    coordinates: binding.coordinates.clone(),
                     series: vec![materialized],
                 },
                 &chart,
@@ -191,7 +208,9 @@ impl PlotiumApp {
                 TraceAlignmentOutcome::Skipped(
                     "Hidden series are not aligned automatically.".into(),
                 )
-            } else if line_x_unit(self, series).as_ref() != Some(&reference_unit) {
+            } else if binding.coordinates.is_none()
+                && line_x_unit(self, series).as_ref() != Some(&reference_unit)
+            {
                 TraceAlignmentOutcome::Skipped("The x-axis unit differs from the reference.".into())
             } else {
                 match (reference_anchor, anchors.get(&series.id).copied().flatten()) {
@@ -293,6 +312,21 @@ fn trace_alignment_method_valid(method: TraceAlignmentMethod) -> bool {
 }
 
 fn line_x_unit(app: &PlotiumApp, series: &SeriesBinding) -> Option<String> {
+    if let Some(columns) = series.source.columns() {
+        return app
+            .doc
+            .dataset_by_id(series.source.resource)?
+            .as_table()?
+            .typed_state
+            .envelope
+            .revision
+            .snapshot
+            .schema
+            .column(columns.x_column_id)?
+            .unit
+            .as_ref()
+            .map(|u| u.display_unit.clone());
+    }
     app.doc
         .dataset_by_id(series.source.resource)
         .and_then(|dataset| dataset.field_descriptor(series.source.field))
@@ -321,7 +355,7 @@ fn validate_live_line_source(app: &PlotiumApp, series: &SeriesBinding) -> Result
         ));
     }
     match (
-        series.source.item,
+        series.source.item(),
         dataset.trace_collection(series.source.field),
     ) {
         (Some(item), Some(collection)) if collection.item(item).is_some() => Ok(()),

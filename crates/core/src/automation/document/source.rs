@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
     let src = &series.source;
     let resource = ResourceRef::from(src.resource);
-    let mut out = json!({"dataset":resource,"field":null,"field_id":src.field,"item_id":src.item,"status":"resolved","binding_mode":"field"});
+    let mut out = json!({"dataset":resource,"field":null,"field_id":src.field,"item_id":src.item(),"status":"resolved","binding_mode":"field"});
     let Some(dataset) = app
         .doc
         .datasets
@@ -27,7 +27,7 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
     out["field_name"] = json!(descriptor.name);
     out["units"] = json!(descriptor.units);
     out["field_capabilities"] = json!(descriptor.capabilities.iter().collect::<Vec<_>>());
-    if let Some(item) = src.item
+    if let Some(item) = src.item()
         && dataset
             .trace_collection(src.field)
             .and_then(|c| c.item(item))
@@ -40,8 +40,41 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
         out["status"] = json!("incompatible_encoding");
     }
     if let Dataset::Table(table) = dataset {
+        if let Some(columns) = src.columns() {
+            out["binding_mode"] = json!("table_explicit");
+            out["per_plot_explicit_binding_supported"] = json!(true);
+            out["table_id"] = json!(columns.table_id);
+            out["table_revision"] = json!(table.typed_state.envelope.revision.id);
+            let schema = &table.typed_state.envelope.revision.snapshot.schema;
+            let column = |id: plotium_data::ColumnId| json!({"resource":child_ref(src.resource,&id.to_string(),KIND_TABLE_COLUMN),"column_id":id,"exists":schema.column(id).is_some(),"unit":schema.column(id).and_then(|c|c.unit.as_ref())});
+            out["x_column"] = column(columns.x_column_id);
+            out["y_column"] = column(columns.y_column_id);
+            out["error_column"] = json!(columns.y_error_column_id.map(column));
+            if columns.table_id != table.typed_state.envelope.revision.table_id {
+                out["status"] = json!("missing_table");
+            } else if [
+                Some(columns.x_column_id),
+                Some(columns.y_column_id),
+                columns.y_error_column_id,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|id| schema.column(id).is_none())
+            {
+                out["status"] = json!("missing_column");
+            }
+            out["units"] = json!([
+                schema
+                    .column(columns.x_column_id)
+                    .and_then(|c| c.unit.as_ref()),
+                schema
+                    .column(columns.y_column_id)
+                    .and_then(|c| c.unit.as_ref())
+            ]);
+            return out;
+        }
         out["binding_mode"] = json!("table_default");
-        out["per_plot_explicit_binding_supported"] = json!(false);
+        out["per_plot_explicit_binding_supported"] = json!(true);
         let schema = &table.typed_state.envelope.revision.snapshot.schema;
         let column = |id: plotium_data::ColumnId| json!({"resource":child_ref(src.resource,&id.to_string(),KIND_TABLE_COLUMN),"column_id":id,"exists":schema.column(id).is_some()});
         out["x_column"] = json!(table.x_binding.map(column));

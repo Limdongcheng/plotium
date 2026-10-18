@@ -146,7 +146,10 @@ mod tests {
             kind: CanvasObjectKind::Plot(Box::new(PlotObject::new(
                 None,
                 plotium_core::state::SeriesId::new(1),
-                plotium_core::state::DataBinding { series: Vec::new() },
+                plotium_core::state::DataBinding {
+                    coordinates: None,
+                    series: Vec::new(),
+                },
                 plotium_core::state::ChartSpec::default(),
                 plotium_core::state::StackSpec::default(),
                 plotium_core::state::AxisProjections::default(),

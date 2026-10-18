@@ -293,7 +293,9 @@ fn plot_value(
                     "This option does not apply to the selected chart type.".to_owned(),
                 ));
             }
-            let availability = if definition.id == CHART_BINS_COUNT && plot.chart.bins.is_none() {
+            let availability = if plot.binding.coordinates.is_some() {
+                Availability::Disabled("Explicit column curves retain their line / point encoding.")
+            } else if definition.id == CHART_BINS_COUNT && plot.chart.bins.is_none() {
                 Availability::Disabled(
                     "Turn off Automatic histogram bins to set the count manually.",
                 )
