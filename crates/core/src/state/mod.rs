@@ -58,6 +58,9 @@ mod cursors;
 mod data_import;
 mod dataset_identity;
 pub use data_import::DataImports;
+mod curve_binding;
+mod curve_extract;
+mod curve_service;
 mod dataset_trace;
 mod datasets;
 mod datasets_2d_figure;
@@ -103,6 +106,9 @@ mod reports;
 mod scientific_summary;
 mod selection;
 mod series_binding;
+pub use curve_binding::*;
+pub use curve_extract::*;
+pub use curve_service::*;
 mod size_presets;
 mod stack;
 mod statistics;
@@ -271,3 +277,6 @@ mod tests {
         assert!(y.max < 12.0);
     }
 }
+
+#[cfg(test)]
+mod curve_tests;

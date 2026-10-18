@@ -251,6 +251,7 @@ fn electrophysiology_edits_keep_the_live_region_table_synchronized() {
     );
     pinned_plot.plot_mut().unwrap().display_owner = None;
     pinned_plot.plot_mut().unwrap().binding = DataBinding {
+        coordinates: None,
         series: vec![pinned],
     };
     app.doc.canvases[0].objects.push(pinned_plot);

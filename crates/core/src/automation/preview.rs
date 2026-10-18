@@ -125,6 +125,21 @@ impl ImagePreviewSnapshot {
         let params: ImagePreviewParams =
             super::registry::parse(IMAGE_PREVIEW, plan.request.parameters.clone())?;
         let c = canvas(app, &params)?;
+        for object in &c.objects {
+            if let Some(plot) = object.plot()
+                && plot.binding.coordinates.is_some()
+            {
+                app.build_explicit_binding_figure(
+                    &plot.binding,
+                    &plot.stack,
+                    [
+                        object.frame.width / crate::state::MM_TO_PT,
+                        object.frame.height / crate::state::MM_TO_PT,
+                    ],
+                )
+                .map_err(|e| invalid(&format!("Explicit curve unavailable: {e}")))?;
+            }
+        }
         let [w, h] = c.size_pt();
         if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
             return Err(invalid("canvas dimensions must be finite and positive"));

@@ -169,7 +169,7 @@ fn electrophysiology_trace_labels_prefer_dac_and_fall_back_to_sweep() {
     assert_eq!(binding.series.len(), 2);
     assert!(binding.series.iter().all(|series| {
         dataset
-            .trace_item_figure(field, series.source.item.unwrap())
+            .trace_item_figure(field, series.source.item().unwrap())
             .unwrap()
             .series
             .len()
@@ -607,6 +607,7 @@ fn trace_contract_uses_capabilities_concrete_encoding_and_units_not_domain_polic
     app.doc.datasets.push(electrophysiology);
     app.doc.datasets.push(pseudo);
     let binding = DataBinding {
+        coordinates: None,
         series: vec![electrophysiology_binding, pseudo_binding],
     };
     assert!(
@@ -712,6 +713,7 @@ fn single_and_multi_item_materialization_apply_identical_line_style() {
     let chart = ChartSpec::default_for(DataDomain::Nmr2d);
     let single = app.build_binding_figure(
         &DataBinding {
+            coordinates: None,
             series: vec![bindings[0].clone()],
         },
         &chart,
@@ -720,6 +722,7 @@ fn single_and_multi_item_materialization_apply_identical_line_style() {
     );
     let multi = app.build_binding_figure(
         &DataBinding {
+            coordinates: None,
             series: bindings[..2].to_vec(),
         },
         &chart,

@@ -45,7 +45,7 @@ fn save_rejects_missing_primary_and_series_datasets() {
     let mut series = SeriesBinding::with_source(crate::state::SeriesSource {
         resource: missing,
         field: crate::state::FieldId::default(),
-        item: None,
+        selection: crate::state::SeriesSelection::from_item(None),
     });
     series.id = plot.allocate_series_id();
     plot.binding.series.push(series);
@@ -62,7 +62,9 @@ fn save_rejects_unknown_items_and_duplicate_owner_local_series_ids() {
     let collection = plotium_data::TraceCollectionId::derived(b"missing", b"collection");
     first_plot_mut(&mut unknown_item).binding.series[0]
         .source
-        .item = Some(plotium_data::TraceItemId::derived(collection, b"item"));
+        .selection = crate::state::SeriesSelection::TraceItem(plotium_data::TraceItemId::derived(
+        collection, b"item",
+    ));
     let error = save_error(&unknown_item, "unknown-trace-item");
     assert!(error.contains("unknown trace item"), "{error}");
 
@@ -96,7 +98,7 @@ fn save_rejects_unknown_items_and_duplicate_owner_local_series_ids() {
     scalar_collection.doc.canvases.push(canvas);
     first_plot_mut(&mut scalar_collection).binding.series[0]
         .source
-        .item = None;
+        .selection = crate::state::SeriesSelection::FieldDefault;
     let error = save_error(&scalar_collection, "scalar-trace-collection");
     assert!(
         error.contains("trace collection as a scalar field"),

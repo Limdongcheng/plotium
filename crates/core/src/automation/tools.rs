@@ -46,7 +46,14 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
             "components are only supported by property and document inspection tools".into(),
         ));
     }
-    let frozen_targets = if matches!(request.tool_id.as_str(), TABLE_COLUMNS | TABLE_READ_ROWS) {
+    let binding_plan = if is_curve_binding_tool(&request.tool_id) {
+        Some(super::curve_bindings::prepare(app, &request)?)
+    } else {
+        None
+    };
+    let frozen_targets = if is_curve_binding_tool(&request.tool_id) {
+        super::curve_bindings::freeze(&request)?
+    } else if matches!(request.tool_id.as_str(), TABLE_COLUMNS | TABLE_READ_ROWS) {
         super::table_read::freeze_table(app, &request)?
     } else if request.tool_id == IMAGE_PREVIEW {
         super::preview::freeze(app, &request)?
@@ -88,6 +95,7 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
         .filter(|target| target.status == TargetCompatibility::Compatible)
         .count();
     Ok(ToolPlan {
+        binding_plan,
         request,
         frozen_targets,
         targets,
@@ -380,6 +388,7 @@ pub(super) fn execute_planned_tool(
         "results.compare" => execute_compare(app, &plan)?,
         "resource.rename" => execute_rename(app, &plan)?,
         "figure.apply_theme" => execute_theme(app, &plan)?,
+        CURVE_BIND | CURVE_MATERIALIZE => super::curve_bindings::execute(app, &plan)?,
         "processing.apply_scheme" => execute_scheme(app, &plan)?,
         TABLE_COLUMNS | TABLE_READ_ROWS => super::table_read::execute_table_read(app, &plan)?,
         "data.import" => execute_import(app, &plan)?,

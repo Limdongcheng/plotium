@@ -190,6 +190,7 @@ impl Default for StackSpec {
 /// whose dataset drives active-dataset resolution and single-series behaviour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DataBinding {
+    pub coordinates: Option<super::CurveCoordinates>,
     pub series: Vec<SeriesBinding>,
 }
 
@@ -199,7 +200,10 @@ impl DataBinding {
         for (index, binding) in series.iter_mut().enumerate() {
             binding.id = SeriesId::new(index as u64);
         }
-        Self { series }
+        Self {
+            coordinates: None,
+            series,
+        }
     }
 
     pub fn primary_dataset(&self) -> Option<DatasetId> {

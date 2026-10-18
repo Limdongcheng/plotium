@@ -363,6 +363,8 @@ pub struct ViewCanvasObject {
     pub next_series_id: u64,
     pub series: Vec<SeriesBindingDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_units: Option<crate::state::CurveCoordinates>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chart_type: Option<String>,
     /// Stable column UUID for column-oriented charts; absent selects the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]

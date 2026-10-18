@@ -83,7 +83,7 @@ enum Node<'a> {
     Canvas(&'a CanvasDocument),
     Panel(&'a CanvasDocument, &'a Panel),
     Content(&'a CanvasDocument, &'a ContentItem),
-    Series(&'a CanvasDocument, &'a ContentItem, &'a SeriesBinding),
+    Series(&'a CanvasDocument, &'a ContentItem, Box<SeriesBinding>),
 }
 impl Node<'_> {
     fn target(&self) -> TargetRef {
@@ -115,8 +115,8 @@ impl Node<'_> {
             Self::Content(c, o) => Box::new(
                 o.plot()
                     .into_iter()
-                    .flat_map(|p| p.binding.series.iter())
-                    .map(|s| Node::Series(c, o, s)),
+                    .flat_map(|p| app.display_binding(p.display_owner, &p.binding).series)
+                    .map(|s| Node::Series(c, o, Box::new(s))),
             ),
             Self::Series(..) => Box::new(std::iter::empty()),
         }
@@ -179,6 +179,7 @@ impl Node<'_> {
                 out["locked"] = json!(o.locked);
                 match &o.kind {
                     ContentKind::Plot(p) => {
+                        out["coordinate_units"] = json!(p.binding.coordinates);
                         out["chart_id"] = json!(p.chart.type_id);
                         out["chart_column"] = json!(p.chart.column);
                     }
@@ -199,7 +200,9 @@ impl Node<'_> {
                     }
                 }
             }
-            Self::Series(_, _, s) => {
+            Self::Series(_, o, s) => {
+                out["coordinate_units"] =
+                    json!(o.plot().and_then(|p| p.binding.coordinates.as_ref()));
                 out["label"] = json!(s.label);
                 out["encoding"] = json!(crate::properties::EncodingKind::of(&s.encoding).as_str());
                 out["source"] = source::describe(app, s);
@@ -249,9 +252,16 @@ fn resolve<'a>(app: &'a PlotiumApp, target: &TargetRef) -> Result<Node<'a>, Auto
             Some(ComponentRef::Series(id)) => {
                 let s = o
                     .plot()
-                    .and_then(|p| p.binding.series.iter().find(|s| s.id == id))
-                    .ok_or_else(|| invalid("series does not exist in this plot"))?;
-                Node::Series(c, o, s)
+                    .and_then(|p| {
+                        app.display_binding(p.display_owner, &p.binding)
+                            .series
+                            .into_iter()
+                            .find(|s| s.id == id)
+                    })
+                    .ok_or_else(|| {
+                        invalid("series does not exist in this plot's current display binding")
+                    })?;
+                Node::Series(c, o, Box::new(s))
             }
             _ => return Err(invalid("only Series components are supported")),
         }

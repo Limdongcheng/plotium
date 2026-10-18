@@ -310,7 +310,10 @@ fn default_binding(dataset: &Dataset) -> DataBinding {
     for (index, binding) in series.iter_mut().enumerate() {
         binding.id = crate::state::SeriesId::new(index as u64);
     }
-    DataBinding { series }
+    DataBinding {
+        coordinates: None,
+        series,
+    }
 }
 
 pub fn build_plot_object(
@@ -344,7 +347,7 @@ pub fn build_plot_object(
     let stack = if binding
         .series
         .iter()
-        .any(|series| series.source.item.is_some())
+        .any(|series| series.source.item().is_some())
     {
         StackSpec {
             mode: StackMode::Offset,

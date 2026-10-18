@@ -91,7 +91,9 @@ mod tests {
             SeriesBinding::with_source(SeriesSource {
                 resource: crate::state::DatasetId::new(),
                 field: FieldId::new(0),
-                item: Some(plotium_data::TraceItemId::new()),
+                selection: crate::state::SeriesSelection::from_item(Some(
+                    plotium_data::TraceItemId::new(),
+                )),
             }),
             dataset_name.into(),
             label.into(),

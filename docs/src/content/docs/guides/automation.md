@@ -241,7 +241,7 @@ Real Agent project reads and executions save run records and mark the project as
 unsaved; handshakes, tool listing and the static property catalog do not.
 
 The connection supports CSV/TSV data-only import, native table queries, canvas previews,
-document structure, source-binding and resource queries, renaming datasets,
+document structure, explicit numeric curve bindings and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target |
@@ -264,8 +264,8 @@ also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
 does not make that operation callable through this connection. Only
 `resource.rename`, `properties.set`, `properties.reset` and the restricted
-`data.import` mode below can be planned here. Read-only access allows table reads
-and existing edit preflight, but refuses import preflight and all edit execution.
+`data.import` mode and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
+and existing property preflight, but refuses import/binding preflight and all edit execution.
 
 Use the returned revision to list the document's canvases:
 
@@ -288,6 +288,12 @@ The content kinds are plot, text, shape and raster image; image pixels and data
 rows are not returned. Frames use points: a panel is page-relative, while content
 inside it is panel-local. Canvas dimensions are in millimetres.
 
+Series discovery uses the plot's current display binding, like property addressing.
+Inactive channel or display-mode alternatives remain stored but are not listed or
+addressable until reactivated. Authored hidden Series in the active binding are
+still listed with `visible: false`. After switching channels or display modes,
+fetch the current revision and discover the active targets again.
+
 A Series detail includes its complete property-compatible target, encoding,
 visibility, explicit label, and `source`: dataset and field resource references,
 owner-local `field_id`, optional `item_id`, units and binding status. Use the
@@ -299,8 +305,9 @@ reference. A source can report `resolved`, `missing_dataset`, `missing_field`,
 For tables, `binding_mode: "table_default"` reports the shared `x_column` and
 all `series_columns` Y/error bindings. One logical Series may expand to several
 rendered table traces; those traces do not gain separate Series IDs here.
-`per_plot_explicit_binding_supported: false` means independent per-plot X/Y
-bindings are not available. Names, including identical curve names, are display
+Explicit sources report `binding_mode: "table_explicit"`, TableId, current table revision,
+`x_column`, `y_column` and optional `error_column`, without reporting defaults as their source.
+`coordinate_units` reports the plot coordinate contract. Names, including identical curve names, are display
 text, never identity. Panels use `CANVAS_UUID/panels/PANEL_ID`; content and Series
 retain the existing addresses shown below.
 
@@ -423,6 +430,85 @@ invalidate old document revisions: read state and restart rather than mixing
 pages. Invalid IDs never use the current selection. Read-only connections can
 query existing tables but cannot import them. Limits and the import permission
 condition appear in `connection_capabilities`.
+
+### Rebind an existing curve without changing another plot
+
+Two plots can use the same native table with different numeric X, Y and optional
+symmetric Y-error columns. In the GUI, select a plot and expand **Data → Curve
+columns** for its Series. Choose the columns and press **Apply curve binding**.
+The table's shared default bindings are unchanged.
+
+For MCP, discover the exact Series target with `plotium_document_inspect` and
+copy the DatasetId, TableId, FieldId, table revision and ColumnIds from
+`plotium_table_columns`. Use project ColumnIds, not `source_column_id`, names,
+trace positions or a guessed field resource address. Call `plotium_plan`:
+
+```json
+{
+  "expected_revision": 8,
+  "tool_id": "plot.series.bind",
+  "parameters": {
+    "edits": [{
+      "target": {
+        "resource": {"id":"CANVAS_UUID/OBJECT_ID","kind":"plotium.canvas.object",
+          "parent_id":"CANVAS_UUID","local_id":"OBJECT_ID"},
+        "component": {"kind":"series","id":0}
+      },
+      "source": {
+        "dataset_id":"DATASET_UUID", "field_id":0,
+        "table_id":"TABLE_UUID", "table_revision":"TABLE_REVISION_UUID",
+        "x_column_id":"X_COLUMN_UUID", "y_column_id":"Y_COLUMN_UUID",
+        "y_error_column_id":null
+      }
+    }]
+  }
+}
+```
+
+Replace every placeholder, including the numeric IDs, with discovered values.
+Do not add top-level `ids` or `targets`: each edit carries its complete target.
+`y_error_column_id` is a ColumnId or explicit null to remove the error binding.
+Review `preflight.binding_plan.bindings`, including source mappings and row
+diagnostics, then submit its one-use `plan_id` with `plotium_execute`.
+
+A default table Series can represent several displayed curves. First use
+`plot.series.materialize_default` with
+`parameters: {"edits":[{"target":EXACT_SERIES_TARGET,
+"retain_y_column_id":"EXISTING_Y_COLUMN_UUID",
+"table_revision":"TABLE_REVISION_UUID"}]}`. In the GUI, use **Expand default
+curves** and choose the Y column that keeps the original SeriesId. The other
+existing curves receive new owner-local SeriesIds, returned in the plan and
+execution result. This expands existing content; it does not create a plot.
+Fit overlays and normalized/offset multi-curve defaults cannot be expanded
+losslessly and are rejected. Default drawing remains available without expansion.
+
+Only Int64 and Float64 columns are accepted. Integers that cannot be represented
+exactly in f64 curve coordinates are rejected. X/Y nulls and non-finite values
+create gaps, never zero values or connecting lines across a gap. A null error
+keeps the valid point without its error bar; zero error is valid. Negative or
+non-finite errors reject the entire batch, including on rows with missing X/Y.
+Errors are non-negative absolute amplitudes; their names do not assign standard
+deviation, standard error or confidence-interval meaning. Diagnostics count all
+rows and include up to 20 affected RowIds per curve. No row sampling is used for
+binding validation or native curve extraction.
+
+Compatible units are converted into the plot's persisted coordinate units.
+Error amplitudes use scale only, not affine offsets. Known and unknown units
+cannot be combined. Manual ranges and shifts retain their coordinate meaning
+through rebinding, deletion of the first curve and reordering. An incompatible
+binding is rejected rather than reinterpreting those numbers. Authored labels,
+colors, line/point encoding, visibility, panel placement and axis settings stay
+with their existing targets. Explicit plots retain line/point encodings rather
+than switching to unrelated table chart types.
+
+A batch accepts 1–200 edits and at most 2,000,000 curve-row visits across the
+affected plots. Pending MCP curve plans share that same row budget; complete
+responses are limited to 256 KiB. All targets, columns, units, rows and revisions
+are checked before one atomic commit and one Undo. There is no partial success
+or skipped invalid target. Read-only connections reject binding preflight and
+execution. Failed or stale execution consumes the plan; discover current state
+and plan again. GUI save/reopen preserves the native bindings and units; MCP
+save, export and general plot creation are not exposed by these operations.
 
 ### Read the actual canvas image
 

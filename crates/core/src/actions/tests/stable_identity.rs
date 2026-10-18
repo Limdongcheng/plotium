@@ -25,7 +25,7 @@ fn dataset_delete_undo_restores_identity_and_persistent_references() {
         .push(SeriesBinding::with_source(SeriesSource {
             resource: inserted_id,
             field: FieldId::default(),
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         }));
     plot.projections.top = AxisProjection {
         source: ProjectionSource::Attached(inserted_id),
@@ -81,17 +81,17 @@ fn canvas_dataset_ids_follow_first_appearance_and_page_indices_follow_document_o
         SeriesBinding::with_source(SeriesSource {
             resource: ids[2],
             field: FieldId::default(),
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         }),
         SeriesBinding::with_source(SeriesSource {
             resource: ids[0],
             field: FieldId::default(),
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         }),
         SeriesBinding::with_source(SeriesSource {
             resource: ids[2],
             field: FieldId::default(),
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         }),
     ];
     let object_id = canvas.allocate_object_id();
@@ -129,7 +129,7 @@ fn series_reorder_preserves_ids_and_only_changes_order() {
     let mut series = SeriesBinding::with_source(SeriesSource {
         resource: second_id,
         field: FieldId::default(),
-        item: None,
+        selection: crate::state::SeriesSelection::from_item(None),
     });
     series.id = id;
     plot.binding.series.push(series);
@@ -179,7 +179,7 @@ fn step_and_series_allocators_do_not_rollback_with_undo() {
         let mut series = SeriesBinding::with_source(SeriesSource {
             resource: second_id,
             field: FieldId::default(),
-            item: None,
+            selection: crate::state::SeriesSelection::from_item(None),
         });
         series.id = series_id;
         after.series.push(series);

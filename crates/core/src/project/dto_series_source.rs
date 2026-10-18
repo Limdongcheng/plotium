@@ -7,6 +7,11 @@ pub enum SeriesSourceDto {
         input: String,
         field: u64,
     },
+    TableColumns {
+        input: String,
+        field: u64,
+        columns: crate::state::TableCurveColumns,
+    },
     TraceItem {
         input: String,
         field: u64,
@@ -15,10 +20,25 @@ pub enum SeriesSourceDto {
 }
 
 impl SeriesSourceDto {
-    pub fn parts(&self) -> (&str, u64, Option<plotium_data::TraceItemId>) {
+    pub fn parts(&self) -> (&str, u64, crate::state::SeriesSelection) {
         match self {
-            Self::Field { input, field } => (input, *field, None),
-            Self::TraceItem { input, field, item } => (input, *field, Some(*item)),
+            Self::Field { input, field } => {
+                (input, *field, crate::state::SeriesSelection::FieldDefault)
+            }
+            Self::TableColumns {
+                input,
+                field,
+                columns,
+            } => (
+                input,
+                *field,
+                crate::state::SeriesSelection::TableColumns(*columns),
+            ),
+            Self::TraceItem { input, field, item } => (
+                input,
+                *field,
+                crate::state::SeriesSelection::TraceItem(*item),
+            ),
         }
     }
 }

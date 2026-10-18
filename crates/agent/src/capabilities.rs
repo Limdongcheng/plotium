@@ -4,11 +4,13 @@ use plotium_core::automation::{
 };
 use serde_json::{Value, json};
 
-pub(crate) const EDIT_OPERATIONS: [&str; 4] = [
+pub(crate) const EDIT_OPERATIONS: [&str; 6] = [
     "resource.rename",
     "properties.set",
     "properties.reset",
     "data.import",
+    "plot.series.bind",
+    "plot.series.materialize_default",
 ];
 
 pub(crate) fn manifest(allow_modify: bool) -> Value {
@@ -33,10 +35,10 @@ pub(crate) fn manifest(allow_modify: bool) -> Value {
             "currently_permitted":tool.name!="plotium_execute" || allow_modify})
     }).collect::<Vec<_>>();
     json!({"tools":tools,"editable_operations":EDIT_OPERATIONS,
-        "operation_constraints":{"data.import":{"mode":"table_data_only","preflight_permission":"reversible_modify","execute_permission":"reversible_modify","currently_permitted":allow_modify}},
+        "operation_constraints":{"plot.series.bind":{"preflight_permission":"reversible_modify","execute_permission":"reversible_modify","currently_permitted":allow_modify,"schema":plotium_core::automation::curve_binding_schema(false)},"plot.series.materialize_default":{"preflight_permission":"reversible_modify","execute_permission":"reversible_modify","currently_permitted":allow_modify,"schema":plotium_core::automation::curve_binding_schema(true)},"data.import":{"mode":"table_data_only","preflight_permission":"reversible_modify","execute_permission":"reversible_modify","currently_permitted":allow_modify}},
         "supported_properties":crate::session::PROPERTIES.iter().map(|id|id.as_str()).collect::<Vec<_>>(),
         "resource_capabilities":"Core resource capabilities describe data/rendering semantics, not operations exposed by this connection. Only the operations above can be called here.",
         "document_root":document_root_target(),
-        "limits":{"document_page_default":DOCUMENT_PAGE_DEFAULT,"document_page_max":DOCUMENT_PAGE_MAX,"document_response_bytes":DOCUMENT_RESPONSE_BYTES,"pending_plans":32,"image_preview":plotium_core::automation::image_preview_limits(),"table_read":plotium_core::automation::table_read_limits(),"table_import":plotium_core::automation::table_import_limits()},
+        "limits":{"curve_binding":{"max_edits":200,"max_curve_rows":2000000,"pending_curve_rows":2000000,"response_bytes":256*1024,"diagnostic_rows":20},"document_page_default":DOCUMENT_PAGE_DEFAULT,"document_page_max":DOCUMENT_PAGE_MAX,"document_response_bytes":DOCUMENT_RESPONSE_BYTES,"pending_plans":32,"image_preview":plotium_core::automation::image_preview_limits(),"table_read":plotium_core::automation::table_read_limits(),"table_import":plotium_core::automation::table_import_limits()},
         "revision_contract":"Fetch get_state after edits or Undo. Revision-bound reads and plans reject stale revisions; execute rechecks permission and revision. Read run records mark dirty without advancing revision."})
 }

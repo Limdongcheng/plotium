@@ -49,6 +49,7 @@ impl PlotiumApp {
         let single = |field| {
             SeriesBinding::from_field_item(dataset_ref, field, None, 0)
                 .map(|series| DataBinding {
+                    coordinates: None,
                     series: vec![series],
                 })
                 .ok_or_else(|| format!("CRAFT field {field} cannot be rendered as a line."))
@@ -59,6 +60,7 @@ impl PlotiumApp {
             group_series = single(groups)?.series;
         }
         let groups_binding = DataBinding {
+            coordinates: None,
             series: group_series,
         };
         let residual_binding = single(residual)?;
@@ -232,7 +234,10 @@ impl PlotiumApp {
                 canvas,
                 object,
                 before,
-                DataBinding { series },
+                DataBinding {
+                    coordinates: None,
+                    series,
+                },
             ));
         }
         self.try_execute_action(Action::Composite(actions))

@@ -15,7 +15,16 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
     let binding = app.display_binding(display_owner, &persisted_binding);
 
     let is_stack = binding.series.len() > 1 && app.series_stackable(&binding);
-    let multiple_datasets = binding.dataset_ids().len() > 1;
+    let multiple_datasets = if binding.coordinates.is_some() {
+        binding.series.first().is_some_and(|first| {
+            binding
+                .series
+                .iter()
+                .any(|s| s.source.resource != first.source.resource)
+        })
+    } else {
+        binding.dataset_ids().len() > 1
+    };
     let count = binding.series.len();
     let mut next_binding: Option<DataBinding> = None;
     let mut next_presentation_binding: Option<DataBinding> = None;
@@ -24,7 +33,7 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
     if app.can_align_plot_traces(canvas_id, object) && ui.button("Align traces…").clicked() {
         crate::ui::trace_alignment::open_trace_alignment_dialog(app, canvas_id, object);
     }
-    let x_unit = plot_x_unit(
+    let fallback_x_unit = plot_x_unit(
         app.doc.canvases[ci]
             .object(object)
             .and_then(|object| object.plot())
@@ -32,6 +41,15 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
             .unwrap_or("x"),
     )
     .to_owned();
+    let x_unit = binding
+        .coordinates
+        .as_ref()
+        .map(|c| {
+            c.x.as_ref()
+                .map(|u| u.display_unit.clone())
+                .unwrap_or_else(|| "data units".into())
+        })
+        .unwrap_or(fallback_x_unit);
     if is_stack {
         ui.horizontal(|ui| {
             if ui
@@ -45,7 +63,11 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
                 for series in &mut b.series {
                     series.visible = true;
                 }
-                next_binding = Some(b);
+                if binding.coordinates.is_some() {
+                    next_presentation_binding = Some(b);
+                } else {
+                    next_binding = Some(b);
+                }
             }
             if ui
                 .add_enabled(
@@ -58,12 +80,19 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
                 for series in &mut b.series {
                     series.visible = false;
                 }
-                next_binding = Some(b);
+                if binding.coordinates.is_some() {
+                    next_presentation_binding = Some(b);
+                } else {
+                    next_binding = Some(b);
+                }
             }
         });
     }
     for (i, sb) in binding.series.iter().enumerate() {
         let item_options = app.series_item_options(sb);
+        if super::curve_binding::show(app, ci, object, sb, ui) {
+            return;
+        }
         ui.horizontal(|ui| {
             if is_stack {
                 let mut visible = sb.visible;
@@ -102,11 +131,15 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
                 name
             };
             if is_stack {
-                if ui
-                    .selectable_label(stack.active == Some(i), label)
-                    .on_hover_text("Highlight this trace")
-                    .clicked()
-                {
+                let response = if binding.coordinates.is_some() {
+                    ui.add_sized(
+                        [(ui.available_width() - 85.0).max(40.0), 18.0],
+                        egui::Button::selectable(stack.active == Some(i), &label).truncate(),
+                    )
+                } else {
+                    ui.selectable_label(stack.active == Some(i), &label)
+                };
+                if response.on_hover_text(label).clicked() {
                     next_stack = Some(StackSpec {
                         active: Some(i),
                         ..stack
@@ -121,11 +154,12 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
                     .show_ui(ui, |ui| {
                         for (item, option_label) in &item_options {
                             if ui
-                                .selectable_label(sb.source.item == Some(*item), option_label)
+                                .selectable_label(sb.source.item() == Some(*item), option_label)
                                 .clicked()
                             {
                                 let mut b = binding.clone();
-                                b.series[i].source.item = Some(*item);
+                                b.series[i].source.selection =
+                                    plotium_core::state::SeriesSelection::TraceItem(*item);
                                 next_binding = Some(b);
                                 ui.close();
                             }
@@ -157,7 +191,9 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
                         b.series.swap(i, i - 1);
                         next_binding = Some(b);
                     }
-                    if matches!(sb.encoding, plotium_figure::SeriesEncoding::Line(_)) {
+                    if binding.coordinates.is_none()
+                        && matches!(sb.encoding, plotium_figure::SeriesEncoding::Line(_))
+                    {
                         if let Some(after) = x_shift_control(
                             app,
                             ci,
@@ -210,10 +246,46 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
                 }
             });
         });
+        if is_stack
+            && binding.coordinates.is_some()
+            && matches!(sb.encoding, plotium_figure::SeriesEncoding::Line(_))
+        {
+            ui.horizontal(|ui| {
+                if let Some(after) = x_shift_control(
+                    app,
+                    ci,
+                    object,
+                    display_owner,
+                    &persisted_binding,
+                    &binding,
+                    i,
+                    &x_unit,
+                    ui,
+                ) {
+                    next_presentation_binding = Some(after);
+                }
+                let mut scale = sb.line_scale();
+                ui.label("Scale");
+                if ui
+                    .add(DragValue::new(&mut scale).speed(0.02).range(0.01..=100.0))
+                    .changed()
+                {
+                    let mut b = binding.clone();
+                    if let plotium_figure::SeriesEncoding::Line(line) = &mut b.series[i].encoding {
+                        line.scale = scale;
+                    }
+                    next_presentation_binding = Some(b);
+                }
+            });
+        }
     }
 
     let candidates = app.stack_candidates(&binding);
-    if app.series_stackable(&binding) {
+    if binding.coordinates.is_some() {
+        ui.weak(
+            "Column rebinding edits existing curves; adding default fields is unavailable here.",
+        );
+    } else if app.series_stackable(&binding) {
         if candidates.is_empty() {
             ui.weak("No other datasets to stack.");
         } else {
@@ -271,6 +343,21 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
         && after != binding
     {
         let after = app.merge_display_binding(display_owner, &persisted_binding, after);
+        if persisted_binding.coordinates.is_some() {
+            let result = app
+                .plan_curve_series_order(
+                    plotium_core::automation::DocumentRevision(app.doc.automation_revision),
+                    canvas_id,
+                    object,
+                    after,
+                )
+                .and_then(|p| app.commit_curve_bindings(p));
+            app.session.status = match result {
+                Ok(()) => "Updated plot data.".into(),
+                Err(e) => e,
+            };
+            return;
+        }
         app.execute_action(Action::set_data_binding(
             ci,
             object,

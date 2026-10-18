@@ -358,6 +358,7 @@ fn switching_an_existing_stack_canvas_to_dosy_rebuilds_it_as_a_map() {
             .id_for_key("nmr.stack")
             .unwrap();
         DataBinding {
+            coordinates: None,
             series: plot
                 .binding
                 .series
@@ -368,6 +369,7 @@ fn switching_an_existing_stack_canvas_to_dosy_rebuilds_it_as_a_map() {
         }
     };
     let extracted = DataBinding {
+        coordinates: None,
         series: vec![authored_stack.series[0].clone()],
     };
     app.set_pseudo_display(0, PseudoDisplay::DosyMap);
@@ -378,10 +380,9 @@ fn switching_an_existing_stack_canvas_to_dosy_rebuilds_it_as_a_map() {
         .id_for_key("nmr.dosy_map")
         .unwrap();
     assert!(
-        plot.binding
-            .series
-            .iter()
-            .any(|series| { series.source.field == display_field && series.source.item.is_none() })
+        plot.binding.series.iter().any(|series| {
+            series.source.field == display_field && series.source.item().is_none()
+        })
     );
     let figure = plot.figure();
     assert!(
@@ -451,6 +452,7 @@ fn switching_an_existing_stack_canvas_to_dosy_rebuilds_it_as_a_map() {
         .id_for_key("nmr.stack")
         .unwrap();
     let restored = DataBinding {
+        coordinates: None,
         series: plot
             .binding
             .series

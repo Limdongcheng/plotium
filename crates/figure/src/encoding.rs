@@ -135,6 +135,8 @@ pub enum EstimatorSelection {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineEncoding {
+    #[serde(default)]
+    pub kind: crate::SeriesKind,
     pub color: ColorSource,
     pub scale: f64,
     pub width: PositiveFiniteF32,
@@ -145,6 +147,7 @@ pub struct LineEncoding {
 impl Default for LineEncoding {
     fn default() -> Self {
         Self {
+            kind: crate::SeriesKind::Line,
             color: ColorSource::Explicit(Color::TRACE),
             scale: 1.0,
             width: PositiveFiniteF32::new(DEFAULT_DATA_LINE_WIDTH_PT)

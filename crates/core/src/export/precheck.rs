@@ -475,7 +475,10 @@ mod tests {
             kind: CanvasObjectKind::Plot(Box::new(PlotObject::new(
                 None,
                 crate::state::SeriesId::new(1),
-                DataBinding { series: Vec::new() },
+                DataBinding {
+                    coordinates: None,
+                    series: Vec::new(),
+                },
                 ChartSpec::default(),
                 StackSpec::default(),
                 AxisProjections::default(),
@@ -514,7 +517,10 @@ mod tests {
             kind: CanvasObjectKind::Plot(Box::new(PlotObject::new(
                 None,
                 crate::state::SeriesId::new(1),
-                DataBinding { series: Vec::new() },
+                DataBinding {
+                    coordinates: None,
+                    series: Vec::new(),
+                },
                 ChartSpec::default(),
                 StackSpec::default(),
                 AxisProjections::default(),
@@ -553,7 +559,10 @@ mod tests {
             kind: CanvasObjectKind::Plot(Box::new(PlotObject::new(
                 None,
                 crate::state::SeriesId::new(1),
-                DataBinding { series: Vec::new() },
+                DataBinding {
+                    coordinates: None,
+                    series: Vec::new(),
+                },
                 ChartSpec::default(),
                 StackSpec::default(),
                 AxisProjections::default(),
