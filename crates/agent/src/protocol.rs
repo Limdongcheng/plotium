@@ -46,6 +46,7 @@ impl ServerHandler for Handler {
             .into());
         }
         let (response, mut receive) = oneshot::channel();
+        let image_request = request.name == "plotium_render_preview";
         let pending = PendingRequest {
             name: request.name.into_owned(),
             arguments,
@@ -69,6 +70,7 @@ impl ServerHandler for Handler {
             result = &mut receive => result.unwrap_or_else(|_| Err(Failure::new("connection_stopped", "Desktop disconnected"))),
         };
         Ok(match outcome {
+            Ok(value) if image_request => image_result(value, &context.id),
             Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::structured_error(error.value()),
         }
@@ -126,7 +128,47 @@ pub(crate) fn definitions() -> Vec<Tool> {
         Tool::new(name, description, schema.as_object().expect("local schema is an object").clone())
     }).collect();
     tools.push(Tool::new("plotium_document_inspect", "Inspect bounded document structure and source bindings by full stable target. view self returns details; children pages direct children. Never uses selection.", document.as_object().expect("local schema is an object").clone()));
+    let mut preview = plotium_core::automation::image_preview_schema();
+    preview["properties"]["expected_revision"] = json!({"type":"integer","minimum":0});
+    preview["required"] = json!(["expected_revision", "target"]);
+    tools.push(Tool::new("plotium_render_preview", "Read a whole-canvas PNG image with full target identity, frozen render_revision and pixel dimensions. No file I/O. Rejects missing assets and budget overflow.", preview.as_object().expect("local schema is an object").clone()));
     tools
+}
+
+pub(crate) fn image_result(mut value: Value, request_id: &RequestId) -> CallToolResult {
+    let data = value
+        .get_mut("value")
+        .and_then(Value::as_object_mut)
+        .and_then(|v| v.remove("png_base64"));
+    let Some(Value::String(data)) = data else {
+        return CallToolResult::structured_error(
+            Failure::new("execution_failed", "Preview produced no PNG image").value(),
+        );
+    };
+    let mut result = CallToolResult::structured(value);
+    result.content.push(ContentBlock::image(data, "image/png"));
+    let envelope = JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id: request_id.clone(),
+        result: &result,
+    };
+    match serde_json::to_vec(&envelope) {
+        Ok(bytes) if bytes.len() <= plotium_core::automation::PREVIEW_RESPONSE_BYTES => result,
+        Ok(_) => CallToolResult::structured_error(
+            Failure::new(
+                "preview_budget_exceeded",
+                "MCP preview response exceeds 6 MiB; request a smaller max_edge",
+            )
+            .value(),
+        ),
+        Err(error) => CallToolResult::structured_error(
+            Failure::new(
+                "execution_failed",
+                format!("Could not encode preview response: {error}"),
+            )
+            .value(),
+        ),
+    }
 }
 
 #[cfg(test)]

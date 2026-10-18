@@ -51,6 +51,7 @@ pub(super) fn validate_parameters(
         "project.get_blueprint" | "resources.inspect" | "render.preview" => {
             parse::<EmptyParams>(tool, value).map(drop)
         }
+        "render.preview_image" => parse::<ImagePreviewParams>(tool, value).map(drop),
         "document.inspect" => parse::<DocumentInspectParams>(tool, value).map(drop),
         "resources.search" => parse::<SearchParams>(tool, value).map(drop),
         "data.preview" => parse::<PreviewParams>(tool, value).map(drop),
@@ -206,6 +207,12 @@ macro_rules! tool {
     };
 }
 
+impl V1Schema for ImagePreviewParams {
+    fn schema() -> serde_json::Value {
+        image_preview_schema()
+    }
+}
+
 impl V1Schema for DocumentInspectParams {
     fn schema() -> serde_json::Value {
         document_inspect_schema()
@@ -214,6 +221,16 @@ impl V1Schema for DocumentInspectParams {
 
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!(
+            "render.preview_image",
+            "Preview canvas image",
+            "Render an exact canvas snapshot to bounded in-memory PNG",
+            ImagePreviewParams,
+            [KIND_CANVAS],
+            [CAP_RENDER],
+            EffectLevel::ReadOnly,
+            true
+        ),
         tool!(
             "document.inspect",
             "Inspect document structure",

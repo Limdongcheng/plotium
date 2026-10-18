@@ -18,6 +18,7 @@ pub(crate) fn manifest(allow_modify: bool) -> Value {
             "plotium_plan"=>(EDIT_OPERATIONS.to_vec(),"{plan_id,preflight:ToolPlan}","rename: dataset/canvas/content IDs; properties: ids or exact Series targets"),
             "plotium_execute"=>(EDIT_OPERATIONS.to_vec(),"ToolResult; submitted plan is consumed even on failure","one-use plan_id"),
             "plotium_document_inspect"=>(vec!["document.inspect"],"ToolResult.value: self {revision,node:{target,kind,name,visible,ancestors,child_count,...}}; children {revision,target,items,total,next_offset,truncated}","document, canvas, panel, content or exact Series TargetRef"),
+            "plotium_render_preview"=>(vec!["render.preview_image"],"MCP PNG image content plus ToolResult.value: {target,render_revision,width_px,height_px,mime_type}","one exact whole-canvas TargetRef"),
             _=>unreachable!("all connection tools have discovery contracts"),
         };
         json!({"name":tool.name,"operations":operations,"input_schema":tool.input_schema,
@@ -29,6 +30,6 @@ pub(crate) fn manifest(allow_modify: bool) -> Value {
         "supported_properties":crate::session::PROPERTIES.iter().map(|id|id.as_str()).collect::<Vec<_>>(),
         "resource_capabilities":"Core resource capabilities describe data/rendering semantics, not operations exposed by this connection. Only the operations above can be called here.",
         "document_root":document_root_target(),
-        "limits":{"document_page_default":DOCUMENT_PAGE_DEFAULT,"document_page_max":DOCUMENT_PAGE_MAX,"document_response_bytes":DOCUMENT_RESPONSE_BYTES,"pending_plans":32},
+        "limits":{"document_page_default":DOCUMENT_PAGE_DEFAULT,"document_page_max":DOCUMENT_PAGE_MAX,"document_response_bytes":DOCUMENT_RESPONSE_BYTES,"pending_plans":32,"image_preview":plotium_core::automation::image_preview_limits()},
         "revision_contract":"Fetch get_state after edits or Undo. Revision-bound reads and plans reject stale revisions; execute rechecks permission and revision. Read run records mark dirty without advancing revision."})
 }

@@ -17,7 +17,7 @@ pub const PROPERTIES: [PropertyId; 5] = [
     properties::typography::LABEL_PT,
 ];
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Failure {
     pub code: &'static str,
     pub message: String,
@@ -36,8 +36,16 @@ impl Failure {
 }
 impl From<AutomationError> for Failure {
     fn from(error: AutomationError) -> Self {
+        Self::from(&error)
+    }
+}
+impl From<&AutomationError> for Failure {
+    fn from(error: &AutomationError) -> Self {
         let code = match error {
             AutomationError::StaleRevision { .. } => "stale_revision",
+            AutomationError::PreviewCancelled => "request_cancelled",
+            AutomationError::PreviewBudget(_) => "preview_budget_exceeded",
+            AutomationError::PreviewAsset(_) => "preview_asset_unavailable",
             AutomationError::ResponseTooLarge => "response_too_large",
             AutomationError::InsufficientAuthority { .. } => "permission_denied",
             AutomationError::UnknownTool(_) | AutomationError::ToolVersion { .. } => {
@@ -191,6 +199,12 @@ impl Session {
             return Ok(json!(execute_tool(app, plan, authority)?));
         }
         barrier()?;
+        if name == "plotium_render_preview" {
+            let (snapshot, run) = self.prepare_preview(app, arguments, blocked)?;
+            let outcome = snapshot.render();
+            run.finish(app, &outcome)?;
+            return Ok(json!(outcome?));
+        }
         if matches!(name, "plotium_plan" | "plotium_properties_inspect") {
             for key in ["ids", "targets"] {
                 if arguments.get(key).is_some_and(|value| !value.is_array()) {
@@ -383,4 +397,54 @@ pub fn ensure_idle(app: &PlotiumApp) -> Result<(), Failure> {
         ));
     }
     Ok(())
+}
+
+impl Session {
+    pub(crate) fn prepare_preview(
+        &self,
+        app: &mut PlotiumApp,
+        arguments: Value,
+        blocked: bool,
+    ) -> Result<(ImagePreviewSnapshot, PreparedToolRun), Failure> {
+        if blocked {
+            return Err(Failure::new(
+                "busy",
+                "Resolve recovery or save operation and retry",
+            ));
+        }
+        ensure_idle(app)?;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Args {
+            expected_revision: DocumentRevision,
+            target: TargetRef,
+            #[serde(default = "preview_edge")]
+            max_edge: u32,
+        }
+        fn preview_edge() -> u32 {
+            PREVIEW_DEFAULT_EDGE
+        }
+        let args: Args = decode(arguments)?;
+        let plan = plan_tool(
+            app,
+            request(
+                IMAGE_PREVIEW,
+                json!(ImagePreviewParams {
+                    target: args.target.clone(),
+                    max_edge: args.max_edge
+                }),
+                vec![args.target.resource.id],
+                args.expected_revision,
+            ),
+        )?;
+        let run = PreparedToolRun::begin(app, &plan);
+        match ImagePreviewSnapshot::capture(app, &plan) {
+            Ok(snapshot) => Ok((snapshot, run)),
+            Err(error) => {
+                let failure = Failure::from(&error);
+                run.finish(app, &Err(error))?;
+                Err(failure)
+            }
+        }
+    }
 }

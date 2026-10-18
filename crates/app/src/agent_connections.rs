@@ -29,6 +29,11 @@ impl AgentConnections {
             self.stop();
             return;
         }
+        if let Err(error) = connection.poll_preview(app) {
+            app.session.status =
+                format!("Agent preview failed ({}): {}", error.code, error.message);
+            self.error = Some(app.session.status.clone());
+        }
         // Bound work per frame so a connected client cannot starve rendering.
         for _ in 0..8 {
             let Some(request) = connection.next_request() else {
@@ -37,22 +42,28 @@ impl AgentConnections {
             if request.is_cancelled() {
                 continue;
             }
-            let result = connection.session.call_when_available(
-                app,
-                &request.name,
-                request.arguments,
-                blocked,
-            );
-            self.recent = request.name;
-            if let Err(error) = &result {
+            self.recent = request.name.clone();
+            let result = if request.name == "plotium_render_preview" {
+                connection.dispatch_request(app, request, blocked)
+            } else {
+                let result = connection.session.call_when_available(
+                    app,
+                    &request.name,
+                    request.arguments,
+                    blocked,
+                );
+                let feedback = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                if request.response.send(result).is_err() {
+                    self.recent.push_str(" (client disconnected)");
+                }
+                feedback
+            };
+            if let Err(error) = result {
                 app.session.status =
                     format!("Agent request failed ({}): {}", error.code, error.message);
                 self.error = Some(app.session.status.clone());
             } else {
                 self.error = None;
-            }
-            if request.response.send(result).is_err() {
-                self.recent.push_str(" (client disconnected)");
             }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(100));

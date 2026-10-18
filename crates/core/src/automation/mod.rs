@@ -3,7 +3,9 @@
 //! select and invoke registered tools, but cannot construct document actions.
 
 mod document;
+mod preview;
 mod properties;
+pub use preview::*;
 mod registry;
 mod resources;
 mod tasks;
