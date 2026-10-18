@@ -256,20 +256,20 @@ impl Session {
             if !crate::capabilities::EDIT_OPERATIONS.contains(&args.tool_id.as_str()) {
                 return Err(Failure::new(
                     "unsupported_operation",
-                    "Only rename and supported display properties can be planned",
+                    "Discover supported operations in connection_capabilities.editable_operations",
                 ));
             }
-            if is_curve_binding_tool(&args.tool_id) {
+            if is_native_curve_tool(&args.tool_id) {
                 if !self.allow_modify {
                     return Err(Failure::new(
                         "permission_denied",
-                        "Switch to Read and modify before planning curve bindings",
+                        "Switch to Read and modify before planning native curves",
                     ));
                 }
                 if args.ids.is_some() || args.targets.is_some() {
                     return Err(Failure::new(
                         "invalid_parameters",
-                        "Binding edits carry their own exact targets",
+                        "Native curve edits carry their own exact targets or parent",
                     ));
                 }
                 if self.plans.len() >= 32 {
@@ -310,7 +310,7 @@ impl Session {
                 {
                     return Err(Failure::new(
                         "response_too_large",
-                        "Use a smaller binding batch",
+                        "Use fewer curves in the native curve batch",
                     ));
                 }
                 self.plans.insert(id, plan);

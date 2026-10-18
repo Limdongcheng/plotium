@@ -205,13 +205,13 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 连接默认使用 **Read and modify**（读取和修改），agent 连接后即可执行支持的
 修改，并可通过 Plotium 的 **Undo** 与 **Redo** 撤销和重做。
 在 **Access** 中选择 **Read only**（只读）会立即阻止后续修改，包括待执行计划；
-表格查询及既有编辑预检仍可用；导入预检要求读取和修改权限。访问权限适用于所有持有该连接密钥的客户端，停止连接后
+表格查询及既有编辑预检仍可用；导入、原生曲线绑定及创建预检要求读取和修改权限。访问权限适用于所有持有该连接密钥的客户端，停止连接后
 失效；重新开启连接时恢复默认的 **Read and modify**。
 
 实际 Agent 项目读取和执行均保存运行记录，使项目进入未保存状态；握手、工具
 发现及静态属性目录查询不生成运行记录。
 
-连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、显式数值曲线绑定和
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生单图创建、显式数值曲线绑定和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 |
@@ -232,8 +232,8 @@ stdio 连接。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
 这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
-`data.import` 模式及 `plot.series.bind`／`plot.series.materialize_default`。
-只读权限允许表格查询及既有属性预检，但拒绝导入／绑定预检和所有修改执行。
+`data.import` 模式、`plot.create` 及 `plot.series.bind`／`plot.series.materialize_default`。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建预检和所有修改执行。
 
 使用返回的 revision 列举文档画布：
 
@@ -437,7 +437,81 @@ X/Y 缺失也不忽略非法误差。误差表示非负绝对幅度，不从列�
 曲线计划共享同样的行预算，完整响应最多 256 KiB。全部目标、列、单位、行和
 revision 检查通过后才一次原子提交、一次 Undo，不部分成功、不跳过无效目标。
 只读连接拒绝绑定预检和执行。失败或过期执行也消费计划，须重读状态并重新规划。
-GUI 保存重开保留原生绑定和单位；这些操作不开放 MCP 保存、导出或通用建图。
+GUI 保存重开保留原生绑定和单位；MCP 不开放保存和导出，新建图使用下文的 `plot.create`。
+
+### 从已导入表格创建原生单图
+
+可以要求 Agent：“导入这个 CSV，时间单位为 s，电流和误差单位为 mA，
+创建一张可编辑折线图并显示对称 Y 误差。查看预览，再只把该曲线线宽改为
+1.5 pt 并再次预览。”提供绝对输入路径和明确单位。完整导入、创建参数可从
+`plotium_get_state` 的连接能力清单及 `plotium_plan` 工具 schema 发现。
+
+仅数据导入后，从实际导入结果或列元数据读取 DatasetId、FieldId、TableId、
+表 revision 和 ColumnId。通过 `plotium_plan` 规划 `plot.create`，不传顶层
+`ids` 或 `targets`：
+
+```json
+{
+  "expected_revision": 1,
+  "tool_id": "plot.create",
+  "parameters": {
+    "parent": {"resource": {"id": "document", "kind": "plotium.document"}},
+    "name": "Current",
+    "series": [{
+      "kind": "line",
+      "source": {
+        "dataset_id": "RETURNED_DATASET_UUID",
+        "field_id": 0,
+        "table_id": "RETURNED_TABLE_UUID",
+        "table_revision": "RETURNED_TABLE_REVISION_UUID",
+        "x_column_id": "RETURNED_TIME_COLUMN_UUID",
+        "y_column_id": "RETURNED_CURRENT_COLUMN_UUID",
+        "y_error_column_id": "RETURNED_ERROR_COLUMN_UUID"
+      }
+    }]
+  }
+}
+```
+
+示例中的每个身份（包括 FieldId）均须替换成实际返回值。`kind` 为 `line`
+或 `scatter`，误差列必须明确传 ColumnId 或 `null`。多条 `series` 表示
+同一图对象内相互独立的原生曲线，不是多张图。全行提取、数值、缺失值、
+误差和单位规则与上文显式曲线绑定相同；不修改表格共享默认 X/Y、不影响
+其他图，也不复制源表。
+
+完整 `parent` 决定新建范围：
+
+- document 根：新建画布、单面板和图对象。可选
+  `canvas: {name, size_mm: [宽, 高]}`，每边为 10–1000 mm；省略时在预检中
+  冻结原生默认尺寸，画布名称使用图对象名称。
+- 没有面板或图对象的已有画布：按 GUI 共用的原生空画布放置服务及已有
+  布局设置、边距创建面板和图对象。不传 `canvas`。
+- 该画布唯一的空、可见、未锁定且自由布局的面板：仅创建图对象，保留
+  面板的页坐标和尺寸。不传 `canvas` 或 `panel_name`。
+
+`panel_name` 仅用于新建面板，省略时使用图对象名称。名称不得空白，最长
+1024 UTF-8 字节。本操作不向已有成图添加第二面板/图对象，也不重建已有
+内容。初始放置由原生服务决定，接口不要求 Agent 指定内部网格、留白或
+避让算法。
+
+`preflight.binding_plan.creation` 返回拟建完整目标 `canvas`、`panel`、
+`plot`、`created`，以及 `size_mm`、`panel_frame_pt`（页坐标）、`frame_pt`
+（面板内内容局部坐标）、`coordinate_units` 和 `series_defaults`（图型及
+pt 线宽）。`binding_plan.bindings` 返回每条 owner+SeriesId 完整目标、实际
+来源映射/表 revision 和全行诊断。预检不创建对象；执行一次性 plan 后，
+`ToolResult.value` 返回同一身份和绑定摘要，结果的 `after_revision` 表示
+提交后的文档 revision。
+
+创建是原子的：来源错误、单位不兼容、非法误差或父目标/revision 变化时，
+不留下新画布、面板或半成品图。只读连接拒绝创建预检和执行。每图 1–200
+条曲线、最多 2,000,000 曲线行访问；待执行创建和绑定计划共享 2,000,000
+行预算，每连接最多 32 个计划，结构化响应上限 256 KiB。失败提交也消费
+plan。执行响应丢失后，先查询当前状态及预检返回的目标，不能盲目重新创建。
+
+使用返回目标进行结构发现与属性操作，以当前 revision 预览完整画布。
+结果可在 GUI 选择和继续编辑。一次 Undo 只移除本次新建子树，保留已有父
+容器及导入数据；Redo 恢复同一身份。后续原生尺寸和布局调整保留图对象、
+Series 身份和来源绑定。编辑或 Undo/Redo 后先读取最新 revision。
 
 ### 读取实际画布图像
 

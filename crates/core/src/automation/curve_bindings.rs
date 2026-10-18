@@ -35,6 +35,28 @@ pub fn curve_binding_schema(materialize: bool) -> Value {
     };
     json!({"type":"object","additionalProperties":false,"required":["edits"],"properties":{"edits":{"type":"array","minItems":1,"maxItems":200,"items":edit}}})
 }
+pub(super) fn check_source_revision(
+    app: &PlotiumApp,
+    tool: &str,
+    source: &crate::state::TableCurveSource,
+) -> Result<(), AutomationError> {
+    let actual = app
+        .doc
+        .dataset_by_id(source.dataset_id)
+        .and_then(|d| d.as_table())
+        .ok_or_else(|| invalid(tool, "Table dataset is missing."))?
+        .typed_state
+        .envelope
+        .revision
+        .id;
+    if actual != source.table_revision {
+        return Err(AutomationError::StaleTableRevision {
+            expected: source.table_revision.to_string(),
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
+}
 pub(super) fn prepare(
     app: &PlotiumApp,
     request: &ToolRequest,
@@ -69,7 +91,7 @@ pub(super) fn prepare(
     if tool == CURVE_BIND {
         let p: CurveBindParams = registry::parse(tool, request.parameters.clone())?;
         for e in &p.edits {
-            check(e.source.dataset_id, e.source.table_revision)?;
+            check_source_revision(app, tool, &e.source)?;
         }
         app.plan_curve_bindings(request.expected_revision, &p.edits)
             .map_err(|e| invalid(tool, e))

@@ -7,6 +7,8 @@ mod table_read;
 pub use table_import::*;
 pub use table_read::*;
 mod curve_bindings;
+mod plot_creation;
+pub use plot_creation::*;
 mod document;
 pub use curve_bindings::*;
 mod preview;
@@ -22,7 +24,7 @@ mod workflow;
 
 pub use document::{
     DOCUMENT_INSPECT, DOCUMENT_PAGE_DEFAULT, DOCUMENT_PAGE_MAX, DOCUMENT_RESPONSE_BYTES,
-    DocumentInspectParams, DocumentView, document_inspect_schema, document_root_target,
+    DocumentInspectParams, DocumentView, KIND_PANEL, document_inspect_schema, document_root_target,
     panel_resource,
 };
 pub use properties::{TOOL_INSPECT, TOOL_RESET, TOOL_SET, property_definition_description};

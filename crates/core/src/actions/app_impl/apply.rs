@@ -27,6 +27,7 @@ impl PlotiumApp {
             Action::ReplacePanelState { canvas, after, .. } => {
                 self.set_panel_state(*canvas, after);
             }
+            Action::CreatePlot { insertion } => self.apply_plot_insertion(insertion)?,
             Action::Composite(actions) => {
                 for (index, action) in actions.iter().enumerate() {
                     if let Err(error) = self.apply_action(action) {

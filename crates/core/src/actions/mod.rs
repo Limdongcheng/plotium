@@ -15,7 +15,9 @@ use plotium_processing::{AxisPipeline, Params2D, Preset2D};
 
 mod app_impl;
 mod arrange;
+mod native_plot;
 mod panel;
+pub use native_plot::NativePlotInsertion;
 mod panel_swap;
 mod processing_state;
 mod transfer;
@@ -200,6 +202,9 @@ impl PanelState {
 #[derive(Clone)]
 pub enum Action {
     Composite(Vec<Action>),
+    CreatePlot {
+        insertion: Box<NativePlotInsertion>,
+    },
     SetAsset {
         id: AssetId,
         before: Option<AssetRecord>,
@@ -608,6 +613,7 @@ impl Action {
     pub fn undo_label(&self) -> &'static str {
         match self {
             Self::InsertTableData { .. } => "import table data",
+            Self::CreatePlot { .. } => "create native plot",
             Self::ReplacePanelState { .. } => "edit panel structure",
             Self::Composite(actions) => actions
                 .iter()
@@ -638,7 +644,7 @@ impl Action {
     fn is_noop(&self) -> bool {
         match self {
             Self::Composite(actions) => actions.iter().all(Self::is_noop),
-            Self::SetAsset { .. } => false,
+            Self::SetAsset { .. } | Self::CreatePlot { .. } => false,
             Self::ReplacePanelState { .. } => false,
             Self::SetDiffusionInput { before, after, .. } => before == after,
             Self::UpdateDatasetProcessing { before, after, .. } => before == after,

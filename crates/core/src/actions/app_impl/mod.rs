@@ -2,6 +2,7 @@ use super::*;
 mod apply;
 mod axis_overrides;
 mod meta_edits;
+mod native_plot;
 mod processing;
 mod revert;
 mod table_edit;
@@ -54,7 +55,7 @@ impl PlotiumApp {
         self.finish_series_presentation_edit();
         self.finish_axis_overrides_edit();
         self.reset_interaction();
-        let Some(action) = self.session.undo_stack.pop() else {
+        let Some(mut action) = self.session.undo_stack.pop() else {
             return;
         };
         if let Err(error) = validate::validate_presentation_targets(self, &action) {
@@ -63,6 +64,7 @@ impl PlotiumApp {
             return;
         }
         let label = action.undo_label();
+        self.retain_created_plot_allocators(&mut action);
         self.revert_action(&action);
         self.session.redo_stack.push(action);
         self.mark_document_dirty();

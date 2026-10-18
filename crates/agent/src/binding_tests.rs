@@ -136,7 +136,7 @@ fn binding_schema_uses_exact_embedded_targets_without_changing_old_selectors() {
         .find(|t| t.name == "plotium_plan")
         .unwrap();
     let schema = serde_json::to_value(&plan.input_schema).unwrap();
-    assert_eq!(schema["oneOf"].as_array().unwrap().len(), 5);
+    assert_eq!(schema["oneOf"].as_array().unwrap().len(), 6);
     let constraints = crate::capabilities::manifest(false);
     assert_eq!(
         constraints["operation_constraints"][CURVE_BIND]["currently_permitted"],

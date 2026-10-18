@@ -23,6 +23,7 @@ impl PlotiumApp {
             Action::ReplacePanelState { canvas, before, .. } => {
                 self.set_panel_state(*canvas, before);
             }
+            Action::CreatePlot { insertion } => self.revert_plot_insertion(insertion),
             Action::Composite(actions) => {
                 for action in actions.iter().rev() {
                     self.revert_action(action);
