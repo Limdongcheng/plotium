@@ -117,12 +117,12 @@ pub fn extract_table_curve(
     let mut run = Vec::new();
     for (i, row) in rows.row_ids.iter().copied().enumerate() {
         let at = |e: String| format!("Row {row}: {e}");
-        let px = number(&x[i]).map_err(&at)?;
-        let py = number(&y[i]).map_err(&at)?;
+        let px = number(&x[i]).map_err(at)?;
+        let py = number(&y[i]).map_err(at)?;
         let sigma = error
             .map(|v| number(&v[i]))
             .transpose()
-            .map_err(&at)?
+            .map_err(at)?
             .flatten();
         if sigma.is_some_and(|v| !v.is_finite() || v < 0.0) {
             return Err(format!(
@@ -145,15 +145,15 @@ pub fn extract_table_curve(
             continue;
         }
         let point = [
-            x_conversion.apply(px.expect("finite pair")).map_err(&at)?,
-            y_conversion.apply(py.expect("finite pair")).map_err(&at)?,
+            x_conversion.apply(px.expect("finite pair")).map_err(at)?,
+            y_conversion.apply(py.expect("finite pair")).map_err(at)?,
         ];
         if let Some(sigma) = sigma {
             let sigma = error_conversion
                 .as_ref()
                 .expect("selected error column")
                 .apply(sigma)
-                .map_err(&at)?;
+                .map_err(at)?;
             if !(point[1] - sigma).is_finite() || !(point[1] + sigma).is_finite() {
                 return Err(format!("Row {row}: error extent overflowed."));
             }
