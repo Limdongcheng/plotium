@@ -62,8 +62,8 @@ fn the_planning_of_pre_existing_tools_is_unchanged() {
     ];
     assert_eq!(
         cases.len(),
-        ToolRegistry::built_in().descriptors().count() - 3,
-        "every tool that predates the three property tools is covered here"
+        ToolRegistry::built_in().descriptors().count() - 4,
+        "every tool that predates property and document discovery tools is covered here"
     );
     for (tool_id, parameters, target) in cases {
         let plan = plan_tool(

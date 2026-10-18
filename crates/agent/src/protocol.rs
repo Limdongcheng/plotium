@@ -75,7 +75,7 @@ impl ServerHandler for Handler {
         .into())
     }
 }
-fn definitions() -> Vec<Tool> {
+pub(crate) fn definitions() -> Vec<Tool> {
     let revision = json!({"type": "integer", "minimum": 0});
     let ids = json!({"type": "array", "items": {"type": "string"}, "minItems": 1});
     let targets = json!({"type":"array", "minItems":1, "items": {
@@ -101,13 +101,16 @@ fn definitions() -> Vec<Tool> {
     query["description"] = json!(
         "ResourceQuery fields: kinds (resource kind IDs), capabilities (capability IDs), name_contains, units (strings), metadata (string map), lineage_source, offset, limit. Omitted filters match all resources. Plot object kind: plotium.canvas.object; document ID: document."
     );
-    [
-        ("plotium_get_state", "Read project overview, revision, selection and connection permissions. Agent reads create saved run records.", json!({}), json!([])),
+    let mut document = plotium_core::automation::document_inspect_schema();
+    document["properties"]["expected_revision"] = revision.clone();
+    document["required"] = json!(["expected_revision", "target", "view"]);
+    let mut tools: Vec<Tool> = [
+        ("plotium_get_state", "Read project overview, revision, selection, supported connection capabilities and permissions. Agent reads create saved run records.", json!({}), json!([])),
         ("plotium_resources_search", "Search current project resources using ResourceQuery.", json!({"expected_revision": revision, "query": query}), json!(["expected_revision", "query"])),
         ("plotium_resources_inspect", "Read descriptors for explicit stable resource IDs.", json!({"expected_revision": revision, "ids": ids}), json!(["expected_revision", "ids"])),
-        ("plotium_properties_list", "List supported display property IDs, labels and scopes. Does not create a run record.", json!({}), json!([])),
+        ("plotium_properties_list", "List supported display property definitions: schema, units, scope and static applicability. Does not create a run record.", json!({}), json!([])),
         ("plotium_properties_inspect", "Read property values, defaults, bounds and applicability.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "key": key}), json!(["expected_revision", "key"])),
-        ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": ["resource.rename", "properties.set", "properties.reset"]}, "parameters": {"type": "object", "description": "Core tool arguments: rename {name}; properties.set {key,value}; properties.reset {key}."}}), json!(["expected_revision", "tool_id", "parameters"])),
+        ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": crate::capabilities::EDIT_OPERATIONS}, "parameters": {"type": "object", "description": "Core tool arguments: rename {name}; properties.set {key,value}; properties.reset {key}."}}), json!(["expected_revision", "tool_id", "parameters"])),
         ("plotium_execute", "Submit a saved plan once. Requires current desktop write permission and unchanged revision. Undo is available in Plotium.", json!({"plan_id": {"type": "string"}}), json!(["plan_id"])),
     ].into_iter().map(|(name, description, properties, required)| {
         let mut schema = json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
@@ -121,7 +124,9 @@ fn definitions() -> Vec<Tool> {
             }
         }
         Tool::new(name, description, schema.as_object().expect("local schema is an object").clone())
-    }).collect()
+    }).collect();
+    tools.push(Tool::new("plotium_document_inspect", "Inspect bounded document structure and source bindings by full stable target. view self returns details; children pages direct children. Never uses selection.", document.as_object().expect("local schema is an object").clone()));
+    tools
 }
 
 #[cfg(test)]

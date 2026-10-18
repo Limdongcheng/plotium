@@ -667,3 +667,19 @@ mod audit_tests;
 #[cfg(test)]
 #[path = "properties_tests.rs"]
 mod tests;
+
+/// Describe only the requested definition; callers choose their supported subset.
+pub fn property_definition_description(
+    id: crate::properties::PropertyId,
+) -> Option<serde_json::Value> {
+    let d = crate::properties::definition(id)?;
+    Some(serde_json::json!({
+        "id": d.id.as_str(), "label": d.canonical_label, "scope": format!("{:?}",d.scope_kind),
+        "schema": schema_dto(&crate::properties::static_schema(d)),
+        "unit": match d.value_schema { ValueSchema::Float { display, .. } => display.unit(), _ => "" },
+        "access": match d.access { PropertyAccess::ReadOnly => "read_only", PropertyAccess::ReadWrite => "read_write" },
+        "applicability": {"component":d.applicability.component.as_str(),
+            "encoding":d.applicability.encoding.map(|e|e.as_str()),
+            "required_field_capabilities":d.applicability.required_capabilities}
+    }))
+}

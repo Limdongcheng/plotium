@@ -593,6 +593,7 @@ fn fail_automation(error: AutomationError) -> Status {
         | AutomationError::InvalidParameters { .. }
         | AutomationError::InvalidSelector(_) => Status::Usage,
         AutomationError::Execution(_)
+        | AutomationError::ResponseTooLarge
         | AutomationError::StaleRevision { .. }
         | AutomationError::InsufficientAuthority { .. } => Status::BatchFailed,
     }

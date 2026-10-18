@@ -2,6 +2,7 @@
 //! agents. The public boundary is deliberately semantic: callers can inspect,
 //! select and invoke registered tools, but cannot construct document actions.
 
+mod document;
 mod properties;
 mod registry;
 mod resources;
@@ -11,7 +12,12 @@ mod tools;
 mod types;
 mod workflow;
 
-pub use properties::{TOOL_INSPECT, TOOL_RESET, TOOL_SET};
+pub use document::{
+    DOCUMENT_INSPECT, DOCUMENT_PAGE_DEFAULT, DOCUMENT_PAGE_MAX, DOCUMENT_RESPONSE_BYTES,
+    DocumentInspectParams, DocumentView, document_inspect_schema, document_root_target,
+    panel_resource,
+};
+pub use properties::{TOOL_INSPECT, TOOL_RESET, TOOL_SET, property_definition_description};
 pub use registry::ToolRegistry;
 pub use resources::*;
 pub use tasks::*;

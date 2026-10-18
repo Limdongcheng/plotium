@@ -211,7 +211,7 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 实际 Agent 项目读取和执行均保存运行记录，使项目进入未保存状态；握手、工具
 发现及静态属性目录查询不生成运行记录。
 
-首版支持项目和资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
+连接支持文档结构、来源绑定和资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 |
 | --- | --- |
@@ -223,6 +223,61 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 
 此接口暂不支持处理参数、应用偏好、导入、计算、导出、图像预览、内置聊天及
 stdio 连接。
+
+### 不依赖名称发现结构
+
+先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
+八个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
+数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
+这里仍只能预检 `resource.rename`、`properties.set` 和 `properties.reset`。
+只读权限允许查询与预检，但不允许执行修改。
+
+使用返回的 revision 列举文档画布：
+
+```json
+{
+  "expected_revision": 7,
+  "target": {"resource":{"id":"document","kind":"plotium.document"}},
+  "view": "children",
+  "offset": 0,
+  "limit": 50
+}
+```
+
+将此请求传给 `plotium_document_inspect`。复制完整的 `value.items[].target`
+作为下一次请求目标，依次进入画布、面板、内容和 Series。画布先列面板，再列未归属
+面板的内容；面板内的内容只在所属面板下列出。使用 `view: "self"` 并省略分页参数，
+读取目标详情、`ancestors` 归属链和 `child_count`。内容类型包括图、文字、形状和
+栅格图片，不返回图片像素或数据行。frame 使用 pt：面板相对页面，面板内内容相对
+面板；画布尺寸使用 mm。
+
+Series 详情包含可直接用于属性查询的完整 target、编码、可见性、显式标签，以及
+`source` 中的数据集和字段资源引用、所属数据集内的 `field_id`、可选 `item_id`、
+单位和绑定状态。用返回的资源 ID 调用 `plotium_resources_inspect`，可读取字段和
+列的描述。字段失效时保留 `field_id`，但不提供可解析的字段引用。来源状态包括
+`resolved`、`missing_dataset`、`missing_field`、`missing_item`、
+`incompatible_encoding`、`unbound` 和 `missing_column`。
+
+表格的 `binding_mode: "table_default"` 返回共享的 `x_column` 和全部
+`series_columns` Y／误差列绑定。一个逻辑 Series 可能展开为多条表格显示曲线，
+这些显示曲线不会因此获得独立 Series ID。
+`per_plot_explicit_binding_supported: false` 表明尚不支持逐图独立 X/Y 绑定。
+名称（包括同名曲线）仅作显示，不能代替身份。面板地址为
+`CANVAS_UUID/panels/PANEL_ID`；内容与 Series 保持下文既有地址。
+
+子项查询默认每页 50 项，允许 1–200，返回 `total`、`next_offset` 和 `truncated`。
+保持**相同 revision 和 target**，按 `next_offset` 继续读取；256 KiB 结构化响应
+预算可能使一页提前结束。详情或单个条目超过预算时返回 `response_too_large`。
+不提供递归展开整个项目的接口。revision 变化会拒绝续页，须重读状态并重新列举。
+目标失效或身份伪造返回 `invalid_parameters`，不会改用当前选择。
+
+`plotium_properties_list {}` 只返回当前五项静态定义，包括 `schema`、`unit`
+（无量纲时为空）、`scope`、`access` 和静态 `applicability`，不混入当前目标值。
+用 `plotium_properties_inspect` 查询明确目标的当前值、默认值、范围和适用性。
+属性是否适用与连接是否允许修改分别表达。
+
+### 查询并修改一条明确曲线
 
 示例任务：“找到我的线图，读取线宽，预检改为 1.5 pt，再执行保存的计划。”
 工具调用顺序如下：
@@ -293,6 +348,6 @@ Series ID 仅在所属图对象内唯一，因此务必复制包含资源信息�
 
 稳定错误码包括 `permission_denied`、`expired_plan`、`stale_revision`、`busy`、
 `invalid_parameters`、`unsupported_operation`、`plan_limit`、
-`request_cancelled`、`connection_stopped` 和 `execution_failed`。`busy` 可在编辑手势、
+`request_cancelled`、`connection_stopped`、`response_too_large` 和 `execution_failed`。`busy` 可在编辑手势、
 恢复确认或后台项目操作结束后重试；过期计划及 revision 冲突需重新读取和预检。
 Agent connections 设置页面显示最近操作和错误，后台反馈不会自行打开设置页面。
