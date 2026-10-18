@@ -8,9 +8,10 @@ use crate::{
     screen_lod::{line_columns, screen_line_points},
 };
 use egui::{Align2, Color32, FontId, Pos2, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
-use plotium_figure::{AxisFrame, AxisTrace, Color, Figure, SeriesKind};
+use plotium_figure::{AxisFrame, AxisTrace, Color, Figure};
 
 mod color_scale;
+mod curves;
 mod legend;
 mod sticks;
 
@@ -320,50 +321,7 @@ fn paint_with_detail_and_stats_impl(
     paint_error_bars(&clipped, &proj, fig, scale, false);
 
     for series in &fig.series {
-        if series.points.is_empty() {
-            continue;
-        }
-        match series.kind {
-            SeriesKind::Line if series.points.len() >= 2 => {
-                if let Some(stats) = stats.as_deref_mut() {
-                    stats.line_series_visited += 1;
-                }
-                let columns = line_columns(detail, plot.width, painter.ctx().pixels_per_point());
-                let visible = screen_line_points(
-                    &series.points,
-                    fig.x.min.min(fig.x.max),
-                    fig.x.min.max(fig.x.max),
-                    columns,
-                );
-                if let Some(stats) = stats.as_deref_mut() {
-                    stats.record_line(
-                        visible.source_points_visited,
-                        visible.points.len(),
-                        visible.pooled,
-                    );
-                }
-                let pts: Vec<Pos2> = visible
-                    .points
-                    .iter()
-                    .map(|p| {
-                        let (px, py) = proj.project(*p);
-                        to_pos(px, py)
-                    })
-                    .collect();
-                clipped.add(Shape::line(
-                    pts,
-                    Stroke::new(series.width * scale, col(series.color)),
-                ));
-            }
-            SeriesKind::Points => {
-                for p in &series.points {
-                    let (px, py) = proj.project(*p);
-                    clipped.circle_filled(to_pos(px, py), series.width * scale, col(series.color));
-                }
-            }
-            SeriesKind::Stick => sticks::paint(&clipped, &proj, series, scale),
-            SeriesKind::Line => {}
-        }
+        curves::paint(&clipped, &proj, series, scale, detail, stats.as_deref_mut());
     }
     paint_error_bars(&clipped, &proj, fig, scale, true);
 

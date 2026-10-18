@@ -368,6 +368,11 @@ impl PlotiumApp {
             &change.after.stack,
             [frame.width / MM_TO_PT, frame.height / MM_TO_PT],
         )?;
+        super::axis_display::validate_display(
+            &change.after.axis_overrides,
+            change.after.binding.coordinates.as_ref(),
+            &figure,
+        )?;
         change.after.preserve_viewport_on_rebuild(figure);
         Ok(())
     }

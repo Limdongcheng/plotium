@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AxisOverridesDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    x_display_unit: Option<Box<plotium_data::UnitSpec>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    y_display_unit: Option<Box<plotium_data::UnitSpec>>,
+    #[serde(default)]
+    typography: plotium_figure::FigureTypographyOverrides,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     x_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     y_label: Option<String>,
@@ -38,6 +44,9 @@ pub struct AxisOverridesDto {
 impl AxisOverridesDto {
     pub(super) fn from_overrides(overrides: &AxisOverrides) -> Option<Self> {
         (overrides != &AxisOverrides::default()).then(|| Self {
+            x_display_unit: overrides.x_display_unit.clone(),
+            y_display_unit: overrides.y_display_unit.clone(),
+            typography: overrides.typography,
             x_label: overrides.x_label.clone(),
             y_label: overrides.y_label.clone(),
             x_range: overrides.x_range.map(RangeDto::from_range),
@@ -57,6 +66,9 @@ impl AxisOverridesDto {
 
     pub(super) fn to_overrides(&self) -> AxisOverrides {
         AxisOverrides {
+            x_display_unit: self.x_display_unit.clone(),
+            y_display_unit: self.y_display_unit.clone(),
+            typography: self.typography,
             x_label: self.x_label.clone(),
             y_label: self.y_label.clone(),
             x_range: self.x_range.map(RangeDto::into_range),

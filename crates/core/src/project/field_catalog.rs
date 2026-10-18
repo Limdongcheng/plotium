@@ -36,6 +36,16 @@ pub(super) fn validate_series(
         )));
     }
     if let plotium_figure::SeriesEncoding::Line(line) = encoding
+        && line
+            .appearance
+            .marker_size
+            .is_some_and(|s| !(0.1..=20.).contains(&s.get()))
+    {
+        return Err(ProjectError::Invalid(format!(
+            "{context} marker diameter must be between 0.1 and 20 pt"
+        )));
+    }
+    if let plotium_figure::SeriesEncoding::Line(line) = encoding
         && !line.scale.is_finite()
     {
         return Err(ProjectError::Invalid(format!(

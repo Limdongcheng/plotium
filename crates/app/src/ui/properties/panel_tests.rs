@@ -174,3 +174,134 @@ fn the_heading_counts_what_the_section_supplies_and_says_it_in_english() {
     assert_eq!(document.counted(1), "1 document");
     assert_eq!(document.counted(2), "2 documents");
 }
+
+fn mixed_curve_page(kinds: [plotium_core::state::CurveKind; 2]) -> (PlotiumApp, Vec<TargetRef>) {
+    use plotium_core::{automation::*, data::*, state::*};
+    let columns = [("x", vec![0., 1., 2.]), ("y", vec![1., 2., 4.])]
+        .into_iter()
+        .map(|(name, values)| {
+            (
+                ColumnSchema::new(name, LogicalType::Float64),
+                ColumnChunk::optional_f64(values.into_iter().map(Some)),
+            )
+        })
+        .collect();
+    let table =
+        TableDataset::from_materialized(columns, vec![], None, vec![], "plotium.test.r6.panel")
+            .unwrap();
+    let dataset = Dataset::Table(Box::new(table));
+    let t = dataset.as_table().unwrap();
+    let revision = &t.typed_state.envelope.revision;
+    let c = &revision.snapshot.schema.columns;
+    let source = TableCurveSource {
+        dataset_id: dataset.resource_id(),
+        field_id: dataset.default_field_id().unwrap(),
+        table_id: revision.table_id,
+        table_revision: revision.id,
+        x_column_id: c[0].id,
+        y_column_id: c[1].id,
+        y_error_column_id: None,
+    };
+    let mut app = PlotiumApp::new();
+    app.doc.datasets.push(dataset);
+    let plan = app
+        .plan_plot_creation(
+            DocumentRevision(0),
+            &PlotCreateParams {
+                parent: document_root_target(),
+                name: "same-name curves".into(),
+                canvas: None,
+                panel_name: None,
+                series: kinds
+                    .into_iter()
+                    .map(|kind| NewCurve {
+                        kind,
+                        source: source.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+    app.commit_curve_bindings(plan).unwrap();
+    app.clear_history();
+    let targets = app.series_targets(0, app.doc.canvases[0].objects[0].id);
+    (app, targets)
+}
+
+#[test]
+fn r6_mixed_line_scatter_row_is_editable_in_either_order_and_reports_skips() {
+    use plotium_core::{
+        properties::{Availability, line_display},
+        state::CurveKind,
+    };
+    use plotium_figure::{LineStyle, SeriesEncoding, SeriesKind};
+    for kinds in [
+        [CurveKind::Scatter, CurveKind::Line],
+        [CurveKind::Line, CurveKind::Scatter],
+    ] {
+        let (mut app, targets) = mixed_curve_page(kinds);
+        let before = app.doc.canvases[0].objects[0]
+            .plot()
+            .unwrap()
+            .binding
+            .clone();
+        let rows = resolve_rows_for(&app, &targets, LINE_SECTION);
+        let row = rows
+            .iter()
+            .find(|r| r.presentation.id == line_display::STYLE)
+            .unwrap();
+        assert_eq!(row.representative.availability, Availability::Editable);
+        assert_eq!(row.set.applicable_targets.len(), 2);
+        apply(
+            &mut app,
+            &targets,
+            Pending::Write(line_display::STYLE, PropertyValue::Enum("dashed")),
+            SectionNoun::new("line series", "line series"),
+        );
+        assert!(
+            app.session
+                .status
+                .contains("Updated 1 line series; skipped 1:"),
+            "{}",
+            app.session.status
+        );
+        let after = &app.doc.canvases[0].objects[0].plot().unwrap().binding;
+        for (old, new) in before.series.iter().zip(&after.series) {
+            let SeriesEncoding::Line(line) = &old.encoding else {
+                panic!()
+            };
+            if line.kind == SeriesKind::Points {
+                assert_eq!(old, new);
+            } else {
+                let SeriesEncoding::Line(updated) = &new.encoding else {
+                    panic!()
+                };
+                assert_eq!(updated.appearance.line_style, LineStyle::Dashed);
+                assert_eq!(old.id, new.id);
+                assert_eq!(old.source, new.source);
+            }
+        }
+        app.undo();
+        assert_eq!(
+            app.doc.canvases[0].objects[0].plot().unwrap().binding,
+            before
+        );
+    }
+}
+
+#[test]
+fn r6_all_scatter_row_remains_disabled_with_a_reason() {
+    use plotium_core::{
+        properties::{Availability, line_display},
+        state::CurveKind,
+    };
+    let (app, targets) = mixed_curve_page([CurveKind::Scatter, CurveKind::Scatter]);
+    let rows = resolve_rows_for(&app, &targets, LINE_SECTION);
+    let row = rows
+        .iter()
+        .find(|r| r.presentation.id == line_display::STYLE)
+        .unwrap();
+    assert!(
+        matches!(row.representative.availability, Availability::Disabled(reason) if !reason.is_empty())
+    );
+}

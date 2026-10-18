@@ -4,13 +4,14 @@ use crate::{
     TextAnchor, arrow_head, axis_layout, error_bar_segments, heatmap_cells, integral,
     polygon_outline, projection_points, range_label_layout,
 };
-use plotium_figure::{AxisFrame, AxisTrace, Figure, SeriesKind};
+use plotium_figure::{AxisFrame, AxisTrace, Figure};
 use std::fmt::Write as _;
 
 mod color_scale;
 mod document;
 #[cfg(all(windows, feature = "emf"))]
 pub(crate) use document::prepared_raster;
+mod curves;
 mod legend;
 mod sticks;
 pub use document::{export_document, export_document_for_bounds, export_document_page};
@@ -441,37 +442,7 @@ fn write_figure(
     }
     write_error_bars(s, fig, &proj, false);
     for series in &fig.series {
-        if series.points.is_empty() {
-            continue;
-        }
-        match series.kind {
-            SeriesKind::Line if series.points.len() >= 2 => {
-                let mut pts = String::new();
-                for p in &series.points {
-                    let (px, py) = proj.project(*p);
-                    let _ = write!(pts, "{px},{py} ");
-                }
-                let _ = write!(
-                    s,
-                    r#"<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="{w}"/>"#,
-                    col = series.color.to_hex(),
-                    w = series.width,
-                );
-            }
-            SeriesKind::Points => {
-                for p in &series.points {
-                    let (px, py) = proj.project(*p);
-                    let _ = write!(
-                        s,
-                        r#"<circle cx="{px:.2}" cy="{py:.2}" r="{r:.2}" fill="{col}"/>"#,
-                        r = series.width,
-                        col = series.color.to_hex(),
-                    );
-                }
-            }
-            SeriesKind::Stick => sticks::write(s, &proj, series),
-            SeriesKind::Line => {}
-        }
+        curves::write(s, &proj, series);
     }
     write_error_bars(s, fig, &proj, true);
     for curve in integral::layout(fig, plot, 1.0) {

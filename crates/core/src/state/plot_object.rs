@@ -86,7 +86,7 @@ impl PlotObject {
         figure: Figure,
         viewport: CanvasViewport,
     ) -> Self {
-        Self {
+        let mut plot = Self {
             display_owner,
             next_series_id,
             binding,
@@ -98,7 +98,17 @@ impl PlotObject {
             figure,
             figure_geometry_generation: next_figure_geometry_generation(),
             viewport,
-        }
+        };
+        super::axis_display::apply_display(
+            &mut plot.figure,
+            plot.binding.coordinates.as_ref(),
+            &plot.derived_axes,
+            &plot.axis_overrides,
+        );
+        plot.axis_overrides
+            .typography
+            .apply_to(&mut plot.figure.typography);
+        plot
     }
 
     pub fn figure(&self) -> &Figure {
@@ -111,6 +121,23 @@ impl PlotObject {
 
     pub fn derived_axes(&self) -> &DerivedAxes {
         &self.derived_axes
+    }
+
+    pub(crate) fn automatic_axis_label(&self, x: bool) -> String {
+        let coordinates = self.binding.coordinates.as_ref();
+        super::axis_display::display_label(
+            if x {
+                &self.derived_axes.x_label
+            } else {
+                &self.derived_axes.y_label
+            },
+            coordinates.and_then(|c| if x { c.x.as_ref() } else { c.y.as_ref() }),
+            if x {
+                self.axis_overrides.x_display_unit.as_deref()
+            } else {
+                self.axis_overrides.y_display_unit.as_deref()
+            },
+        )
     }
 
     pub fn allocate_series_id(&mut self) -> SeriesId {
@@ -157,6 +184,12 @@ impl PlotObject {
         prepare: impl FnOnce(&mut Self, &mut Figure),
     ) {
         self.derived_axes = DerivedAxes::from_figure(&figure);
+        super::axis_display::apply_display(
+            &mut figure,
+            self.binding.coordinates.as_ref(),
+            &self.derived_axes,
+            &self.axis_overrides,
+        );
         prepare(self, &mut figure);
         self.figure = figure;
         self.figure_geometry_generation = next_figure_geometry_generation();
@@ -245,11 +278,20 @@ impl PlotObject {
     }
 
     pub(crate) fn apply_axis_overrides(&mut self) {
+        super::axis_display::apply_display(
+            &mut self.figure,
+            self.binding.coordinates.as_ref(),
+            &self.derived_axes,
+            &self.axis_overrides,
+        );
         self.axis_overrides.apply_to(&mut self.figure);
     }
 
     pub(crate) fn set_figure_typography(&mut self, typography: FigureTypography) {
         self.figure.typography = typography;
+        self.axis_overrides
+            .typography
+            .apply_to(&mut self.figure.typography);
     }
 
     pub(crate) fn set_integral_curves(

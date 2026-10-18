@@ -36,6 +36,66 @@ use plotium_core::state::SettingsCategory;
 use plotium_core::state::WorkflowTab;
 
 pub const PRESENTATIONS: &[PropertyPresentation] = &[
+    object_entry(
+        plotium_core::properties::line_display::COLOR,
+        "Color",
+        LINE_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::line_display::LABEL,
+        "Legend label",
+        LINE_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::line_display::STYLE,
+        "Line style",
+        LINE_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::line_display::MARKER,
+        "Marker",
+        LINE_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::line_display::MARKER_SIZE,
+        "Marker diameter",
+        LINE_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::X_UNIT,
+        "X display unit",
+        AXIS_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::Y_UNIT,
+        "Y display unit",
+        AXIS_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::X_RANGE,
+        "X range",
+        AXIS_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::Y_RANGE,
+        "Y range",
+        AXIS_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::TICK_PT,
+        "Tick size",
+        AXIS_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::LABEL_PT,
+        "Axis-title size",
+        AXIS_HOME,
+    ),
+    object_entry(
+        plotium_core::properties::plot_display::LEGEND_PT,
+        "Legend size",
+        GUIDE_HOME,
+    ),
     object_entry(object::STACK_MODE, "Mode", STACK_HOME),
     object_entry(object::STACK_SPACING_Y, "Vertical spacing", STACK_HOME),
     object_entry(object::STACK_SHEAR_X, "3D shear", STACK_HOME),

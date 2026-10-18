@@ -43,6 +43,38 @@ pub(super) fn write(s: &mut String, fig: &Figure, plot: Rect) {
         let ly = by + oy;
         let lx = bx + ox;
         match mark {
+            LegendMark::Curve {
+                kind,
+                appearance,
+                width,
+            } => {
+                let series = crate::curve_style::legend_series(
+                    *color,
+                    *kind,
+                    *appearance,
+                    *width,
+                    lx,
+                    ly,
+                    sw,
+                );
+                let points: Vec<_> = series
+                    .points
+                    .iter()
+                    .map(|p| (p[0] as f32, p[1] as f32))
+                    .collect();
+                if *kind != plotium_figure::SeriesKind::Points {
+                    super::curves::stroke(s, &points, &series);
+                }
+                super::curves::marker_at(
+                    s,
+                    (lx + sw * 0.5, ly),
+                    appearance.marker(*kind),
+                    appearance.marker_radius(*width),
+                    *color,
+                    *width,
+                );
+            }
+
             LegendMark::Line => {
                 let _ = write!(
                     s,

@@ -57,13 +57,22 @@ The connection supports CSV/TSV data-only import, native table queries, canvas p
 document structure, native single-plot creation, explicit numeric curve bindings, supported table transforms and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
-| Property ID | Target |
-| --- | --- |
-| `series.line.stroke_width` | Plot object (its line series) |
-| `series.contour.line_width` | Plot object (its contour series) |
-| `series.contour.count` | Plot object (its contour series) |
-| `document.figure.typography.tick_pt` | `document` |
-| `document.figure.typography.label_pt` | `document` |
+| Property ID | Target | Value |
+| --- | --- | --- |
+| `series.line.color` | Object + Series | `#RRGGBB` |
+| `series.line.stroke_width` | Object + Series | 0.05–10 pt |
+| `series.line.style` | Object + Series | `solid`, `dashed`, `dotted`, `dash_dot` |
+| `series.line.marker` | Object + Series | `none`, `circle`, `square`, `diamond`, `triangle_up`, `triangle_down`, `plus`, `cross` |
+| `series.line.marker_size` | Object + Series | 0.1–20 pt diameter |
+| `series.visible` | Object + Series | boolean |
+| `series.label` | Object + Series | string |
+| `object.axes.x_label / object.axes.y_label` | Object | string |
+| `object.axes.x_display_unit / object.axes.y_display_unit` | Object | compatible code from property inspection |
+| `object.axes.x_range / object.axes.y_range` | Object | auto or manual range object |
+| `object.figure.typography.tick_pt / object.figure.typography.label_pt / object.figure.typography.legend_pt` | Object | 1–72 pt |
+| `series.contour.line_width` | Object + Series | 0.05–10 pt |
+| `series.contour.count` | Object + Series | 1–256 |
+| `document.figure.typography.tick_pt / document.figure.typography.label_pt` | document | 1–72 pt |
 
 Processing parameters, preferences, other import formats, other computation, exports, built-in chat
 are outside this interface.
@@ -133,7 +142,7 @@ There is no recursive whole-project dump. Revision changes reject continuation;
 read state and restart the listing. Missing targets and forged identities return
 `invalid_parameters`, without using the current selection.
 
-`plotium_properties_list {}` returns exactly the five supported definitions:
+`plotium_properties_list {}` returns the supported definitions:
 `schema`, `unit` (empty for dimensionless values), `scope`, `access` and static
 `applicability`. It contains no current target values. Use
 `plotium_properties_inspect` to resolve values, defaults, bounds and applicability
@@ -588,14 +597,88 @@ Only one preview renders per connection; another returns `busy`. Other existing
 tools remain available while rendering. Cancellation or stopping the connection
 prevents image delivery; stopping or switching projects discards the old job.
 
+## Change display without rebuilding the plot
+
+Use the exact target returned in `creation.series_defaults[].target`, or discover
+it with `plotium_document_inspect`. The owner resource and stable SeriesId travel
+together: same-name curves remain separate targets. `plotium_properties_list`
+lists the allowed properties; `plotium_properties_inspect` supplies current values,
+defaults, target-specific unit choices and range input schemas.
+
+Read `plotium_get_state` first. Call `plotium_plan` with its `project_context`
+and current revision, replacing the placeholders below with discovered values:
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "tool_id": "properties.set",
+  "targets": [{
+    "resource": {"id":"CANVAS_UUID/OBJECT_ID","kind":"plotium.canvas.object",
+      "parent_id":"CANVAS_UUID","local_id":"OBJECT_ID"},
+    "component": {"kind":"series","id":1}
+  }],
+  "parameters": {"key": "series.line.color", "value": "#0072B2"}
+}
+```
+
+Review the preflight, then pass only its returned `plan_id` to `plotium_execute`.
+This changes only that curve's color, including its error bars, not its width or
+source columns. Axis and local font properties instead take `ids:[PLOT_OBJECT_ID]`.
+
+One request changes one key across its targets, atomically, with one Undo step.
+An existing but inapplicable target is reported as skipped; a missing or forged
+identity rejects the request. Invalid colors, non-finite values and invalid
+ranges are refused at preflight. Execution rechecks revision and permission;
+a rejected execute consumes its plan. Re-read state before planning again.
+
+Range values distinguish these operations:
+
+- `{"mode":"auto"}` clears only that axis's manual range.
+- `{"mode":"manual","min":0,"max":10,"unit":"mA"}` sets finite increasing
+  bounds in the stated compatible unit. `unit:null` is only for unknown coordinate
+  units. A known unit cannot be introduced onto an unknown-unit plot.
+- Resetting **all** axis settings is a separate native operation, not a side
+  effect of Auto. `properties.reset` resets only the named property.
+
+Display units use compatible codes returned by property inspection, such as `s` → `ms` or `mA` → `A`.
+The plot retains R4's coordinate-unit contract: source data, manual range storage,
+shifts and error amplitudes keep their meaning. Ticks and automatically derived
+unit text change; authored axis titles stay verbatim. Rebinding/reordering curves
+and removing the first curve do not redefine coordinates. Numeric range editing
+is unavailable on hidden/categorical axes; a retained range can still be cleared.
+`unit_code.codes` lists compatible choices; `axis_range.input_schema` describes
+the range value and its `view`/`unit` describe the current display window.
+
+Marker size is a diameter in points, independent after explicitly set. Without
+an override, native point curves retain their existing width-based radius; the
+existing stroke-width API retains this behavior. Reset restores the native
+marker/size, and an explicit empty legend label omits that legend entry. Stroke
+style applies to line curves; scatter curves are skipped for that property.
+Markers apply to line/scatter curves, not sticks. A chart that owns semantic
+colors rejects a single series color override as inapplicable.
+
+Plot-local tick, axis-title and legend sizes inherit document typography until
+set. Reset removes only that override; changing one plot's font does not style
+other plots. Font/title measurements use the native renderer. These edits do not
+retile pages or change panel/content positions and sizes. GUI edits use the same
+catalog controls in Line, Axes, and Legend & scales; plot-local units, ranges and
+font sizes appear under Advanced. Document-level font properties
+retain their existing project-wide scope.
+
+After editing, get a fresh revision and request `plotium_render_preview` for the
+returned canvas. Inspect its PNG and `render_revision`, then use GUI Undo/Redo to
+check the same native objects. Saving/exporting through MCP is not part of this
+interface.
+
 ## Inspect and edit an exact curve
 
 An example agent task is: “Find my line plot, inspect its stroke width, preflight
 changing it to 1.5 pt, then apply the saved plan.” The tool sequence is:
 
-1. `plotium_get_state` with `{}` returns `revision`, project overview, selection
+1. `plotium_get_state` with `{}` returns `project_context`, `revision`, project overview, selection
    and connection permissions.
-2. `plotium_resources_search` with `expected_revision` and a `query` such as
+2. `plotium_resources_search` with `expected_project_context`, `expected_revision` and a `query` such as
    `{"kinds":["plotium.canvas.object"],"name_contains":"Plot"}` locates resources.
    Resolve results to explicit stable IDs; `plotium_resources_inspect` reads
    descriptors using `ids` and `expected_revision`.
@@ -655,7 +738,7 @@ identity rejects the entire request; an existing curve to which the property
 does not apply is skipped. Inspection returns values, defaults, bounds and
 applicability. To inspect just one curve, use `targets` in the inspection request.
 To reset it, plan `properties.reset` with `{"key":"series.line.stroke_width"}`
-and the same target. Component addressing supports only the five listed display
+and the same target. Component addressing supports only the listed display
 properties; processing parameters are unavailable. `resource.rename` requires
 `ids`.
 

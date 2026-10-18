@@ -5,6 +5,9 @@ use plotium_core::properties::{app_preferences, axis, contour, line};
 use plotium_core::state::CanvasSizeUnit;
 use std::borrow::Cow;
 
+#[path = "control_display.rs"]
+mod display;
+
 const LINE_WIDTH_PRESETS: [(&str, f64); 3] = [("Fine", 0.5), ("Medium", 0.75), ("Bold", 1.25)];
 
 pub(super) struct RowEdits<'a> {
@@ -192,6 +195,23 @@ fn control(
         return;
     };
     match (&row.representative.schema, value) {
+        (ResolvedSchema::AxisRange { .. }, PropertyValue::AxisRange(current)) => {
+            display::range(row, current, pending, gesture, ui)
+        }
+        (ResolvedSchema::UnitCode { codes }, PropertyValue::Text(current)) => {
+            egui::ComboBox::from_id_salt(row.presentation.id.as_str())
+                .selected_text(if mixed { NO_SINGLE_VALUE } else { current })
+                .show_ui(ui, |ui| {
+                    for code in codes {
+                        if ui.selectable_label(code == current, code).clicked() {
+                            *pending = Some(Pending::Write(
+                                row.presentation.id,
+                                PropertyValue::Text(code.clone()),
+                            ));
+                        }
+                    }
+                });
+        }
         (ResolvedSchema::Bool, PropertyValue::Bool(current)) => {
             if mixed {
                 // A checkbox has no third state, and an unticked box would be a
@@ -690,6 +710,7 @@ fn hide_value(drag: DragValue<'_>, hidden: bool) -> DragValue<'_> {
 
 fn describe<'a>(row: &Row, value: &'a PropertyValue) -> Cow<'a, str> {
     match value {
+        PropertyValue::AxisRange(value) => Cow::Owned(format!("{value}")),
         PropertyValue::Bool(value) => Cow::Borrowed(if *value { "on" } else { "off" }),
         PropertyValue::Text(value) => Cow::Borrowed(value),
         PropertyValue::Int(value) => Cow::Owned(value.to_string()),

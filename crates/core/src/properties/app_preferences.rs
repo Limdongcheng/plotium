@@ -295,7 +295,9 @@ fn resolved_schema(definition: &'static PropertyDefinition) -> ResolvedSchema {
             variants: variants.iter().collect(),
         },
         ValueSchema::Color => ResolvedSchema::Color,
-        ValueSchema::Text
+        ValueSchema::AxisRange
+        | ValueSchema::UnitCode
+        | ValueSchema::Text
         | ValueSchema::IntWithDrag { .. }
         | ValueSchema::SteppedInt { .. }
         | ValueSchema::Float { .. } => {

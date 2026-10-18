@@ -352,4 +352,6 @@ async fn status(
 #[cfg(test)]
 mod context_tests;
 #[cfg(test)]
+mod precise_display_tests;
+#[cfg(test)]
 mod rendezvous_tests;

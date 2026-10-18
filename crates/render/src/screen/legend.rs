@@ -44,6 +44,39 @@ pub(super) fn paint(painter: &egui::Painter, plot: Rect, fig: &Figure, scale: f3
         let ly = by + oy * scale;
         let lx = bx + ox * scale;
         match mark {
+            LegendMark::Curve {
+                kind,
+                appearance,
+                width,
+            } => {
+                let series = crate::curve_style::legend_series(
+                    *color,
+                    *kind,
+                    *appearance,
+                    *width,
+                    lx,
+                    ly,
+                    sw,
+                );
+                let points: Vec<_> = series
+                    .points
+                    .iter()
+                    .map(|p| (p[0] as f32, p[1] as f32))
+                    .collect();
+                if *kind != plotium_figure::SeriesKind::Points {
+                    super::curves::stroke(painter, &points, &series, scale, box_geometry);
+                }
+                let marker = appearance.marker(*kind);
+                super::curves::marker_at(
+                    painter,
+                    (lx + sw * 0.5, ly),
+                    marker,
+                    appearance.marker_radius(*width) * scale,
+                    *color,
+                    *width * scale,
+                );
+            }
+
             LegendMark::Line => {
                 painter.line_segment(
                     [Pos2::new(lx, ly), Pos2::new(lx + sw, ly)],

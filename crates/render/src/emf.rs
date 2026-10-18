@@ -19,6 +19,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     TRANSPARENT, VERTRES, VERTSIZE,
 };
 
+mod curves;
 mod dc;
 
 use dc::{Dc, TextStyle, blend, l};
@@ -484,36 +485,7 @@ fn write_figure(dc: &mut Dc, fig: &Figure, outer: Rect) {
         }
         write_error_bars(dc, fig, &proj, false);
         for series in &fig.series {
-            if series.points.is_empty() {
-                continue;
-            }
-            match series.kind {
-                SeriesKind::Line if series.points.len() >= 2 => {
-                    let pts: Vec<(f32, f32)> =
-                        series.points.iter().map(|p| proj.project(*p)).collect();
-                    dc.polyline(&pts, series.color, series.width);
-                }
-                SeriesKind::Points => {
-                    for p in &series.points {
-                        let (px, py) = proj.project(*p);
-                        let r = series.width;
-                        dc.ellipse(
-                            Rect::new(px - r, py - r, r * 2.0, r * 2.0),
-                            Some(series.color),
-                            None,
-                        );
-                    }
-                }
-                SeriesKind::Stick => {
-                    let segments = series
-                        .points
-                        .iter()
-                        .map(|point| [proj.project([point[0], 0.0]), proj.project(*point)])
-                        .collect::<Vec<_>>();
-                    dc.segments(&segments, series.color, series.width);
-                }
-                SeriesKind::Line => {}
-            }
+            curves::write(dc, &proj, series);
         }
         write_error_bars(dc, fig, &proj, true);
         for curve in integral::layout(fig, plot, 1.0) {
@@ -615,6 +587,37 @@ fn write_legend(dc: &mut Dc, fig: &Figure, plot: Rect) {
         let ly = by + oy;
         let lx = bx + ox;
         match mark {
+            LegendMark::Curve {
+                kind,
+                appearance,
+                width,
+            } => {
+                let series = crate::curve_style::legend_series(
+                    *color,
+                    *kind,
+                    *appearance,
+                    *width,
+                    lx,
+                    ly,
+                    sw,
+                );
+                let points: Vec<_> = series
+                    .points
+                    .iter()
+                    .map(|p| (p[0] as f32, p[1] as f32))
+                    .collect();
+                if *kind != plotium_figure::SeriesKind::Points {
+                    curves::stroke(dc, &points, &series, plot);
+                }
+                curves::marker_at(
+                    dc,
+                    (lx + sw * 0.5, ly),
+                    appearance.marker(*kind),
+                    appearance.marker_radius(*width),
+                    *color,
+                    *width,
+                );
+            }
             LegendMark::Line => dc.line((lx, ly), (lx + sw, ly), *color, 2.0),
             LegendMark::Points => dc.ellipse(
                 Rect::new(lx + sw * 0.5 - 3.0, ly - 3.0, 6.0, 6.0),

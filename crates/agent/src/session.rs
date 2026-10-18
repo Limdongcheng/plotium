@@ -11,12 +11,27 @@ use plotium_core::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub const PROPERTIES: [PropertyId; 5] = [
+pub const PROPERTIES: &[PropertyId] = &[
     properties::line::STROKE_WIDTH,
     properties::contour::LINE_WIDTH,
     properties::contour::COUNT,
     properties::typography::TICK_PT,
     properties::typography::LABEL_PT,
+    properties::line_display::COLOR,
+    properties::line_display::LABEL,
+    properties::line_display::STYLE,
+    properties::line_display::MARKER,
+    properties::line_display::MARKER_SIZE,
+    properties::object::SERIES_VISIBLE,
+    properties::axis::X_LABEL,
+    properties::axis::Y_LABEL,
+    properties::plot_display::X_UNIT,
+    properties::plot_display::Y_UNIT,
+    properties::plot_display::X_RANGE,
+    properties::plot_display::Y_RANGE,
+    properties::plot_display::TICK_PT,
+    properties::plot_display::LABEL_PT,
+    properties::plot_display::LEGEND_PT,
 ];
 
 #[derive(Clone, Debug)]

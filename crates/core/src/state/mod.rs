@@ -47,6 +47,7 @@ mod app_impl_xps;
 mod app_state;
 mod status_history;
 pub use status_history::{StatusHistory, StatusMessage};
+pub(crate) mod axis_display;
 mod axis_overrides;
 mod board;
 mod charts;
@@ -286,3 +287,6 @@ mod curve_tests;
 
 #[cfg(test)]
 mod plot_creation_tests;
+
+#[cfg(test)]
+mod display_tests;

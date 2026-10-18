@@ -23,6 +23,9 @@ use crate::properties::{
 use crate::state::PlotiumApp;
 use serde::{Deserialize, Serialize};
 
+#[path = "property_range.rs"]
+mod range;
+
 pub const TOOL_INSPECT: &str = "properties.inspect";
 pub const TOOL_SET: &str = "properties.set";
 pub const TOOL_RESET: &str = "properties.reset";
@@ -116,6 +119,28 @@ pub(super) fn refine_plan(
                 status,
                 reason,
             });
+        }
+    }
+    let compatible: Vec<_> = expanded
+        .iter()
+        .filter(|t| t.status == TargetCompatibility::Compatible)
+        .map(|t| t.target.clone())
+        .collect();
+    if request.tool_id == TOOL_SET {
+        let params: PropertyWriteParams = parse(&request.tool_id, request.parameters.clone())?;
+        let value = decode_value(&request.tool_id, definition, &params.value)?;
+        let commit = app
+            .plan_property_write(definition.id, &compatible, &value)
+            .map_err(|e| property_error(&request.tool_id, e))?;
+        for skipped in commit
+            .skipped
+            .iter()
+            .filter(|s| s.reason == crate::properties::SkipReason::NotApplicable)
+        {
+            if let Some(target) = expanded.iter_mut().find(|t| t.target == skipped.target) {
+                target.status = TargetCompatibility::Skipped;
+                target.reason.clone_from(&skipped.message);
+            }
         }
     }
     Ok(expanded)
@@ -337,6 +362,13 @@ fn decode_value(
         message: format!("{}: {message}", definition.id),
     };
     match definition.value_schema {
+        ValueSchema::AxisRange => range::decode(value)
+            .map(PropertyValue::AxisRange)
+            .map_err(invalid),
+        ValueSchema::UnitCode => value
+            .as_str()
+            .map(|v| PropertyValue::Text(v.into()))
+            .ok_or_else(|| invalid("Expected a unit code string.".into())),
         ValueSchema::Bool => value
             .as_bool()
             .map(PropertyValue::Bool)
@@ -501,6 +533,7 @@ enum AggregateValueDto {
 #[derive(Serialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 enum PropertyValueDto {
+    AxisRange(range::AxisRangeDto),
     Bool(bool),
     Text(String),
     Int(i64),
@@ -514,6 +547,15 @@ enum PropertyValueDto {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResolvedSchemaDto {
+    AxisRange {
+        unit: Option<String>,
+        view: [f64; 2],
+        manual_allowed: bool,
+        input_schema: serde_json::Value,
+    },
+    UnitCode {
+        codes: Vec<String>,
+    },
     Bool,
     Text,
     Int {
@@ -589,6 +631,7 @@ fn aggregate_dto(value: &AggregateValue<PropertyValue>) -> AggregateValueDto {
 
 fn value_dto(value: &PropertyValue) -> PropertyValueDto {
     match value {
+        PropertyValue::AxisRange(value) => PropertyValueDto::AxisRange(value.into()),
         PropertyValue::Bool(value) => PropertyValueDto::Bool(*value),
         PropertyValue::Text(value) => PropertyValueDto::Text(value.clone()),
         PropertyValue::Int(value) => PropertyValueDto::Int(*value),
@@ -600,6 +643,19 @@ fn value_dto(value: &PropertyValue) -> PropertyValueDto {
 
 fn schema_dto(schema: &ResolvedSchema) -> ResolvedSchemaDto {
     match schema {
+        ResolvedSchema::AxisRange {
+            unit,
+            view,
+            manual_allowed,
+        } => ResolvedSchemaDto::AxisRange {
+            unit: unit.clone(),
+            view: *view,
+            manual_allowed: *manual_allowed,
+            input_schema: range::input_schema(),
+        },
+        ResolvedSchema::UnitCode { codes } => ResolvedSchemaDto::UnitCode {
+            codes: codes.clone(),
+        },
         ResolvedSchema::Bool => ResolvedSchemaDto::Bool,
         ResolvedSchema::Text => ResolvedSchemaDto::Text,
         ResolvedSchema::Int { min, max, unit } => ResolvedSchemaDto::Int {

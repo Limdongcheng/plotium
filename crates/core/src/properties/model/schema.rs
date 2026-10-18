@@ -247,6 +247,8 @@ impl FloatDisplay {
 /// context-free.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueSchema {
+    AxisRange,
+    UnitCode,
     Bool,
     Text,
     Int {
@@ -303,6 +305,7 @@ impl ValueSchema {
 /// stored: the authoritative value stays in the typed domain model.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyValue {
+    AxisRange(AxisRangeValue),
     Bool(bool),
     Text(String),
     Int(i64),
@@ -315,6 +318,7 @@ pub enum PropertyValue {
 impl PropertyValue {
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::AxisRange(_) => "axis_range",
             Self::Bool(_) => "bool",
             Self::Text(_) => "text",
             Self::Int(_) => "int",
@@ -436,4 +440,31 @@ pub enum EditOp<'a> {
     Set(&'a PropertyValue),
     Reset,
     Step(PropertyStep),
+}
+
+/// Authored range intent. Units are explicit on every manual write, so a unit
+/// change cannot silently reinterpret a queued range request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AxisRangeValue {
+    Auto,
+    Manual {
+        min: f64,
+        max: f64,
+        unit: Option<String>,
+    },
+}
+
+impl std::fmt::Display for AxisRangeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("Automatic"),
+            Self::Manual { min, max, unit } => {
+                write!(f, "{min}–{max}")?;
+                if let Some(unit) = unit {
+                    write!(f, " {unit}")?;
+                }
+                Ok(())
+            }
+        }
+    }
 }

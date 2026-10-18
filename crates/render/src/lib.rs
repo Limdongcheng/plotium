@@ -3,6 +3,7 @@
 //! share [`Projector`] and [`ticks`].
 
 pub mod contour;
+mod curve_style;
 pub mod integral;
 #[cfg(feature = "screen")]
 mod screen_contour_cache;
@@ -390,60 +391,8 @@ pub(crate) fn heatmap_cells(proj: &Projector<'_>, grid: &HeatmapGrid) -> Vec<(Re
     cells
 }
 
-/// How a legend entry's swatch is drawn.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LegendMark {
-    Line,
-    Points,
-    LinePoints,
-    Rect,
-}
-
-impl LegendMark {
-    fn merged(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Line, Self::Points)
-            | (Self::Points, Self::Line)
-            | (Self::LinePoints, Self::Line)
-            | (Self::LinePoints, Self::Points)
-            | (Self::Line, Self::LinePoints)
-            | (Self::Points, Self::LinePoints) => Self::LinePoints,
-            _ => self,
-        }
-    }
-}
-
-/// Legend entries across series and named polygons. Series with the same name
-/// and color merge into one semantic entry, including a combined point+line
-/// swatch for measured samples with a fitted curve.
-pub(crate) fn legend_entries(fig: &Figure) -> Vec<(&str, Color, LegendMark)> {
-    let mut entries: Vec<(&str, Color, LegendMark)> = Vec::new();
-    for series in &fig.series {
-        if series.points.is_empty() || series.name.is_empty() {
-            continue;
-        }
-        let mark = match series.kind {
-            plotium_figure::SeriesKind::Line => LegendMark::Line,
-            plotium_figure::SeriesKind::Points => LegendMark::Points,
-            plotium_figure::SeriesKind::Stick => LegendMark::Line,
-        };
-        if let Some((_, _, existing)) = entries
-            .iter_mut()
-            .find(|(name, color, _)| *name == series.name && *color == series.color)
-        {
-            *existing = existing.merged(mark);
-        } else {
-            entries.push((series.name.as_str(), series.color, mark));
-        }
-    }
-    for poly in &fig.polygons {
-        if poly.name.is_empty() || entries.iter().any(|(n, _, _)| *n == poly.name) {
-            continue;
-        }
-        entries.push((poly.name.as_str(), poly.fill, LegendMark::Rect));
-    }
-    entries
-}
+mod legend_content;
+use legend_content::{LegendMark, legend_entries};
 
 /// Whether the renderer will emit a legend for this figure.
 pub fn renders_legend(fig: &Figure) -> bool {
@@ -780,3 +729,6 @@ fn axis_intensity_bounds(axis: &plotium_figure::Axis, trace: &AxisTrace) -> (f64
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod display_tests;

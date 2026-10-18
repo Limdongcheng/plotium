@@ -362,6 +362,12 @@ pub(crate) fn resolved_schema(
     capabilities: &FieldCapabilities,
 ) -> ResolvedSchema {
     match definition.value_schema {
+        ValueSchema::AxisRange => ResolvedSchema::AxisRange {
+            unit: None,
+            view: [0., 1.],
+            manual_allowed: true,
+        },
+        ValueSchema::UnitCode => ResolvedSchema::UnitCode { codes: vec![] },
         ValueSchema::Bool => ResolvedSchema::Bool,
         ValueSchema::Text => ResolvedSchema::Text,
         ValueSchema::Int { min, max } => ResolvedSchema::Int { min, max, unit: "" },

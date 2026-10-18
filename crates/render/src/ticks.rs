@@ -336,6 +336,17 @@ pub(crate) fn estimated_text_width(text: &str, font_size: f32) -> f32 {
 /// Ticks for an axis honoring its ordinal mode.
 pub fn axis_ticks_for(axis: &Axis, target: usize) -> AxisTicks {
     if axis.categories.is_none() {
+        if let Some(display) = &axis.display {
+            let mut result = axis_ticks(
+                display.to_display(axis.min),
+                display.to_display(axis.max),
+                target,
+            );
+            for value in &mut result.values {
+                *value = display.to_coordinate(*value);
+            }
+            return result;
+        }
         return axis_ticks(axis.min, axis.max, target);
     }
     let visible: Vec<(f64, &str)> = visible_categories(axis).collect();

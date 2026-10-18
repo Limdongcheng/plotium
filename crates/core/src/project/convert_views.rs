@@ -568,6 +568,12 @@ pub fn view_to_canvas(
                     .as_ref()
                     .map(AxisOverridesDto::to_overrides)
                     .unwrap_or_default();
+                crate::state::axis_display::validate_display(
+                    &axis_overrides,
+                    binding.coordinates.as_ref(),
+                    &figure,
+                )
+                .map_err(ProjectError::Invalid)?;
                 // Must track the branch actually taken above: a snapshot has axis
                 // overrides and the viewport already baked in, a rebuilt figure
                 // does not, so a bypassed snapshot has to be treated as absent

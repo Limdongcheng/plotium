@@ -184,4 +184,9 @@ fn build(
             (LINE_X_UNIT_METADATA_KEY.to_owned(), x_unit),
         ])),
     }
+    .with_curve_kind(if capability == CAP_FIELD_MASS_SPECTRUM {
+        plotium_figure::SeriesKind::Stick
+    } else {
+        plotium_figure::SeriesKind::Line
+    })
 }
