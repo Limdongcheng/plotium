@@ -1,6 +1,7 @@
 //! Desktop-thread capability boundary. No project state crosses the bridge.
 use std::collections::HashMap;
 mod table;
+mod transform;
 
 use plotium_core::{
     automation::*,
@@ -46,6 +47,8 @@ impl From<&AutomationError> for Failure {
             AutomationError::StaleRevision { .. } | AutomationError::StaleTableRevision { .. } => {
                 "stale_revision"
             }
+            AutomationError::TableTransformCancelled => "request_cancelled",
+            AutomationError::TableTransformBudget(_) => "transform_budget_exceeded",
             AutomationError::PreviewCancelled => "request_cancelled",
             AutomationError::PreviewBudget(_) => "preview_budget_exceeded",
             AutomationError::PreviewAsset(_) => "preview_asset_unavailable",
@@ -68,6 +71,7 @@ pub struct Session {
     pub allow_modify: bool,
     plans: HashMap<String, ToolPlan>,
     imports: HashMap<String, PreparedTableImport>,
+    transforms: HashMap<String, PreparedTableTransform>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -195,13 +199,16 @@ impl Session {
                 )
             })?;
             let prepared = self.imports.remove(&args.plan_id);
+            let transform = self.transforms.remove(&args.plan_id);
             barrier()?;
             let authority = if self.allow_modify {
                 ExecutionAuthority::ReversibleModify
             } else {
                 ExecutionAuthority::Read
             };
-            return Ok(json!(if let Some(prepared) = prepared {
+            return Ok(json!(if let Some(prepared) = transform {
+                execute_prepared_table_transform(app, plan, prepared, authority)?
+            } else if let Some(prepared) = prepared {
                 execute_prepared_table_import(app, plan, prepared, authority)?
             } else {
                 execute_tool(app, plan, authority)?
@@ -217,6 +224,13 @@ impl Session {
             let (plan, params) = self.prepare_import_plan(app, arguments, blocked)?;
             let prepared = PreparedTableImport::prepare(params, || false)?;
             return self.finish_import_plan(app, plan, prepared, blocked);
+        }
+        if name == "plotium_plan"
+            && arguments.get("tool_id").and_then(Value::as_str) == Some("data.transform")
+        {
+            let (plan, snapshot) = self.prepare_transform_plan(app, arguments, blocked)?;
+            let prepared = snapshot.prepare(&std::sync::atomic::AtomicBool::new(false))?;
+            return self.finish_transform_plan(app, plan, prepared, blocked);
         }
         if name == "plotium_render_preview" {
             let (snapshot, run) = self.prepare_preview(app, arguments, blocked)?;

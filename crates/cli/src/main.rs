@@ -593,6 +593,8 @@ fn fail_automation(error: AutomationError) -> Status {
         | AutomationError::InvalidParameters { .. }
         | AutomationError::InvalidSelector(_) => Status::Usage,
         AutomationError::Execution(_)
+        | AutomationError::TableTransformCancelled
+        | AutomationError::TableTransformBudget(_)
         | AutomationError::PreviewCancelled
         | AutomationError::PreviewBudget(_)
         | AutomationError::PreviewAsset(_)

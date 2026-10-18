@@ -31,6 +31,9 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
     {
         return Err(AutomationError::InvalidSelector("Data-only import requires an explicitly empty project target; paths identify its inputs.".into()));
     }
+    if request.tool_id == "data.transform" && is_table_transform(&request.parameters) {
+        TableTransformSnapshot::capture(app, &request)?;
+    }
     let provider = ProjectResourceProvider::new(app);
     if request.expected_revision != provider.revision() {
         return Err(AutomationError::StaleRevision {
@@ -286,7 +289,11 @@ impl PreparedToolRun {
                 end_revision,
                 started_unix_ms,
                 finished_unix_ms: unix_ms(),
-                cancelled: matches!(outcome, Err(AutomationError::PreviewCancelled)),
+                cancelled: matches!(
+                    outcome,
+                    Err(AutomationError::PreviewCancelled
+                        | AutomationError::TableTransformCancelled)
+                ),
                 nodes: records,
                 warnings: Vec::new(),
                 errors,

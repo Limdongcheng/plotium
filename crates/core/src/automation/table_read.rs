@@ -17,6 +17,8 @@ pub const TABLE_RESPONSE_BYTES: usize = 256 * 1024;
 pub struct TableColumnsParams {
     pub dataset_id: DatasetId,
     pub table_revision: RevisionId,
+    #[serde(default)]
+    pub include_provenance: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +31,8 @@ pub struct TableReadRowsParams {
     pub offset: u64,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    #[serde(default)]
+    pub include_provenance: bool,
 }
 fn default_limit() -> usize {
     TABLE_PAGE_DEFAULT
@@ -39,8 +43,10 @@ pub fn table_read_limits() -> Value {
 pub fn table_read_schema(rows: bool) -> Value {
     let mut schema = json!({"type":"object","additionalProperties":false,"required":["dataset_id","table_revision"],"properties":{
         "dataset_id":{"type":"string","format":"uuid"},"table_revision":{"type":"string","format":"uuid"}}});
+    schema["properties"]["include_provenance"] = json!({"type":"boolean","default":false,"description":"Include the persisted recipe in metadata, or native sources for each returned row."});
     if rows {
         schema["properties"]["column_ids"] = json!({"type":"array","items":{"type":"string","format":"uuid"},"uniqueItems":true,"description":"Omitted or empty selects all columns in schema order; otherwise preserves projection order."});
+        schema["properties"]["include_provenance"] = json!({"type":"boolean","default":false,"description":"Include pinned native row sources for this page. Imported rows have no derived sources. Unsupported lineage shapes fail explicitly."});
         schema["properties"]["offset"] = json!({"type":"integer","minimum":0,"default":0});
         schema["properties"]["limit"] = json!({"type":"integer","minimum":1,"maximum":TABLE_PAGE_MAX,"default":TABLE_PAGE_DEFAULT});
     }
@@ -147,7 +153,7 @@ pub(super) fn table_metadata(dataset: &Dataset) -> Result<Value, AutomationError
     let columns=revision.snapshot.schema.columns.iter().map(|c|json!({"column_id":c.id,"source_column_id":c.metadata.get("import.source_column_id"),"name":c.name,"logical_type":c.logical_type,"nullable":c.nullable,"unit":c.unit,
         "type_source":c.metadata.get("import.type_source").cloned().unwrap_or(json!("unknown")),"unit_source":c.metadata.get("import.unit_source").cloned().unwrap_or(json!("unknown"))})).collect::<Vec<_>>();
     Ok(
-        json!({"dataset_id":dataset.resource_id(),"table_id":revision.table_id,"table_revision":revision.id,"fields":fields,"columns":columns,"total_rows":revision.snapshot.row_count,
+        json!({"dataset_id":dataset.resource_id(),"table_id":revision.table_id,"table_revision":revision.id,"snapshot_fingerprint":revision.snapshot.fingerprint,"fields":fields,"columns":columns,"total_rows":revision.snapshot.row_count,
         "diagnostics":revision.snapshot.metadata.get("space.nmrtist.plotium.import.diagnostics"),"inference":revision.snapshot.metadata.get("space.nmrtist.plotium.import.inference")}),
     )
 }
@@ -164,7 +170,12 @@ pub(super) fn execute_table_read(
             .doc
             .dataset_index(p.dataset_id)
             .ok_or_else(|| invalid("Dataset disappeared."))?;
-        table_metadata(&app.doc.datasets[index])?
+        let mut metadata = table_metadata(&app.doc.datasets[index])?;
+        if p.include_provenance {
+            metadata["provenance"] =
+                super::table_provenance::dataset_metadata(&app.doc.datasets[index]);
+        }
+        metadata
     } else {
         let p: TableReadRowsParams =
             super::registry::parse(TABLE_READ_ROWS, plan.request.parameters.clone())?;
@@ -174,6 +185,15 @@ pub(super) fn execute_table_read(
             .typed_rows_page(p.offset, p.limit, &p.column_ids)
             .map_err(AutomationError::Execution)?;
         let column_ids = page.columns.iter().map(|c| c.schema.id).collect::<Vec<_>>();
+        let sources = if p.include_provenance {
+            Some(super::table_provenance::row_sources(
+                t,
+                p.offset,
+                &page.row_ids,
+            )?)
+        } else {
+            None
+        };
         let mut rows = Vec::new();
         // Account encoded rows incrementally, then check the complete ToolResult.
         let mut bytes = 1024 + column_ids.len() * 40;
@@ -183,7 +203,10 @@ pub(super) fn execute_table_read(
                 .iter()
                 .map(|column| scalar_json(&column.values[index]))
                 .collect::<Vec<_>>();
-            let row = json!({"row_id":id,"values":values});
+            let mut row = json!({"row_id":id,"values":values});
+            if let Some(sources) = &sources {
+                row["sources"] = sources[index].clone();
+            }
             let encoded = serde_json::to_vec(&row)
                 .map_err(|e| AutomationError::Execution(e.to_string()))?
                 .len()
