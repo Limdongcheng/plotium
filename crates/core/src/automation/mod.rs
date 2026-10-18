@@ -2,6 +2,10 @@
 //! agents. The public boundary is deliberately semantic: callers can inspect,
 //! select and invoke registered tools, but cannot construct document actions.
 
+mod table_import;
+mod table_read;
+pub use table_import::*;
+pub use table_read::*;
 mod document;
 mod preview;
 mod properties;
@@ -32,3 +36,6 @@ pub const RUN_MANIFEST_SCHEMA: &str = "plotium.run-manifest.v1";
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod table_tests;

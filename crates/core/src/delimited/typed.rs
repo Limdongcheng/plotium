@@ -14,15 +14,57 @@ impl DelimitedTable {
         store: &dyn plotium_data::BlockStore,
         codecs: &plotium_data::CodecRegistry,
     ) -> plotium_data::Result<plotium_data::TableSnapshot> {
+        self.materialize(table_id, store, codecs, None, None, true)
+    }
+
+    /// Explicit data-only import: preserve declarations and report inference,
+    /// without interpreting column names as scientific uncertainty semantics.
+    pub fn into_declared_snapshot(
+        self,
+        table_id: plotium_data::TableId,
+        store: &dyn plotium_data::BlockStore,
+        codecs: &plotium_data::CodecRegistry,
+        schema: Option<TableSchema>,
+        source: &str,
+    ) -> plotium_data::Result<plotium_data::TableSnapshot> {
+        self.materialize(table_id, store, codecs, schema, Some(source), false)
+    }
+
+    fn materialize(
+        self,
+        table_id: plotium_data::TableId,
+        store: &dyn plotium_data::BlockStore,
+        codecs: &plotium_data::CodecRegistry,
+        declared: Option<TableSchema>,
+        source: Option<&str>,
+        infer_uncertainty: bool,
+    ) -> plotium_data::Result<plotium_data::TableSnapshot> {
         let width = self.rows.first().map_or(0, |row| row.cells.len());
         let names = self.headers.unwrap_or_else(|| {
             (0..width)
                 .map(|index| format!("Column {}", index + 1))
                 .collect()
         });
-        let logical_types: Vec<LogicalType> = (0..width)
+        let mut logical_types: Vec<LogicalType> = (0..width)
             .map(|column| infer_logical_type(&self.rows, column))
             .collect();
+        if !infer_uncertainty && declared.is_none() {
+            for (index, logical_type) in logical_types.iter_mut().enumerate() {
+                if *logical_type == LogicalType::Float64
+                    && self.rows.iter().any(|row| {
+                        let raw = row.cells[index].raw.trim();
+                        !raw.is_empty()
+                            && raw
+                                .trim_start_matches(['+', '-'])
+                                .chars()
+                                .all(|c| c.is_ascii_digit())
+                            && raw.parse::<i64>().is_err()
+                    })
+                {
+                    *logical_type = LogicalType::Utf8;
+                }
+            }
+        }
         let mut schemas: Vec<ColumnSchema> = names
             .iter()
             .zip(&logical_types)
@@ -36,8 +78,75 @@ impl DelimitedTable {
                 schema
             })
             .collect();
+        let mut declared_metadata = std::collections::BTreeMap::new();
+        if let Some(schema) = declared {
+            schema.validate()?;
+            if !schema.business_keys.is_empty()
+                || schema.columns.iter().any(|c| c.constraints.unique)
+            {
+                return Err(plotium_data::DataError::InvalidSchema("Declared uniqueness/business-key constraints are not supported by this import.".into()));
+            }
+            if schema.columns.len() != width
+                || schema.columns.iter().zip(&names).any(|(c, n)| c.name != *n)
+            {
+                return Err(plotium_data::DataError::InvalidSchema(
+                    "Declared columns must match the file header and order exactly.".into(),
+                ));
+            }
+            declared_metadata = schema.metadata;
+            schemas = schema.columns;
+            for (index, column) in schemas.iter().enumerate() {
+                if !matches!(
+                    column.logical_type,
+                    LogicalType::Null
+                        | LogicalType::Boolean
+                        | LogicalType::Int64
+                        | LogicalType::Float64
+                        | LogicalType::Utf8
+                        | LogicalType::Date
+                        | LogicalType::Timestamp { .. }
+                ) {
+                    return Err(plotium_data::DataError::InvalidSchema(
+                        "Unsupported declared delimited logical type.".into(),
+                    ));
+                }
+                for row in &self.rows {
+                    validate_declared_cell(&row.cells[index], column).map_err(|message| {
+                        plotium_data::DataError::InvalidSchema(format!(
+                            "line {}, column {}: {message}",
+                            row.source_line, column.id
+                        ))
+                    })?;
+                }
+            }
+            logical_types = schemas.iter().map(|c| c.logical_type.clone()).collect();
+        }
+        if let Some(source) = source {
+            for column in &mut schemas {
+                // Each import creates a distinct table; source schema IDs are not reused.
+                let source_id = column.id;
+                column.id = ColumnId::new();
+                if source != "inferred" {
+                    column.metadata.insert(
+                        "import.source_column_id".into(),
+                        serde_json::json!(source_id),
+                    );
+                }
+                column
+                    .metadata
+                    .insert("import.type_source".into(), serde_json::json!(source));
+                column.metadata.insert(
+                    "import.unit_source".into(),
+                    serde_json::json!(if column.unit.is_some() {
+                        source
+                    } else {
+                        "unknown"
+                    }),
+                );
+            }
+        }
         let mut uncertainty = Vec::new();
-        for value_index in 0..width.saturating_sub(1) {
+        for value_index in (0..width.saturating_sub(1)).filter(|_| infer_uncertainty) {
             let sigma_index = value_index + 1;
             let is_non_negative = self
                 .rows
@@ -64,7 +173,8 @@ impl DelimitedTable {
                 });
             }
         }
-        let schema = TableSchema::new(schemas)?;
+        let mut schema = TableSchema::new(schemas)?;
+        schema.metadata = declared_metadata;
         let mut builder = SnapshotBuilder::new(table_id, schema, store, codecs)?;
         builder.set_uncertainty(uncertainty)?;
         builder.metadata_mut().insert(
@@ -86,6 +196,7 @@ impl DelimitedTable {
                 names
                     .iter()
                     .zip(&logical_types)
+                    .filter(|_| source.is_none_or(|s| s == "inferred"))
                     .map(|(name, logical_type)| {
                         serde_json::Value::String(format!(
                             "Inferred column {name:?} as {logical_type:?} without a Plotium schema contract."
@@ -112,6 +223,40 @@ impl DelimitedTable {
             builder.push_batch(&rows, &chunks)?;
         }
         builder.finish()
+    }
+}
+
+fn validate_declared_cell(
+    cell: &super::DelimitedCell,
+    column: &ColumnSchema,
+) -> Result<(), String> {
+    if matches!(cell.value, CellValue::Missing) {
+        return if column.nullable || column.logical_type == LogicalType::Null {
+            Ok(())
+        } else {
+            Err("Missing value in a non-nullable column.".into())
+        };
+    }
+    let raw = cell.raw.trim();
+    let valid = match &column.logical_type {
+        LogicalType::Utf8 => true,
+        LogicalType::Int64 => raw.parse::<i64>().is_ok(),
+        LogicalType::Float64 => raw.parse::<f64>().is_ok_and(f64::is_finite),
+        LogicalType::Boolean => parse_bool(raw).is_some(),
+        LogicalType::Date => crate::xlsx::parse_iso_date(raw).is_some(),
+        LogicalType::Timestamp { .. } => crate::xlsx::parse_iso_timestamp_utc(raw).is_some(),
+        LogicalType::Null => false,
+        _ => {
+            return Err("This delimited import does not support the declared logical type.".into());
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "Value {raw:?} is invalid for {:?}.",
+            column.logical_type
+        ))
     }
 }
 

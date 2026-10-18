@@ -20,6 +20,15 @@ impl Connection {
         if request.is_cancelled() {
             return Ok(());
         }
+        if request.name == "plotium_plan"
+            && request
+                .arguments
+                .get("tool_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("data.import")
+        {
+            return self.dispatch_import(app, request, blocked);
+        }
         if request.name != "plotium_render_preview" {
             let result = self.session.call_when_available(
                 app,

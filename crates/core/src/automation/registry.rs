@@ -59,6 +59,11 @@ pub(super) fn validate_parameters(
         "resource.rename" => parse::<RenameParams>(tool, value).map(drop),
         "figure.apply_theme" => parse::<ThemeParams>(tool, value).map(drop),
         "processing.apply_scheme" => parse::<SchemeParams>(tool, value).map(drop),
+        TABLE_COLUMNS => parse::<TableColumnsParams>(tool, value).map(drop),
+        TABLE_READ_ROWS => parse::<TableReadRowsParams>(tool, value).map(drop),
+        "data.import" if is_table_import(&value) => {
+            parse::<TableImportParams>(tool, value)?.validate()
+        }
         "data.import" => parse::<ImportParams>(tool, value).map(drop),
         "data.transform" => parse::<TransformParams>(tool, value).map(drop),
         "figure.export" => parse::<ExportParams>(tool, value).map(drop),
@@ -169,7 +174,38 @@ schema!(CompareParams, [], ["before" => "array"]);
 schema!(RenameParams, ["name" => "string"], []);
 schema!(ThemeParams, ["theme_id" => "string"], []);
 schema!(SchemeParams, ["path" => "string"], ["compatible_only" => "boolean"]);
-schema!(ImportParams, ["paths" => "array"], ["sampling_declaration" => "object"]);
+impl V1Schema for ImportParams {
+    fn schema() -> serde_json::Value {
+        // Workflow bindings inspect top-level parameter properties. Keep paths
+        // there for existing callers while constraining the two invocation forms.
+        let legacy = object_schema(&[("paths", "array")], &[("sampling_declaration", "object")]);
+        let table = table_import_schema();
+        let mut combined = legacy.clone();
+        combined["properties"]
+            .as_object_mut()
+            .expect("local schema properties")
+            .extend(
+                table["properties"]
+                    .as_object()
+                    .expect("local table properties")
+                    .clone(),
+            );
+        // Limits belong to the new form, not the existing acquisition importer.
+        combined["properties"]["paths"] = legacy["properties"]["paths"].clone();
+        combined["oneOf"] = serde_json::json!([legacy, table]);
+        combined
+    }
+}
+impl V1Schema for TableColumnsParams {
+    fn schema() -> serde_json::Value {
+        table_read_schema(false)
+    }
+}
+impl V1Schema for TableReadRowsParams {
+    fn schema() -> serde_json::Value {
+        table_read_schema(true)
+    }
+}
 schema!(TransformParams, ["plan" => "object", "name" => "string"], ["memory_limit_bytes" => "integer"]);
 schema!(ExportParams, ["directory" => "string", "format" => "string"], ["dpi" => "integer", "overwrite" => "boolean"]);
 schema!(super::properties::PropertyKeyParams, ["key" => "string"], []);
@@ -340,6 +376,26 @@ fn descriptors() -> Vec<ToolDescriptor> {
             [],
             EffectLevel::Reversible,
             false
+        ),
+        tool!(
+            "table.columns",
+            "Table columns",
+            "Inspect native columns and source metadata",
+            TableColumnsParams,
+            [KIND_DATASET],
+            [],
+            EffectLevel::ReadOnly,
+            true
+        ),
+        tool!(
+            "table.read_rows",
+            "Read table rows",
+            "Read a bounded page at an explicit table revision",
+            TableReadRowsParams,
+            [KIND_DATASET],
+            [],
+            EffectLevel::ReadOnly,
+            true
         ),
         tool!(
             "data.transform",

@@ -195,7 +195,7 @@ Press **Start connection**.
    and Linux, or PowerShell on Windows. It starts a new Codex session with the
    current connection address and token. No manual substitutions or separate
    `export` / `codex mcp add` steps are needed.
-4. In Codex, enter `/mcp` and check that `plotium` is connected with nine
+4. In Codex, enter `/mcp` and check that `plotium` is connected with eleven
    tools. Try: “Use plotium to inspect the current Plotium project without
    changing it.”
 
@@ -232,14 +232,16 @@ server's own origin; cross-origin access is unavailable.
 Connections start with **Read and modify** access, so agents can apply supported
 edits immediately after connecting. Changes use Plotium's normal **Undo** and
 **Redo**. Choose **Read only** under **Access** to prevent further edits, including
-pending plans; queries and preflight remain available. The selected access applies
+pending plans. Table queries and existing edit preflight remain available; import
+preflight requires Read and modify. The selected access applies
 to every client holding that connection token and lasts until the connection is
 stopped. A new connection starts with **Read and modify** again.
 
 Real Agent project reads and executions save run records and mark the project as
 unsaved; handshakes, tool listing and the static property catalog do not.
 
-The connection supports document structure, source-binding and resource queries, renaming datasets,
+The connection supports CSV/TSV data-only import, native table queries, canvas previews,
+document structure, source-binding and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target |
@@ -250,19 +252,20 @@ canvases and canvas objects, and these display properties only:
 | `document.figure.typography.tick_pt` | `document` |
 | `document.figure.typography.label_pt` | `document` |
 
-Processing parameters, preferences, imports, computation, exports, built-in chat
+Processing parameters, preferences, other import formats, computation, exports, built-in chat
 and stdio connections are outside this interface.
 
 ### Discover structure without relying on names
 
 Start with `plotium_get_state {}`. Its `connection_capabilities` describes this
-connection's nine tools, input schemas, result contracts, supported operations,
+connection's eleven tools, input schemas, result contracts, supported operations,
 property IDs, limits and current execution permission. Standard MCP `tools/list`
 also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
 does not make that operation callable through this connection. Only
-`resource.rename`, `properties.set` and `properties.reset` can be planned here.
-Read-only access still permits inspection and preflight, but prevents execution.
+`resource.rename`, `properties.set`, `properties.reset` and the restricted
+`data.import` mode below can be planned here. Read-only access allows table reads
+and existing edit preflight, but refuses import preflight and all edit execution.
 
 Use the returned revision to list the document's canvases:
 
@@ -315,6 +318,111 @@ read state and restart the listing. Missing targets and forged identities return
 `plotium_properties_inspect` to resolve values, defaults, bounds and applicability
 for explicit targets. Property applicability and connection write permission
 are separate facts.
+
+### Import CSV/TSV data without creating a plot
+
+Ask the agent to import an explicitly named UTF-8 CSV or TSV, inspect its columns,
+and read the whole table in pages. Start with `plotium_get_state {}`, then call
+`plotium_plan`:
+
+```json
+{
+  "expected_revision": 7,
+  "tool_id": "data.import",
+  "parameters": {
+    "mode": "table_data_only",
+    "paths": ["/absolute/path/measurement.csv"],
+    "header": "present"
+  }
+}
+```
+
+Do not supply `ids` or `targets` for import. `header` accepts `auto` (default),
+`present` or `absent`; ambiguous auto detection fails. The `.csv` or `.tsv`
+extension selects comma or tab; `format: "csv" | "tsv"` overrides it explicitly.
+Only named regular files are read. There is no directory discovery, adjacent
+sidecar lookup, source writeback, implicit plotting or X/Y binding.
+
+Preflight runs in the background and returns only when preparation finishes.
+`import.items` reports each file as `prepared` or `failed`, with proposed native
+IDs, metadata and diagnostics. No dataset exists yet. After reviewing the result,
+call `plotium_execute {"plan_id":"RETURNED_PLAN_ID"}`. Execution uses those frozen
+bytes and typed snapshots, even if a source file changed after preflight. It
+rechecks revision and permission before one atomic commit of all prepared items.
+`value.status` is `succeeded`, `partial` or `failed`; inspect every item and its
+created IDs. Failed files leave no partial dataset. One Undo removes the batch's
+successful items; Redo restores the same DatasetId, FieldId, ColumnId and RowId.
+Existing GUI/CLI import entry points retain their original behavior.
+
+Metadata includes DatasetId, TableId, table RevisionId, field identities, stable
+ColumnIds, logical types, nullable flags, units, total rows and diagnostics.
+Fields and columns are distinct native identities. Missing cells remain null;
+mixed numeric/text columns preserve text. Integer-looking tokens outside signed
+64-bit range remain text rather than being rounded. Units are never inferred
+from numbers or header spelling. Column `type_source` is `file`, `user`,
+`inferred` or `unknown`; `unit_source` is `file`, `user` or `unknown`.
+
+Optional `schema` is an ordered native TableSchema with typed ColumnSchema IDs,
+logical types, nullable flags and optional UnitSpec declarations. Alternatively,
+`schema_path` names a v1 PlotiumDelimitedSchema JSON file explicitly. Its header
+and order must match exactly; declarations are strict, with no inference fallback
+for invalid values. Supported declared types are null, boolean, int64, float64,
+utf8, date and timestamp. Uniqueness/business-key constraints and uncertainty
+relations are not accepted by this import. Plain `_sigma` column names do not
+assign scientific uncertainty meanings. New native IDs are allocated per import;
+file/user schema IDs describe the source, not an existing project target.
+
+Limits are 16 files, 16 MiB per file, 64 MiB selected input bytes per batch,
+256 columns and 1,000,000 rows per file. Explicit metadata files are limited to
+256 KiB. The prepared item summary is limited to 128 KiB and the complete
+preflight response to 256 KiB; reduce the batch/schema if either is exceeded.
+At most four prepared imports and 32 total plans are retained per
+connection; one import preflight runs at a time. Limits bound inputs, not total
+process memory. Cancellation, a project transition, permission revocation or an
+intervening edit prevents a pending preflight from becoming an executable plan.
+Queued or running work is not completion. Failed/stale submissions consume their
+plan; fetch state and preflight again instead of replaying a create request.
+
+### Read a complete table in bounded pages
+
+Copy DatasetId and table RevisionId from import metadata or the dataset resource
+descriptor. Call `plotium_table_columns` with those IDs and `expected_revision` to
+inspect metadata, then `plotium_table_read_rows`:
+
+```json
+{
+  "expected_revision": 8,
+  "dataset_id": "DATASET_UUID",
+  "table_revision": "TABLE_REVISION_UUID",
+  "offset": 0,
+  "limit": 200
+}
+```
+
+Replace the placeholders with returned IDs. Optional `column_ids` projects
+columns by stable ColumnId, in the supplied order; omitted or empty selects all
+columns in schema order. Rows follow immutable native snapshot order. The result
+includes `column_ids`, `rows: [{row_id, values}]`, `total_rows`, `requested_rows`,
+`returned_rows`, `next_offset` and `end`. Values are tagged by `kind`; null has no
+value. Int64, time, timestamp and duration values use decimal strings to avoid
+JSON number rounding. Date values are days since the Unix epoch; time, timestamp
+and duration values use nanoseconds. Non-finite floats are explicit `NaN`,
+`+Inf` or `-Inf` strings, not null.
+
+Follow `next_offset` with the same dataset, document revision, table revision
+and projection until `end: true` and `next_offset: null`. The default page is
+200 rows, maximum 1000 rows and 20000 projected cells; the complete structured
+ToolResult is limited to 256 KiB. The byte limit can shorten a page, never a cell;
+use the actual returned count and continuation. A single oversized row returns
+`response_too_large`. An offset equal to total_rows returns an empty end page;
+an offset beyond it fails. Invalid limits, duplicate/absent columns and oversized
+requests fail rather than being silently clamped.
+
+Both revisions must still match on every read. Human edits, including Undo/Redo,
+invalidate old document revisions: read state and restart rather than mixing
+pages. Invalid IDs never use the current selection. Read-only connections can
+query existing tables but cannot import them. Limits and the import permission
+condition appear in `connection_capabilities`.
 
 ### Read the actual canvas image
 
@@ -420,7 +528,7 @@ changing it to 1.5 pt, then apply the saved plan.” The tool sequence is:
    **Undo** restores it and **Redo** reapplies it. Repeating the current value is
    reported as skipped. A batch applies as one undo step.
 
-Both property inspection and planning require exactly one nonempty `ids` or
+Property inspection and property-edit planning require exactly one nonempty `ids` or
 `targets` array. `ids` expands each resource to all components addressed by the
 property; `targets` addresses only the supplied Series components. Series IDs
 are local to their plot, so always copy the full target, including its resource.

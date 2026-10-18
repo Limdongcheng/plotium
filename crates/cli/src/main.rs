@@ -598,6 +598,7 @@ fn fail_automation(error: AutomationError) -> Status {
         | AutomationError::PreviewAsset(_)
         | AutomationError::ResponseTooLarge
         | AutomationError::StaleRevision { .. }
+        | AutomationError::StaleTableRevision { .. }
         | AutomationError::InsufficientAuthority { .. } => Status::BatchFailed,
     }
 }

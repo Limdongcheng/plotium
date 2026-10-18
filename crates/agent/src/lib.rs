@@ -1,6 +1,7 @@
 //! Authenticated, ephemeral local MCP connection and bounded desktop bridge.
 mod capabilities;
 mod client_config;
+mod imports;
 mod preview;
 mod protocol;
 mod session;
@@ -48,6 +49,7 @@ pub struct Connection {
     worker: Option<JoinHandle<()>>,
     pub session: Session,
     preview: Option<preview::PreviewFlight>,
+    import: Option<imports::ImportFlight>,
 }
 impl Connection {
     pub fn start(wake: impl Fn() + Send + Sync + 'static) -> std::io::Result<Self> {
@@ -136,6 +138,7 @@ impl Connection {
             worker: Some(worker),
             session,
             preview: None,
+            import: None,
         })
     }
     pub fn connection_info(&self) -> String {
@@ -169,6 +172,7 @@ impl Connection {
             }
         }
         self.preview = None;
+        self.import = None;
         self.session = Session::default();
         self.token.clear();
     }

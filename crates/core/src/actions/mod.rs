@@ -524,6 +524,10 @@ pub enum Action {
         before: Vec<(ObjectId, ObjectStyle)>,
         after: Vec<(ObjectId, ObjectStyle)>,
     },
+    /// Import only native data; existing GUI/CLI canvas-creating actions are unchanged.
+    InsertTableData {
+        dataset: Box<Dataset>,
+    },
     InsertDatasetWithCanvas {
         dataset_index: usize,
         canvas_index: usize,
@@ -597,6 +601,7 @@ mod build;
 impl Action {
     pub fn undo_label(&self) -> &'static str {
         match self {
+            Self::InsertTableData { .. } => "import table data",
             Self::ReplacePanelState { .. } => "edit panel structure",
             Self::Composite(actions) => actions
                 .iter()
@@ -686,6 +691,7 @@ impl Action {
             Self::SetFigureTypography { before, after } => before == after,
             Self::DeleteCanvas { .. }
             | Self::InsertCanvas { .. }
+            | Self::InsertTableData { .. }
             | Self::InsertDatasetWithCanvas { .. }
             | Self::InsertObject { .. }
             | Self::DeleteObject { .. }

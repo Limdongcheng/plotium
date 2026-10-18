@@ -515,6 +515,8 @@ pub enum AutomationError {
     InvalidParameters { tool_id: String, message: String },
     #[error("invalid target selector: {0}")]
     InvalidSelector(String),
+    #[error("stale table revision: expected {expected}, actual {actual}")]
+    StaleTableRevision { expected: String, actual: String },
     #[error("stale automation plan: expected revision {expected}, current revision {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error("authority {granted:?} does not permit {required:?}")]

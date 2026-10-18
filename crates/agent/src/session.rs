@@ -1,5 +1,6 @@
 //! Desktop-thread capability boundary. No project state crosses the bridge.
 use std::collections::HashMap;
+mod table;
 
 use plotium_core::{
     automation::*,
@@ -42,7 +43,9 @@ impl From<AutomationError> for Failure {
 impl From<&AutomationError> for Failure {
     fn from(error: &AutomationError) -> Self {
         let code = match error {
-            AutomationError::StaleRevision { .. } => "stale_revision",
+            AutomationError::StaleRevision { .. } | AutomationError::StaleTableRevision { .. } => {
+                "stale_revision"
+            }
             AutomationError::PreviewCancelled => "request_cancelled",
             AutomationError::PreviewBudget(_) => "preview_budget_exceeded",
             AutomationError::PreviewAsset(_) => "preview_asset_unavailable",
@@ -64,6 +67,7 @@ impl From<&AutomationError> for Failure {
 pub struct Session {
     pub allow_modify: bool,
     plans: HashMap<String, ToolPlan>,
+    imports: HashMap<String, PreparedTableImport>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,15 +194,30 @@ impl Session {
                     "Plan expired or was already submitted; preflight again",
                 )
             })?;
+            let prepared = self.imports.remove(&args.plan_id);
             barrier()?;
             let authority = if self.allow_modify {
                 ExecutionAuthority::ReversibleModify
             } else {
                 ExecutionAuthority::Read
             };
-            return Ok(json!(execute_tool(app, plan, authority)?));
+            return Ok(json!(if let Some(prepared) = prepared {
+                execute_prepared_table_import(app, plan, prepared, authority)?
+            } else {
+                execute_tool(app, plan, authority)?
+            }));
         }
         barrier()?;
+        if matches!(name, "plotium_table_columns" | "plotium_table_read_rows") {
+            return self.table_read(app, name, arguments);
+        }
+        if name == "plotium_plan"
+            && arguments.get("tool_id").and_then(Value::as_str) == Some("data.import")
+        {
+            let (plan, params) = self.prepare_import_plan(app, arguments, blocked)?;
+            let prepared = PreparedTableImport::prepare(params, || false)?;
+            return self.finish_import_plan(app, plan, prepared, blocked);
+        }
         if name == "plotium_render_preview" {
             let (snapshot, run) = self.prepare_preview(app, arguments, blocked)?;
             let outcome = snapshot.render();
