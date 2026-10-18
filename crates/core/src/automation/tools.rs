@@ -40,7 +40,9 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
             "components are only supported by property and document inspection tools".into(),
         ));
     }
-    let frozen_targets = if request.tool_id == DOCUMENT_INSPECT {
+    let frozen_targets = if request.tool_id == IMAGE_PREVIEW {
+        super::preview::freeze(app, &request)?
+    } else if request.tool_id == DOCUMENT_INSPECT {
         super::document::freeze(app, &request)?
     } else {
         freeze_targets(&provider, &request.targets)?
@@ -152,94 +154,129 @@ pub fn execute_tool(
     if caller == CallerType::Human {
         return execute_planned_tool(app, plan, authority);
     }
-    let node = single_node_workflow(&plan.request);
-    let frozen_targets = plan.frozen_targets.clone();
-    let parameters = plan.request.parameters.clone();
-    let tool_id = plan.request.tool_id.clone();
-    let tool_version = plan.request.tool_version;
-    let start_revision = DocumentRevision(app.doc.automation_revision);
-    // The same snapshot `execute_workflow` takes before its first node: the
-    // input revisions a derived table was built from cannot be recovered once
-    // the derivation has happened.
-    let start_table_revisions = typed_table_revisions(app, "input");
-    let started_unix_ms = unix_ms();
-    let started = std::time::Instant::now();
+    let run = PreparedToolRun::begin(app, &plan);
     let outcome = execute_planned_tool(app, plan, authority);
-    let end_revision = DocumentRevision(app.doc.automation_revision);
-    let (result, errors) = match &outcome {
-        Ok(result) => {
-            // A tool that reports a per-target failure without failing outright
-            // is recorded the way `execute_workflow` records the same node, so
-            // the two manifests stay one shape (§9, principle 5).
-            let errors = if result
-                .targets
-                .iter()
-                .any(|target| target.outcome == TargetOutcome::Failed)
-            {
-                vec![format!("{SINGLE_CALL_NODE}: one or more targets failed")]
-            } else {
-                Vec::new()
-            };
-            (result.clone(), errors)
-        }
-        Err(error) => (
-            ToolResult {
-                tool_id: tool_id.clone(),
-                before_revision: start_revision,
-                after_revision: end_revision,
-                targets: Vec::new(),
-                produced: Vec::new(),
-                modified: Vec::new(),
-                diagnostics: vec![error.to_string()],
-                verification: Vec::new(),
-                value: serde_json::Value::Null,
-            },
-            vec![error.to_string()],
-        ),
-    };
-    let record = NodeRunRecord {
-        node_id: SINGLE_CALL_NODE.to_owned(),
-        tool_id: tool_id.clone(),
-        parameters,
-        frozen_targets,
-        result,
-        duration_ms: started.elapsed().as_millis(),
-    };
-    let workflow = serde_json::to_value(&node)
-        .map_err(|error| AutomationError::Execution(error.to_string()))?;
-    let canonical = serde_json::to_vec(&workflow)
-        .map_err(|error| AutomationError::Execution(error.to_string()))?;
-    // Reuse the workflow executor's extraction rather than a second copy: a
-    // `data.transform` called directly by an agent has to leave the same input
-    // and output table revisions, plan fingerprint and backend identity that the
-    // same transform leaves when a workflow runs it, or the run is not
-    // reproducible from its own record.
-    let records = vec![record];
-    let (table_revisions, table_plans) = table_run_records(app, &records, &start_table_revisions);
-    record_run(
-        &mut app.doc,
-        RunManifest {
-            schema: RUN_MANIFEST_SCHEMA.to_owned(),
-            run_id: uuid::Uuid::new_v4().to_string(),
-            caller,
-            workflow_hash: format!("{:x}", Sha256::digest(&canonical)),
-            workflow,
-            application_version: env!("CARGO_PKG_VERSION").to_owned(),
-            tool_versions: BTreeMap::from([(tool_id, tool_version)]),
-            start_revision,
-            end_revision,
-            started_unix_ms,
-            finished_unix_ms: unix_ms(),
-            cancelled: false,
-            nodes: records,
-            warnings: Vec::new(),
-            errors,
-            verification: Vec::new(),
-            table_revisions,
-            table_plans,
-        },
-    );
+    run.finish(app, &outcome)?;
     outcome
+}
+
+/// Audit state for a tool whose immutable computation can finish off-thread.
+/// The caller must finish on the original project, or discard on project close.
+pub struct PreparedToolRun {
+    plan: ToolPlan,
+    start_table_revisions: BTreeMap<String, TableRevisionRecord>,
+    started_unix_ms: u128,
+    start_revision: DocumentRevision,
+    started: std::time::Instant,
+}
+impl PreparedToolRun {
+    pub fn begin(app: &PlotiumApp, plan: &ToolPlan) -> Self {
+        Self {
+            plan: plan.clone(),
+            start_table_revisions: typed_table_revisions(app, "input"),
+            started_unix_ms: unix_ms(),
+            start_revision: DocumentRevision(app.doc.automation_revision),
+            started: std::time::Instant::now(),
+        }
+    }
+    pub fn finish(
+        self,
+        app: &mut PlotiumApp,
+        outcome: &Result<ToolResult, AutomationError>,
+    ) -> Result<(), AutomationError> {
+        let Self {
+            plan,
+            start_table_revisions,
+            started_unix_ms,
+            start_revision,
+            started,
+        } = self;
+        if plan.request.caller == CallerType::Human {
+            return Ok(());
+        }
+        let caller = plan.request.caller;
+        let node = single_node_workflow(&plan.request);
+        let frozen_targets = plan.frozen_targets.clone();
+        let parameters = plan.request.parameters.clone();
+        let tool_id = plan.request.tool_id.clone();
+        let tool_version = plan.request.tool_version;
+        let end_revision = DocumentRevision(app.doc.automation_revision);
+        let (result, errors) = match outcome {
+            Ok(result) => {
+                // A tool that reports a per-target failure without failing outright
+                // is recorded the way `execute_workflow` records the same node, so
+                // the two manifests stay one shape (§9, principle 5).
+                let errors = if result
+                    .targets
+                    .iter()
+                    .any(|target| target.outcome == TargetOutcome::Failed)
+                {
+                    vec![format!("{SINGLE_CALL_NODE}: one or more targets failed")]
+                } else {
+                    Vec::new()
+                };
+                (result.clone(), errors)
+            }
+            Err(error) => (
+                ToolResult {
+                    tool_id: tool_id.clone(),
+                    before_revision: start_revision,
+                    after_revision: end_revision,
+                    targets: Vec::new(),
+                    produced: Vec::new(),
+                    modified: Vec::new(),
+                    diagnostics: vec![error.to_string()],
+                    verification: Vec::new(),
+                    value: serde_json::Value::Null,
+                },
+                vec![error.to_string()],
+            ),
+        };
+        let record = NodeRunRecord {
+            node_id: SINGLE_CALL_NODE.to_owned(),
+            tool_id: tool_id.clone(),
+            parameters,
+            frozen_targets,
+            result,
+            duration_ms: started.elapsed().as_millis(),
+        };
+        let workflow = serde_json::to_value(&node)
+            .map_err(|error| AutomationError::Execution(error.to_string()))?;
+        let canonical = serde_json::to_vec(&workflow)
+            .map_err(|error| AutomationError::Execution(error.to_string()))?;
+        // Reuse the workflow executor's extraction rather than a second copy: a
+        // `data.transform` called directly by an agent has to leave the same input
+        // and output table revisions, plan fingerprint and backend identity that the
+        // same transform leaves when a workflow runs it, or the run is not
+        // reproducible from its own record.
+        let records = vec![record];
+        let (table_revisions, table_plans) =
+            table_run_records(app, &records, &start_table_revisions);
+        record_run(
+            &mut app.doc,
+            RunManifest {
+                schema: RUN_MANIFEST_SCHEMA.to_owned(),
+                run_id: uuid::Uuid::new_v4().to_string(),
+                caller,
+                workflow_hash: format!("{:x}", Sha256::digest(&canonical)),
+                workflow,
+                application_version: env!("CARGO_PKG_VERSION").to_owned(),
+                tool_versions: BTreeMap::from([(tool_id, tool_version)]),
+                start_revision,
+                end_revision,
+                started_unix_ms,
+                finished_unix_ms: unix_ms(),
+                cancelled: matches!(outcome, Err(AutomationError::PreviewCancelled)),
+                nodes: records,
+                warnings: Vec::new(),
+                errors,
+                verification: Vec::new(),
+                table_revisions,
+                table_plans,
+            },
+        );
+        Ok(())
+    }
 }
 
 /// The one place a finished run is appended to the document.
@@ -256,7 +293,16 @@ pub fn execute_tool(
 /// the caller is still holding — dirtiness says "the file on disk is stale",
 /// which is a different question from "has the document the caller planned
 /// against moved".
-pub(super) fn record_run(document: &mut Document, manifest: RunManifest) {
+pub(super) fn record_run(document: &mut Document, mut manifest: RunManifest) {
+    // A workflow and a direct call share the same persistence boundary. PNG
+    // transport data is never project state, including when invoked by workflows.
+    for node in &mut manifest.nodes {
+        if node.tool_id == IMAGE_PREVIEW
+            && let Some(value) = node.result.value.as_object_mut()
+        {
+            value.remove("png_base64");
+        }
+    }
     document.automation_runs.push(manifest);
     document.mark_dirty();
 }
@@ -322,6 +368,7 @@ pub(super) fn execute_planned_tool(
         "resources.inspect" => execute_inspect(app, &plan)?,
         "data.preview" => execute_data_preview(app, &plan)?,
         "render.preview" => execute_render_preview(app, &plan)?,
+        IMAGE_PREVIEW => ImagePreviewSnapshot::capture(app, &plan)?.render()?,
         "results.compare" => execute_compare(app, &plan)?,
         "resource.rename" => execute_rename(app, &plan)?,
         "figure.apply_theme" => execute_theme(app, &plan)?,

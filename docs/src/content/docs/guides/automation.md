@@ -195,7 +195,7 @@ Press **Start connection**.
    and Linux, or PowerShell on Windows. It starts a new Codex session with the
    current connection address and token. No manual substitutions or separate
    `export` / `codex mcp add` steps are needed.
-4. In Codex, enter `/mcp` and check that `plotium` is connected with seven
+4. In Codex, enter `/mcp` and check that `plotium` is connected with nine
    tools. Try: “Use plotium to inspect the current Plotium project without
    changing it.”
 
@@ -250,13 +250,13 @@ canvases and canvas objects, and these display properties only:
 | `document.figure.typography.tick_pt` | `document` |
 | `document.figure.typography.label_pt` | `document` |
 
-Processing parameters, preferences, imports, computation, exports, image
-previews, built-in chat and stdio connections are outside this interface.
+Processing parameters, preferences, imports, computation, exports, built-in chat
+and stdio connections are outside this interface.
 
 ### Discover structure without relying on names
 
 Start with `plotium_get_state {}`. Its `connection_capabilities` describes this
-connection's eight tools, input schemas, result contracts, supported operations,
+connection's nine tools, input schemas, result contracts, supported operations,
 property IDs, limits and current execution permission. Standard MCP `tools/list`
 also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
@@ -315,6 +315,53 @@ read state and restart the listing. Missing targets and forged identities return
 `plotium_properties_inspect` to resolve values, defaults, bounds and applicability
 for explicit targets. Property applicability and connection write permission
 are separate facts.
+
+### Read the actual canvas image
+
+Ask the agent: “Preview this canvas and describe its text, curves and local
+images.” Use `plotium_document_inspect` to obtain a complete canvas target, then
+call `plotium_render_preview` with that target and the current revision:
+
+```json
+{
+  "expected_revision": 7,
+  "target": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "max_edge": 1440
+}
+```
+
+Replace `CANVAS_UUID` with the discovered canvas ID; do not pass a panel,
+content item, selection or Series. The response contains a standard MCP PNG
+**image content block**, plus `ToolResult.value` metadata: `target`,
+`render_revision`, `width_px`, `height_px` and `mime_type`. It does not require
+opening a file or rendering SVG text. The MCP client must deliver image content
+to its agent; a text-only client cannot consume this preview.
+
+The image covers the whole page with its native layout, background, panel clips,
+text, curves and embedded local raster assets. Rendering runs off the desktop
+thread from an immutable snapshot. `render_revision` identifies that snapshot;
+human edits after capture do not change it. Read state again before editing.
+Read-only connections permit previews. Completed reads save a metadata-only run
+record and mark the project unsaved without advancing its revision.
+
+`max_edge` defaults to 1440 px and accepts 1–2048; aspect ratio is preserved
+with pixel rounding and a minimum of one pixel per axis. Limits are 4,194,304
+output pixels, 16 MiB of referenced encoded assets, 64 MiB of header-probed
+RGBA8 asset pages, 8 MiB of intermediate SVG, 4 MiB of PNG, and 6 MiB of JSON-RPC
+preview response (including the request ID). Shared asset bytes count once;
+decoded pages count once per asset/page. These are payload and image-buffer limits, not a total process
+memory limit. All referenced assets are validated, including hidden items.
+Limits are also available in `connection_capabilities.limits.image_preview`.
+
+Missing or damaged assets and unavailable image pages return
+`preview_asset_unavailable`; no placeholder or incomplete success image is
+returned. Budget overflow returns `preview_budget_exceeded`, without silent
+quality reduction; lower `max_edge` for output-size overflow, or reduce source
+assets for asset-budget overflow. Invalid full identities return
+`invalid_parameters`, and outdated revisions return `stale_revision`.
+Only one preview renders per connection; another returns `busy`. Other existing
+tools remain available while rendering. Cancellation or stopping the connection
+prevents image delivery; stopping or switching projects discards the old job.
 
 ### Inspect and edit an exact curve
 

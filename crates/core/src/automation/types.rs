@@ -526,6 +526,12 @@ pub enum AutomationError {
     InvalidWorkflow(String),
     #[error("document response exceeds the 256 KiB budget; query a smaller target or page")]
     ResponseTooLarge,
+    #[error("preview request cancelled")]
+    PreviewCancelled,
+    #[error("preview budget exceeded: {0}")]
+    PreviewBudget(String),
+    #[error("preview asset unavailable: {0}")]
+    PreviewAsset(String),
     #[error("tool execution failed: {0}")]
     Execution(String),
     #[error("I/O failed for {}: {source}", path.display())]

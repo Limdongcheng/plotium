@@ -175,7 +175,7 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 3. 将命令原样粘贴到终端执行：macOS 和 Linux 使用 zsh 或 bash，Windows
    使用 PowerShell。命令自动填入当前地址和密钥，启动新的 Codex 会话，
    无需手动替换内容，也无需另行执行 `export` 或 `codex mcp add`。
-4. 在 Codex 中输入 `/mcp`，确认 `plotium` 已连接且有七个工具。
+4. 在 Codex 中输入 `/mcp`，确认 `plotium` 已连接且有九个工具。
    可以先发送：“使用 plotium 查看当前 Plotium 项目，暂时不要修改。”
 
 命令使用临时启动配置和仅对本次调用生效的密钥环境变量，并启动独立 Codex
@@ -221,13 +221,13 @@ Diagnostic History** 中，附带每个文件的路径、大小和 SHA-256 校�
 | `document.figure.typography.tick_pt` | `document` |
 | `document.figure.typography.label_pt` | `document` |
 
-此接口暂不支持处理参数、应用偏好、导入、计算、导出、图像预览、内置聊天及
+此接口暂不支持处理参数、应用偏好、导入、计算、导出、内置聊天及
 stdio 连接。
 
 ### 不依赖名称发现结构
 
 先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
-八个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+九个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
 这里仍只能预检 `resource.rename`、`properties.set` 和 `properties.reset`。
@@ -276,6 +276,45 @@ Series 详情包含可直接用于属性查询的完整 target、编码、可见
 （无量纲时为空）、`scope`、`access` 和静态 `applicability`，不混入当前目标值。
 用 `plotium_properties_inspect` 查询明确目标的当前值、默认值、范围和适用性。
 属性是否适用与连接是否允许修改分别表达。
+
+### 读取实际画布图像
+
+可以请 agent：“预览这张画布，描述文字、曲线和本地图片。”先通过
+`plotium_document_inspect` 取得完整画布 target，再以当前 revision 调用
+`plotium_render_preview`：
+
+```json
+{
+  "expected_revision": 7,
+  "target": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "max_edge": 1440
+}
+```
+
+将 `CANVAS_UUID` 换成发现返回的画布 ID；不接受面板、内容、当前选择或 Series。
+结果包含标准 MCP PNG **image 内容块**，以及 `ToolResult.value` 中的
+`target`、`render_revision`、`width_px`、`height_px` 和 `mime_type`。
+无需打开文件或自行渲染 SVG 文本。MCP 客户端须将图像内容交给 agent；纯文本
+客户端无法读取此预览。
+
+图像覆盖整页，使用原生版式、背景、面板裁剪、文字、曲线及项目内嵌栅格资产。
+渲染基于不可变快照在后台执行，`render_revision` 标识该快照；截取后发生的人工
+修改不会被标成图像内容。执行后续修改前请重新读取状态。只读连接也允许预览。
+完成的读取保存仅含元数据的运行记录，使项目变为未保存，但不推进 revision。
+
+`max_edge` 默认 1440 px，可取 1–2048；保持宽高比，按像素取整，每轴至少一个
+像素。预算为输出 4,194,304 像素、引用资产编码数据合计 16 MiB、按实际文件头
+探测的资产页 RGBA8 合计 64 MiB、中间 SVG 8 MiB、PNG 4 MiB、JSON-RPC 预览响应
+6 MiB（包含请求 ID）。同一资产编码数据只计一次，同一资产页解码只计一次。
+这些限制约束负载和图像缓冲区，不代表整个进程的内存上限。所有引用资产均校验，包括隐藏项。
+发现信息 `connection_capabilities.limits.image_preview` 也提供这些预算。
+
+资产缺失、损坏或图片页不可用时返回 `preview_asset_unavailable`，不会以占位图
+或缺图结果报告成功。超过预算返回 `preview_budget_exceeded`，不静默降质；输出
+超限时降低 `max_edge`，资产超限时缩小源资产。无效完整身份返回
+`invalid_parameters`，过期 revision 返回 `stale_revision`。
+每连接最多同时渲染一张预览，重复请求返回 `busy`；渲染期间其他已有工具仍可用。
+取消请求或停止连接后不交付图像；停止连接、切换项目会丢弃旧任务。
 
 ### 查询并修改一条明确曲线
 

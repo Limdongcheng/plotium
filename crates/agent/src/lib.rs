@@ -1,6 +1,7 @@
 //! Authenticated, ephemeral local MCP connection and bounded desktop bridge.
 mod capabilities;
 mod client_config;
+mod preview;
 mod protocol;
 mod session;
 
@@ -46,6 +47,7 @@ pub struct Connection {
     active: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     pub session: Session,
+    preview: Option<preview::PreviewFlight>,
 }
 impl Connection {
     pub fn start(wake: impl Fn() + Send + Sync + 'static) -> std::io::Result<Self> {
@@ -133,6 +135,7 @@ impl Connection {
             active,
             worker: Some(worker),
             session,
+            preview: None,
         })
     }
     pub fn connection_info(&self) -> String {
@@ -165,6 +168,7 @@ impl Connection {
                 // Client already disconnected.
             }
         }
+        self.preview = None;
         self.session = Session::default();
         self.token.clear();
     }
@@ -225,3 +229,6 @@ mod component_tests;
 
 #[cfg(test)]
 mod discovery_tests;
+
+#[cfg(test)]
+mod preview_tests;
