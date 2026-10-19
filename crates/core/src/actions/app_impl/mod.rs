@@ -25,8 +25,10 @@ impl PlotiumApp {
             canvas.groups.clone_from(&state.groups);
             // Undo must not reuse identities minted by a later, now-undone edit.
             canvas.next_object_id = canvas.next_object_id.max(state.next_object_id);
-            canvas.next_group_id = state.next_group_id;
-            canvas.next_panel_label_slot = state.next_panel_label_slot;
+            canvas.next_group_id = canvas.next_group_id.max(state.next_group_id);
+            canvas.next_panel_label_slot = canvas
+                .next_panel_label_slot
+                .max(state.next_panel_label_slot);
             // Apply, undo and redo must render plots at their restored content sizes.
             self.rebuild_canvas(canvas_index);
         }
@@ -41,12 +43,12 @@ impl PlotiumApp {
     }
 
     /// Validate a whole action before applying it, preventing partial stale composites.
-    pub fn try_execute_action(&mut self, action: Action) -> Result<(), ActionApplyError> {
+    pub fn try_execute_action(&mut self, mut action: Action) -> Result<(), ActionApplyError> {
         if action.is_noop() {
             return Ok(());
         }
         validate_action(self, &action, &mut ValidationShape::from_app(self))?;
-        self.apply_action(&action)?;
+        self.apply_history_action(&mut action)?;
         self.session.undo_stack.push(action);
         if self.session.undo_stack.len() > self.session.history_limit {
             self.session.undo_stack.remove(0);
@@ -86,10 +88,11 @@ impl PlotiumApp {
         self.finish_series_presentation_edit();
         self.finish_axis_overrides_edit();
         self.reset_interaction();
-        let Some(action) = self.session.redo_stack.pop() else {
+        let Some(mut action) = self.session.redo_stack.pop() else {
             return;
         };
         let label = action.undo_label();
+        self.retain_created_plot_allocators(&mut action);
         match self.apply_action(&action) {
             Ok(()) => {
                 self.session.undo_stack.push(action);

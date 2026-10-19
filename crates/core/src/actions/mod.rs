@@ -14,6 +14,8 @@ use plotium_processing::xrd::XrdProcessing;
 use plotium_processing::{AxisPipeline, Params2D, Preset2D};
 
 mod app_impl;
+pub(crate) mod deletion;
+pub use deletion::DeletionChange;
 mod arrange;
 mod native_plot;
 mod panel;
@@ -510,11 +512,15 @@ pub enum Action {
         object: Box<CanvasObject>,
         selection_before: Selection,
     },
+    /// Raw native callers retain their entry point; history preparation captures full relationships.
     DeleteObject {
         canvas: usize,
         index: usize,
         object: Box<CanvasObject>,
         selection_before: Selection,
+    },
+    DeleteFigureTargets {
+        change: Box<DeletionChange>,
     },
     SetObjectText {
         canvas: usize,
@@ -615,6 +621,7 @@ impl Action {
             Self::InsertTableData { .. } => "import table data",
             Self::CreatePlot { .. } => "create native plot",
             Self::ReplacePanelState { .. } => "edit panel structure",
+            Self::DeleteFigureTargets { .. } => "delete figure targets",
             Self::Composite(actions) => actions
                 .iter()
                 .find(|action| !action.is_noop())
@@ -709,6 +716,7 @@ impl Action {
             | Self::InsertDatasetWithCanvas { .. }
             | Self::InsertObject { .. }
             | Self::DeleteObject { .. }
+            | Self::DeleteFigureTargets { .. }
             | Self::TransferObjects { .. }
             | Self::TileDrop { .. } => false,
         }

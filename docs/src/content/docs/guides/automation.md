@@ -265,6 +265,16 @@ inspect the native PNG. You can continue dragging the legend in the GUI;
 double-click restores automatic placement. Check Undo/Redo before saving.
 See [guide coordinates and reset rules](/reference/mcp/#position-a-plots-legend-precisely).
 
+### Remove only an explicitly chosen item
+
+Ask “Delete this duplicate note and this exact redundant Series, keeping the
+other curve with the same name, its units and my manual ranges. Show the deletion
+list before executing, then show the actual PNG.” The agent must discover stable
+IDs, not use names or the current selection. One Undo restores the batch. Empty
+parents and source data remain; removing the last Series is rejected. An empty
+panel can be deleted explicitly, but nonempty panels cannot cascade through MCP.
+See [exact deletion and refusal rules](/reference/mcp/#delete-exact-content-or-selected-series).
+
 ### Deliver the editable project and final figures
 
 Have the agent import CSV/TSV and check explicit units, then create line-with-error

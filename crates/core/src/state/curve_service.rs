@@ -95,6 +95,19 @@ impl CurveEditPlan {
             insertion: Some(Box::new(insertion)),
         }
     }
+    pub(crate) fn copy_candidates_to(&self, page: &mut CanvasDocument) -> Result<(), String> {
+        for change in &self.changes {
+            if change.canvas != page.resource_id {
+                return Err("Curve candidate is on another canvas.".into());
+            }
+            let plot = page
+                .object_mut(change.object)
+                .and_then(ContentItem::plot_mut)
+                .ok_or("Curve owner disappeared.")?;
+            *plot = *change.after.clone();
+        }
+        Ok(())
+    }
     pub fn curve_rows(&self) -> usize {
         self.bindings.iter().map(|b| b.diagnostics.total_rows).sum()
     }

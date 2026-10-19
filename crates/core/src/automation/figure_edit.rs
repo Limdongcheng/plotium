@@ -4,6 +4,9 @@ use crate::state::{FigureEditParams, FigureEditPlan, PlotiumApp};
 use serde_json::{Value, json};
 pub const FIGURE_EDIT: &str = "figure.edit";
 pub fn figure_edit_schema() -> Value {
+    let mut series_target = document_inspect_schema()["properties"]["target"].clone();
+    series_target["required"] = json!(["resource", "component"]);
+    series_target["properties"]["component"] = json!({"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"const":"series"},"id":{"type":"integer","minimum":0}}});
     let mut target = document_inspect_schema()["properties"]["target"].clone();
     target["properties"]
         .as_object_mut()
@@ -76,8 +79,15 @@ pub fn figure_edit_schema() -> Value {
             vec!["parent", "name", "frame_pt", "path"],
             json!({"parent":target,"name":name,"frame_pt":arr(4),"path":{"type":"string","description":"Absolute explicitly named local PNG/JPEG regular file; frozen at preflight, no adjacent file lookup."}}),
         ),
+        variant("content_delete", vec!["target"], json!({"target":target})),
+        variant("panel_delete", vec!["target"], json!({"target":target})),
+        variant(
+            "series_delete",
+            vec!["target"],
+            json!({"target":series_target}),
+        ),
     ];
-    json!({"type":"object","additionalProperties":false,"required":["canvas","edits"],"properties":{"canvas":target,"edits":{"type":"array","minItems":1,"maxItems":200,"items":{"oneOf":variants}}},"description":"Atomic native authoring on one exact canvas. Panel frames [x,y,w,h] are page pt, resize scales child-local frames. New content frames are parent-local pt. Page size/margins/gutter use mm; margins [top,right,bottom,left]. Grid uses native Frame-basis cells in supplied Panel order, existing page margins/gutter; no page-layout preference change or non-target reflow. Align uses bounding edges/centres, distribution equal centre spacing with endpoints fixed. Panel layout ops require unlocked free-layout Panels. content_frame requires the item and parent unlocked, a free-layout parent and Auto height off; image_replace requires the item and parent unlocked, not a layout mode change. Hidden exact targets remain addressable. No top-level ids/targets."})
+    json!({"type":"object","additionalProperties":false,"required":["canvas","edits"],"properties":{"canvas":target,"edits":{"type":"array","minItems":1,"maxItems":200,"items":{"oneOf":variants}}},"description":"Atomic native authoring on one exact canvas. Panel frames [x,y,w,h] are page pt, resize scales child-local frames. New content frames are parent-local pt. Page size/margins/gutter use mm; margins [top,right,bottom,left]. Grid uses native Frame-basis cells in supplied Panel order, existing page margins/gutter; no page-layout preference change or non-target reflow. Align uses bounding edges/centres, distribution equal centre spacing with endpoints fixed. Panel layout ops require unlocked free-layout Panels. content_frame requires the item and parent unlocked, a free-layout parent and Auto height off; image_replace requires the item and parent unlocked, not a layout mode change. Deletion-only batches accept distinct content_delete, originally empty panel_delete and explicit-column series_delete targets on this canvas. Reject overlaps, last-Series removal, defaults/dynamic displays and mixing deletion with other ops. Preserve empty parents, datasets and assets; preflight lists exact deletions and relationship changes. Hidden exact targets remain addressable. No top-level ids/targets."})
 }
 fn invalid(message: impl Into<String>) -> AutomationError {
     AutomationError::InvalidParameters {
@@ -119,6 +129,7 @@ pub(super) fn execute(
         .ok_or_else(|| invalid("Prepare a native figure plan before execution."))?;
     let mut targets = prepared.modified.clone();
     targets.extend(prepared.created.clone());
+    targets.extend(prepared.deleted.clone());
     let produced = prepared
         .created
         .iter()

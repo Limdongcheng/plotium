@@ -716,6 +716,9 @@ One batch changes one canvas, in supplied edit order, with one Undo/Redo:
 | `panel_frame` | `target: EXACT_PANEL_TARGET`, `frame_pt: [x,y,width,height]` in page pt |
 | `content_frame` | `target: EXACT_CONTENT_TARGET`, complete `frame_pt: [x,y,width,height]` in parent-local pt; changes only this item |
 | `image_replace` | `target: EXACT_RASTER_TARGET`, `path`; replaces only its asset reference with frozen local PNG/JPEG |
+| `content_delete` | `target: EXACT_CONTENT_TARGET`; removes this content, retaining its empty parent |
+| `panel_delete` | `target: EXACT_PANEL_TARGET`; requires an originally empty panel |
+| `series_delete` | `target: EXACT_SERIES_TARGET`; removes a non-final explicit Series |
 | `panel_label` | `target`, `text`, `visible`; writes a native manual panel label, preserving its position/font |
 | `align` | `panels: [EXACT_PANEL_TARGET,...]`, `edge: left\|center\|right\|top\|middle\|bottom`; at least two panels |
 | `distribute` | `panels`, `axis: horizontal\|vertical`; at least three panels |
@@ -757,7 +760,7 @@ gutter, but does not change saved grid preferences or simplify axes. Page size
 and margin edits alone never rearrange content. Non-target panels and loose
 content remain in place, including any resulting overlap or clipping.
 
-All panel targets must be distinct, on this canvas, unlocked and free-layout;
+Panel layout-operation targets must be distinct, on this canvas, unlocked and free-layout;
 locked children reject a panel edit. Hidden explicit targets remain addressable. Turn off native Auto height before
 exact page/layout authoring.
 Dimensions must be finite/positive; page size is 10–1000 mm, margins/gutter are
@@ -857,6 +860,78 @@ Execute returns the same result in `ToolResult.value`. Both operations reuse the
 same permission/context/revision checks and one-use plans as other figure edits;
 one Undo restores the batch's frames and asset references, Redo restores the
 same identities and frozen image. Inspect/render the committed state afterwards.
+
+## Delete exact content or selected Series
+
+Ask the agent: “Delete this duplicate note and this redundant curve, keeping the
+other curve with the same name.” Discover the complete canvas/content targets
+and plot-owned Series targets first. Do not identify them by name, row index,
+visible trace number or the current GUI selection.
+
+Use a deletion-only `figure.edit` batch on one canvas:
+
+```json
+{"tool_id":"figure.edit","expected_project_context":"PROJECT_CONTEXT","expected_revision":12,"parameters":{
+  "canvas":{"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "edits":[
+    {"op":"content_delete","target":{"resource":{"id":"CANVAS_UUID/CONTENT_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"CONTENT_ID"}}},
+    {"op":"series_delete","target":{"resource":{"id":"CANVAS_UUID/PLOT_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"PLOT_ID"},"component":{"kind":"series","id":2}}}
+  ]
+}}
+```
+
+`content_delete` removes one whole native plot, text, raster or existing
+rect/ellipse/line/arrow shape. Deleting a plot does not delete its source Dataset.
+`panel_delete` takes a complete Panel target and requires it to be empty in the
+original state. Deleting all its children in the same batch does not make a
+nonempty panel eligible. Content deletion retains the empty parent panel and
+does not reflow siblings.
+
+`series_delete` removes only the exact SeriesId inside its owning plot. It
+supports line/scatter plots with explicit column bindings and an established
+coordinate contract, including bindings to derived tables. The last Series
+cannot be removed: use an explicit `content_delete` to remove the whole plot.
+Table-default bindings and dynamic multi-channel displays are rejected; this
+operation never materializes, rebinds or edits a Dataset. Remaining Series keep
+their identities, sources, order, encodings, coordinate units and manual ranges,
+including when the first Series is deleted.
+
+Duplicate targets, a whole plot plus any of its Series, cross-canvas targets,
+locked targets/parents, and mixing deletion with non-deletion edits reject the
+whole batch. Hidden exact targets remain eligible. A locked sibling is not a
+reason to reject an unrelated deletion. Native automatic page height remains
+enabled if it was enabled; its derived height is reported, not silently disabled.
+
+Read `preflight.figure_plan.deleted` and `result.deleted_targets` before executing.
+`result.deletions` includes parent/order information and all owned Series removed
+with a plot. `parent_changes`, `group_changes`, `viewport_link_changes` and
+`selection_change` list necessary relationship updates; group/link changes retain
+surviving members or remove a relationship that has fewer than two members.
+`remaining_series` reports the surviving order and active Series identity, `retained_asset_ids` lists the
+assets referenced by removed raster content, and `auto_height` reports derived
+before/after heights when enabled. These are metadata, not a candidate image.
+Execute returns the same deletion manifest in `ToolResult.value`.
+
+Planning commits nothing. One successful execute is one atomic Undo/Redo;
+invalid batches leave no partial deletion. Undo restores exact identities,
+parents, object/panel order, groups, links and necessary selection. Identity
+allocator high-water marks never move backwards. No original file, Dataset or
+asset is deleted. Runtime Undo retains embedded assets; saving uses the existing
+reachable-asset policy, and reopening a project does not restore Undo history.
+
+The existing modify permission, project-context/revision checks and one-use
+plan rules apply. A selection change that alters the reported deletion effect
+also requires a new preflight, even though GUI selection does not advance the
+revision. Up to 200 explicit deletion targets, 2,000,000 remaining curve-row
+visits per Series candidate batch, 32 shared pending plans and the complete
+256 KiB response budget apply. Oversized manifests fail rather than truncate.
+Target/contract failures return `invalid_parameters` with the reason;
+`stale_revision`, `project_changed`, `permission_denied`, `expired_plan`,
+`plan_limit` and `response_too_large` retain their existing meanings.
+
+After an unknown execute outcome, rediscover the current context, revision and
+exact targets before planning again; do not replay deletion automatically. View
+the committed PNG, then use native Undo/Redo and save/reopen to check the result.
 
 ## Read the actual canvas image
 

@@ -64,6 +64,7 @@ mod curve_binding;
 mod curve_candidate;
 mod curve_extract;
 mod curve_service;
+mod figure_delete;
 mod figure_edit;
 mod figure_edit_content;
 mod figure_edit_image;
@@ -303,6 +304,10 @@ mod display_tests;
 
 #[cfg(test)]
 mod figure_content_tests;
+#[cfg(test)]
+mod figure_delete_asset_tests;
+#[cfg(test)]
+mod figure_delete_tests;
 #[cfg(test)]
 mod figure_edit_tests;
 

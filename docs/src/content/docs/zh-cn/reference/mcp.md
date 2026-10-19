@@ -606,6 +606,9 @@ Series 身份和来源绑定。编辑或 Undo/Redo 后先读取最新 revision�
 | `panel_frame` | `target: 完整面板目标`、`frame_pt: [x,y,宽,高]`，页面 pt |
 | `content_frame` | `target: 完整内容目标`、完整 `frame_pt: [x,y,宽,高]`，父局部 pt；只改该内容 |
 | `image_replace` | `target: 完整 raster 目标`、`path`；以冻结的本地 PNG/JPEG 仅替换资产引用 |
+| `content_delete` | `target: 完整内容目标`；删除内容并保留空父 panel |
+| `panel_delete` | `target: 完整 Panel 目标`；要求原始状态已为空 |
+| `series_delete` | `target: 完整 Series 目标`；删除非末条显式 Series |
 | `panel_label` | `target`、`text`、`visible`；写入原生手动面板标签，保留位置和字号 |
 | `align` | `panels: [完整面板目标,...]`、`edge: left\|center\|right\|top\|middle\|bottom`；至少两个面板 |
 | `distribute` | `panels`、`axis: horizontal\|vertical`；至少三个面板 |
@@ -717,6 +720,58 @@ preserve_aspect。其他旧资产引用不变。保留的 crop/fit 可能使新�
 执行在 `ToolResult.value` 返回同一结果。两项沿用原有权限、context/revision 屏障和
 一次性计划；一次 Undo 恢复整批 frame／资产引用，Redo 恢复同一身份和冻结图片。
 提交后重新读取并查看实际图像。
+
+## 精确删除内容或指定 Series
+
+可以要求 Agent：“删除这段重复说明和这条冗余曲线，保留另一条同名曲线。”先发现完整
+canvas/content 目标及所属 plot 的 Series 目标，不用名称、下标、显示 trace 序号或 GUI 当前选中项定位。
+
+使用限定一个 canvas、只包含删除操作的 `figure.edit` 批次：
+
+```json
+{"tool_id":"figure.edit","expected_project_context":"PROJECT_CONTEXT","expected_revision":12,"parameters":{
+  "canvas":{"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "edits":[
+    {"op":"content_delete","target":{"resource":{"id":"CANVAS_UUID/CONTENT_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"CONTENT_ID"}}},
+    {"op":"series_delete","target":{"resource":{"id":"CANVAS_UUID/PLOT_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"PLOT_ID"},"component":{"kind":"series","id":2}}}
+  ]
+}}
+```
+
+`content_delete` 删除一份完整原生 plot、text、raster 或已有 rect/ellipse/line/arrow shape。
+删 plot 不删来源 Dataset。`panel_delete` 接收完整 Panel 目标，要求预检原始状态已为空；
+同批先删全部子内容不能让非空 panel 变成合法目标。删除内容保留空父 panel，不重排兄弟。
+
+`series_delete` 只删除所属 plot 内的指定 SeriesId。支持有既定坐标合同和显式列绑定的
+line/scatter plot，包括绑定派生表的 Series。拒绝删除末条 Series；移除整图须明确使用
+`content_delete`。拒绝 table_default 和动态多通道显示，不自动物化、换绑或修改 Dataset。
+剩余 Series 的身份、来源、顺序、encoding、坐标单位和手动范围保留，删除首条也不重新定义坐标。
+
+重复目标、整 plot 与其 Series 重叠、跨 canvas、目标或父级锁定，以及删除和非删除操作混批
+均整批拒绝。隐藏目标仍可精确寻址，锁定兄弟不阻碍无关删除。原有 Auto height 开启时保留
+该设置，预检报告其原生派生高度变化，不擅自关闭。
+
+执行前检查 `preflight.figure_plan.deleted` 和 `result.deleted_targets`。
+`result.deletions` 包含父级、顺序及随整 plot 移除的全部所属 Series。
+`parent_changes`、`group_changes`、`viewport_link_changes`、`selection_change` 列出必要
+关系更新；分组/链接保留幸存成员，不足两个成员时解除该关系。
+`remaining_series` 给出剩余顺序和 active Series 身份，`retained_asset_ids` 列出被删 raster 所引用但保留的资产，
+`auto_height` 在开启时给出派生前后高度。这些是元数据，不是候选图像。
+执行回执 `ToolResult.value` 返回同一删除清单。
+
+预检不提交。一次成功执行对应一次原子 Undo/Redo，失败不半删除。Undo 恢复精确身份、父级、
+对象/面板顺序、分组、链接和必要选择；ID 分配高水位不回退。不删除原文件、Dataset 或资产。
+运行期 Undo 保留嵌入资产；保存沿既有可达资产策略，重开项目不恢复 Undo 历史。
+
+沿用修改权限、project context/revision 和一次性 plan 规则。GUI 选择不推进 revision，
+但若变化会改变预检列出的删除选择影响，也须重新规划。每批最多 200 个显式删除目标；
+Series 候选批次最多访问 200 万剩余 curve-row；共享最多 32 个 pending plans，完整响应
+不超过 256 KiB。清单超限拒绝，不截断后执行。目标或合同错误返回带原因的
+`invalid_parameters`；`stale_revision`、`project_changed`、`permission_denied`、
+`expired_plan`、`plan_limit`、`response_too_large` 沿用原含义。
+
+执行结果未知时先重新发现当前 context、revision 和精确目标，不自动重放删除。
+提交后查看实际 PNG，再用原生 Undo/Redo、保存重开核对结果。
 
 ## 读取实际画布图像
 

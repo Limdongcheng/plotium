@@ -138,28 +138,23 @@ impl PlotiumApp {
         canvas: usize,
         panel: PanelId,
     ) -> Result<Action, PanelActionError> {
-        let before = self.panel_state(canvas)?;
-        let mut page = self.doc.canvases[canvas].clone();
-        let index = page
-            .panels
-            .iter()
-            .position(|value| value.id == panel)
+        let source = self
+            .doc
+            .canvases
+            .get(canvas)
+            .ok_or(PanelActionError::MissingCanvas(canvas))?;
+        let removed = source
+            .panel(panel)
             .ok_or(PanelActionError::MissingPanel(panel))?;
-        let removed = page.panels.remove(index);
-        page.objects
-            .retain(|item| !removed.item_order.contains(&item.id));
-        page.groups.retain_mut(|group| {
-            group.members.retain(|member| match member {
-                crate::state::GroupMember::Panel(id) => *id != panel,
-                crate::state::GroupMember::Content(id) => !removed.item_order.contains(id),
-            });
-            group.members.len() > 1
-        });
-        Ok(Action::ReplacePanelState {
-            canvas,
-            before,
-            after: PanelState::of(&page),
-        })
+        let mut page = source.clone();
+        super::deletion::remove_members(
+            &mut page,
+            &removed.item_order.iter().copied().collect(),
+            &std::collections::BTreeSet::from([panel]),
+        );
+        page.validate_structure()
+            .map_err(PanelActionError::Invalid)?;
+        Ok(Action::delete_candidate(self, canvas, &page))
     }
 
     pub fn move_content_to_panel_action(

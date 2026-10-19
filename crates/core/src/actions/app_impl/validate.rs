@@ -54,6 +54,9 @@ pub(super) fn validate_action(
                 }
             }
         }
+        Action::DeleteFigureTargets { change } => change
+            .validate(app)
+            .map_err(ActionApplyError::InvalidValue)?,
         Action::ReplacePanelState {
             canvas,
             before,

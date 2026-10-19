@@ -375,3 +375,6 @@ mod save_tests;
 mod guide_fixture;
 #[cfg(test)]
 mod guide_tests;
+
+#[cfg(test)]
+mod deletion_tests;
