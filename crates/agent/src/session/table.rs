@@ -49,7 +49,7 @@ impl Session {
             ));
         }
         ensure_idle(app)?;
-        if self.plans.len() + self.saves.len() >= 32 || self.imports.len() >= 4 {
+        if self.pending_plan_count() >= 32 || self.imports.len() >= 4 {
             return Err(Failure::new(
                 "plan_limit",
                 "Execute a pending plan or restart the connection; at most four prepared imports are retained",

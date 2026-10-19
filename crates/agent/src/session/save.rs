@@ -35,7 +35,7 @@ impl Session {
                 "Document revision changed; reread state",
             ));
         }
-        if self.plans.len() + self.saves.len() >= 32 {
+        if self.pending_plan_count() >= 32 {
             return Err(Failure::new("plan_limit", "Execute a pending plan first"));
         }
         let params: Parameters = decode(args.parameters)?;
@@ -126,5 +126,6 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.revoke_saves();
+        self.revoke_exports();
     }
 }

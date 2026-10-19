@@ -114,7 +114,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
         ("plotium_properties_list", "List supported display property definitions: schema, units, scope and static applicability. Does not create a run record.", json!({}), json!([])),
         ("plotium_properties_inspect", "Read property values, defaults, bounds and applicability.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "key": key}), json!(["expected_revision", "key"])),
         ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": crate::capabilities::EDIT_OPERATIONS}, "parameters": {"type": "object", "description": "Core arguments: rename {name}; properties.set {key,value}; properties.reset {key}; data.import {mode:table_data_only,paths,header?,format?,schema?,schema_path?}; plot.series.bind {edits:[{target,source:{dataset_id,field_id,table_id,table_revision,x_column_id,y_column_id,y_error_column_id}}]}; plot.series.materialize_default {edits:[{target,retain_y_column_id,table_revision}]}. plot.series.append {plot:TargetRef,series:[{kind,source:TableCurveSource}]} appends to an existing explicit-coordinate plot. plot.create {parent:TargetRef,name,canvas?:{name,size_mm},panel_name?,series:[{kind:line|scatter,source:TableCurveSource}]}. data.transform {mode:table_data_only,name,plan:RelPlanV1,memory_limit_bytes?} requires one DatasetId in ids. figure.edit {canvas:TargetRef,edits:[{op:page|panel_frame|panel_label|align|distribute|grid|text_create|text_set|image_create,...}]} uses exact targets inside edits; discover complete schema in operation_constraints. Import, figure, creation and binding edits omit top-level ids/targets. table.patch {table_revision,edits:[{row_id,column_id,value:{kind,value?}}]} and table.refresh {table_revision,memory_limit_bytes?} each require exactly one DatasetId in ids. Full schemas are in get_state.connection_capabilities.operation_constraints."}}), json!(["expected_revision", "tool_id", "parameters"])),
-        ("plotium_execute", "Submit a saved plan once. Edits require reversible-modify permission. project.save queues separate per-request desktop file authorization; poll plotium_save_status for completion. Saving is not undoable.", json!({"plan_id": {"type": "string"}}), json!(["plan_id"])),
+        ("plotium_execute", "Submit a saved plan once. Edits require reversible-modify permission. project.save queues separate per-request desktop file authorization; poll plotium_save_status for completion. figure.export requests separate desktop authorization; poll plotium_export_status for per-file completion. External writes are not undoable.", json!({"plan_id": {"type": "string"}}), json!(["plan_id"])),
     ].into_iter().map(|(name, description, properties, required)| {
         let mut schema = json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
         if matches!(name, "plotium_properties_inspect" | "plotium_plan") {
@@ -132,6 +132,8 @@ pub(crate) fn definitions() -> Vec<Tool> {
             schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"data.import"},"parameters":plotium_core::automation::table_import_schema()}}));
             for index in 0..2 { schema["oneOf"][index]["properties"]["tool_id"]["not"]["enum"].as_array_mut().expect("local exclusions").push(json!("project.save")); }
             schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"project.save"},"parameters":crate::session::save::schema()}}));
+            for index in 0..2 { schema["oneOf"][index]["properties"]["tool_id"]["not"]["enum"].as_array_mut().expect("local exclusions").push(json!("figure.export")); }
+            schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"figure.export"},"parameters":plotium_core::export::figure_export_schema()}}));
             schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"figure.edit"},"parameters":plotium_core::automation::figure_edit_schema()}}));
             for (id, params) in [("table.patch", plotium_core::automation::table_patch_schema()), ("table.refresh", plotium_core::automation::table_refresh_schema())] {
                 for index in 0..2 { schema["oneOf"][index]["properties"]["tool_id"]["not"]["enum"].as_array_mut().expect("local exclusions").push(json!(id)); }
@@ -168,6 +170,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
         tools.push(Tool::new(name,"Read native table data at explicit document and table revisions; no selection fallback.",schema.as_object().expect("local schema").clone()));
     }
     tools.push(Tool::new("plotium_save_status", "Read a retained desktop save receipt after submission or reconnect, without an audit mutation. Queued/running is not success. Never replay an unknown save.", json!({"type":"object","additionalProperties":false,"required":["save_id"],"properties":{"save_id":{"type":"string"}}}).as_object().expect("local schema").clone()));
+    tools.push(Tool::new("plotium_export_status", "Read retained per-file native export receipts without an audit mutation, including after reconnect. Never replay unknown exports.", json!({"type":"object","additionalProperties":false,"required":["export_id"],"properties":{"export_id":{"type":"string"}}}).as_object().expect("local schema").clone()));
     for tool in &mut tools {
         if !matches!(
             tool.name.as_ref(),
@@ -175,6 +178,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
                 | "plotium_execute"
                 | "plotium_properties_list"
                 | "plotium_save_status"
+                | "plotium_export_status"
         ) {
             let schema = std::sync::Arc::make_mut(&mut tool.input_schema);
             schema
@@ -249,7 +253,7 @@ mod tests {
             assert_eq!(schema["oneOf"][1]["required"], json!(["targets"]));
             assert_eq!(schema["oneOf"][1]["not"], json!({"required":["ids"]}));
             if tool.name == "plotium_plan" {
-                assert_eq!(schema["oneOf"].as_array().unwrap().len(), 12);
+                assert_eq!(schema["oneOf"].as_array().unwrap().len(), 13);
                 assert_eq!(
                     schema["oneOf"][2]["properties"]["parameters"]["properties"]["mode"]["const"],
                     "table_data_only"

@@ -67,7 +67,7 @@ fn session_discovery_walks_to_exact_series_and_preserves_original_tools() {
             .as_array()
             .unwrap()
             .len(),
-        12
+        13
     );
     let execute = state["connection_capabilities"]["tools"]
         .as_array()
@@ -78,7 +78,7 @@ fn session_discovery_walks_to_exact_series_and_preserves_original_tools() {
     assert_eq!(execute["currently_permitted"], true);
     assert_eq!(
         execute["required_permission"],
-        "operation_specific: reversible_modify or per_request_desktop_save_authorization"
+        "operation_specific: reversible_modify or per_request_desktop_save/export_authorization"
     );
     s.allow_modify = true;
     let state = s.call(&mut app, "plotium_get_state", json!({})).unwrap();
@@ -200,12 +200,7 @@ fn static_definitions_and_connection_gate_are_the_same_supported_subset() {
     let context = app.session.project_context;
     let mut s = Session::default();
     let revision = app.doc.automation_revision;
-    for operation in [
-        "data.import",
-        "render.preview",
-        "figure.export",
-        "document.inspect",
-    ] {
+    for operation in ["data.import", "render.preview", "document.inspect"] {
         assert_eq!(s.call(&mut app,"plotium_plan",json!({"expected_project_context":context,"expected_revision":revision,"ids":["document"],"tool_id":operation,"parameters":{}})).unwrap_err().code,"unsupported_operation");
     }
 }

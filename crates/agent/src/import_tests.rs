@@ -226,7 +226,7 @@ fn schema_discovery_permissions_and_unexposed_core_tools_are_precise() {
     let context = app.session.project_context;
     let state = s.call(&mut app, "plotium_get_state", json!({})).unwrap();
     let caps = &state["connection_capabilities"];
-    assert_eq!(caps["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(caps["tools"].as_array().unwrap().len(), 13);
     assert_eq!(caps["limits"]["table_read"]["max_rows"], 1000);
     assert_eq!(caps["limits"]["table_import"]["files"], 16);
     assert_eq!(
@@ -241,18 +241,16 @@ fn schema_discovery_permissions_and_unexposed_core_tools_are_precise() {
         caps["limits"]["table_import"]["preflight_response_bytes"],
         256 * 1024
     );
-    for tool in ["figure.export", "processing.apply_scheme"] {
-        assert_eq!(
-            s.call(
-                &mut app,
-                "plotium_plan",
-                json!({"expected_project_context":context,"expected_revision":0,"ids":["document"],"tool_id":tool,"parameters":{}})
-            )
-            .unwrap_err()
-            .code,
-            "unsupported_operation"
-        );
-    }
+    assert_eq!(
+        s.call(
+            &mut app,
+            "plotium_plan",
+            json!({"expected_project_context":context,"expected_revision":0,"ids":["document"],"tool_id":"processing.apply_scheme","parameters":{}})
+        )
+        .unwrap_err()
+        .code,
+        "unsupported_operation"
+    );
     let f = Input::new();
     s.allow_modify = true;
     let mut args = arguments(&f, 0, context);

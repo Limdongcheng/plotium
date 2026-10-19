@@ -8,7 +8,9 @@ pub(super) fn render(svgs: &[String]) -> Result<Vec<u8>, ExportError> {
         return svg2pdf::to_pdf(
             &tree,
             svg2pdf::ConversionOptions::default(),
-            svg2pdf::PageOptions::default(),
+            // usvg resolves physical SVG units to CSS pixels (96/in), not
+            // PDF points. Match the multi-page placement below.
+            svg2pdf::PageOptions { dpi: 96.0 },
         )
         .map_err(|error| ExportError::Pdf(error.to_string()));
     }

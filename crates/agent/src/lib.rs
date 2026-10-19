@@ -236,6 +236,7 @@ impl Connection {
     }
     pub fn stop(&mut self) {
         self.session.revoke_saves();
+        self.session.revoke_exports();
         self.active.store(false, Ordering::Release);
         self.cancel.cancel();
         self.requests.close();
@@ -363,5 +364,7 @@ mod figure_edit_tests;
 #[cfg(test)]
 mod table_update_tests;
 
+#[cfg(test)]
+mod export_tests;
 #[cfg(test)]
 mod save_tests;
