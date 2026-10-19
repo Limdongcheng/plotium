@@ -35,6 +35,13 @@ impl PlotiumApp {
     }
 
     pub fn new_with_settings(settings: crate::settings::Settings) -> Self {
+        Self::with_compute(settings, ComputeService::new())
+    }
+
+    pub(crate) fn with_compute(
+        settings: crate::settings::Settings,
+        compute: ComputeService,
+    ) -> Self {
         Self {
             doc: SharedDocument::new(Document {
                 datasets: Vec::new(),
@@ -81,7 +88,7 @@ impl PlotiumApp {
                     // is what keeps the default reachable as a lifecycle stage.
                     ..Default::default()
                 },
-                compute: ComputeService::new(),
+                compute,
                 phase_preview: Default::default(),
                 data_imports: DataImports::default(),
                 updates: crate::update::UpdateService::new(&settings.updates),

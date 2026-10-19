@@ -59,6 +59,11 @@ pub struct Connection {
     lease: Option<discovery::Lease>,
     activity: Arc<std::sync::Mutex<Activity>>,
     preview: Option<preview::PreviewFlight>,
+    retiring_preview: Option<
+        std::thread::JoinHandle<
+            Result<plotium_core::automation::ToolResult, plotium_core::automation::AutomationError>,
+        >,
+    >,
     diagnostic: Option<diagnostics::DiagnosticFlight>,
     import: Option<imports::ImportFlight>,
     transform: Option<transforms::TransformFlight>,
@@ -159,6 +164,7 @@ impl Connection {
             worker: Some(worker),
             session,
             preview: None,
+            retiring_preview: None,
             diagnostic: None,
             import: None,
             transform: None,
@@ -199,6 +205,7 @@ impl Connection {
             }
             if let Some(flight) = self.preview.take() {
                 flight.cancellation.cancel();
+                self.retiring_preview = Some(flight.worker);
                 if flight
                     .request
                     .response
@@ -262,7 +269,10 @@ impl Connection {
         if let Some(flight) = self.diagnostic.take() {
             flight.cancel("connection_stopped");
         }
-        self.preview = None;
+        if let Some(flight) = self.preview.take() {
+            flight.cancellation.cancel();
+        }
+        self.retiring_preview = None;
         self.import = None;
         if let Some(flight) = self.transform.take() {
             flight.cancel.store(true, Ordering::Relaxed);
@@ -391,3 +401,12 @@ mod deletion_tests;
 
 #[cfg(test)]
 mod diagnostic_tests;
+
+#[cfg(test)]
+mod candidate_tests;
+
+#[cfg(test)]
+mod candidate_lifecycle_tests;
+
+#[cfg(test)]
+mod candidate_fixture;

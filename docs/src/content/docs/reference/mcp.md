@@ -93,7 +93,7 @@ are outside this interface.
 ## Discover structure without relying on names
 
 Start with `plotium_get_state {}`. Its `connection_capabilities` describes this
-connection's fourteen tools, input schemas, result contracts, supported operations,
+connection's fifteen tools, input schemas, result contracts, supported operations,
 property IDs, limits and current execution permission. Standard MCP `tools/list`
 also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability listed on a resource
@@ -1088,6 +1088,72 @@ assets for asset-budget overflow. Invalid full identities return
 Only one preview renders per connection; another returns `busy`. Other existing
 tools remain available while rendering. Cancellation or stopping the connection
 prevents image delivery; stopping or switching projects discards the old job.
+
+## Preview a plan before committing it
+
+After `plotium_plan`, call `plotium_preview_plan` with the **same** plan ID,
+context and revision, and one affected whole-canvas target:
+
+```json
+{
+  "plan_id": "RETURNED_PLAN_ID",
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "target": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "max_edge": 1440
+}
+```
+
+The response contains an actual MCP PNG image block. `ToolResult.value` contains
+`plan_id`, `basis_project_context`, `basis_revision`, `candidate: true`, `target`,
+`width_px`, `height_px`, `mime_type` and `output` (`size_mm`, `size_pt`, `max_edge`).
+There is no `render_revision`: this image has not been committed. The read's
+`before_revision` and `after_revision` both identify the baseline. Read the image,
+then explicitly call `plotium_execute` with the original `plan_id`. Finally read
+`plotium_render_preview` and fresh `plotium_figure_diagnose` results. Candidate
+preview does not introduce candidate diagnostics or an automatic repair loop.
+Keep diagnostic `measurement_basis`, `coverage` and `unsupported` records:
+estimated text bounds are not glyph ink, and a potential legend conflict is not
+proof of occlusion.
+
+| Existing plan | Candidate support |
+| --- | --- |
+| `properties.set` / `properties.reset` | The five `object.guides.*` properties above, including their native multi-target batch |
+| `figure.edit` local edits | `content_frame`, `image_replace`, `text_set`, including native batches |
+| `figure.edit` deletion-only batch | `content_delete`, originally empty `panel_delete`, explicit-column `series_delete`; all existing refusal rules remain |
+| Other operations, including save/export | `unsupported_operation`; their normal execution contract is unchanged |
+
+Affected canvases must use ordinary line/scatter plots, native text, shapes and
+raster content; previews do not launch scientific computations. A cross-canvas
+guide plan applies its complete batch to the disposable native context; request
+each affected canvas separately. It is still one plan and one Undo step.
+Automatic axes, guide dependencies and derived page height use the native action
+and renderer, not a second layout model. With identical baseline, settings and
+fonts, candidate content and geometry match execution. Cross-machine font or
+renderer differences are not a pixel-equivalence guarantee.
+
+Candidate reads require **Read and modify**, checked at capture and background
+delivery alongside context, revision, idle state and the still-pending plan.
+Revocation and regrant during rendering also prevent delivery. Preview neither
+consumes the plan nor extends its lifetime or grants execution permission.
+Ordinary edit plans have no wall-clock TTL; they share the 32-plan session cap
+and are cleared on context/connection changes. Submitted plans are single-use,
+including failed submissions. `expired_plan` means absent/consumed;
+`stale_revision`, `project_changed`, `permission_denied`, `busy`,
+`request_cancelled` and the image errors above describe other refusals.
+After a human edit or project change, rediscover and replan. Never replay an
+outcome-unknown execute after a disconnect.
+
+Preview borrows frozen inputs and image bytes, without rereading a replacement
+path, allocating planned identities or executing then undoing the live document.
+It does not change authored content, data, bindings, selection, history, automation
+revision or persistent assets. Its existing read audit marks dirty and retains
+metadata, **not PNG bytes**. No candidate file or cache is created. Candidate and
+committed previews share the single rendering slot, cancellation and image budgets
+above. Candidate construction additionally rejects a native snapshot estimate over
+64 MiB (canvas geometry, source field dimensions at 64 bytes/element, metadata and
+frozen assets); this estimate is not a process-memory ceiling. Cancelled project
+work retains the slot until the bounded renderer exits.
 
 ## Position a plot's legend precisely
 

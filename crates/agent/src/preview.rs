@@ -9,6 +9,7 @@ pub(crate) struct PreviewFlight {
     pub(super) run: PreparedToolRun,
     pub(super) request: PendingRequest,
     pub(super) cancellation: CancellationToken,
+    pub(super) candidate: Option<crate::session::CandidateTicket>,
 }
 impl Connection {
     /// Dispatch all requests through one desktop entry point. Existing tools
@@ -44,7 +45,10 @@ impl Connection {
         if request.name == "plotium_figure_diagnose" {
             return self.dispatch_diagnostic(app, request, blocked);
         }
-        if request.name != "plotium_render_preview" {
+        if !matches!(
+            request.name.as_str(),
+            "plotium_render_preview" | "plotium_preview_plan"
+        ) {
             let result = self.session.call_when_available(
                 app,
                 &request.name,
@@ -53,7 +57,7 @@ impl Connection {
             );
             return respond(request, result);
         }
-        if self.preview.is_some() {
+        if self.preview.is_some() || self.retiring_preview.is_some() {
             return respond(
                 request,
                 Err(Failure::new(
@@ -62,12 +66,18 @@ impl Connection {
                 )),
             );
         }
-        let prepared = self
-            .session
-            .prepare_preview(app, request.arguments.clone(), blocked);
+        let prepared = if request.name == "plotium_preview_plan" {
+            self.session
+                .prepare_candidate(app, request.arguments.clone(), blocked)
+                .map(|(s, r, t)| (s, r, Some(t)))
+        } else {
+            self.session
+                .prepare_preview(app, request.arguments.clone(), blocked)
+                .map(|(s, r)| (s, r, None))
+        };
         match prepared {
             Err(error) => respond(request, Err(error)),
-            Ok((snapshot, run)) => {
+            Ok((snapshot, run, candidate)) => {
                 // A project switch cancels this child without cancelling the
                 // HTTP request that must carry its project_changed response.
                 let cancellation = request.cancellation.child_token();
@@ -81,7 +91,10 @@ impl Connection {
                         {
                             return Err(AutomationError::PreviewCancelled);
                         }
-                        snapshot.render()
+                        snapshot.render_cancellable(|| {
+                            worker_cancellation.is_cancelled()
+                                || !active.load(std::sync::atomic::Ordering::Acquire)
+                        })
                     });
                 match worker {
                     Ok(worker) => {
@@ -90,6 +103,7 @@ impl Connection {
                             run,
                             request,
                             cancellation,
+                            candidate,
                         });
                         Ok(())
                     }
@@ -109,7 +123,24 @@ impl Connection {
         }
     }
     pub fn poll_preview(&mut self, app: &mut PlotiumApp) -> Result<(), Failure> {
+        self.poll_preview_when_available(app, false)
+    }
+    pub fn poll_preview_when_available(
+        &mut self,
+        app: &mut PlotiumApp,
+        blocked: bool,
+    ) -> Result<(), Failure> {
         self.synchronize_project(app);
+        if self
+            .retiring_preview
+            .as_ref()
+            .is_some_and(|w| w.is_finished())
+        {
+            // Invalidated work has no consumer; retain its slot until the bounded renderer exits.
+            if let Some(worker) = self.retiring_preview.take() {
+                let _outcome = worker.join();
+            }
+        }
         if !self
             .preview
             .as_ref()
@@ -120,7 +151,17 @@ impl Connection {
         let Some(flight) = self.preview.take() else {
             return Ok(());
         };
-        let cancelled = flight.request.is_cancelled();
+        let cancelled = flight.request.is_cancelled()
+            || flight
+                .request
+                .transport
+                .as_ref()
+                .is_some_and(|p| p.is_transport_closed());
+        let delivery = flight
+            .candidate
+            .as_ref()
+            .map(|t| self.session.check_candidate_delivery(app, t, blocked))
+            .transpose();
         let outcome = match flight.worker.join() {
             Ok(_) if cancelled => Err(AutomationError::PreviewCancelled),
             Ok(outcome) => outcome,
@@ -128,6 +169,15 @@ impl Connection {
                 "preview worker failed; retry or reopen the project".into(),
             )),
         };
+        if let Err(error) = delivery {
+            // Never write an old-project audit into the newly opened project.
+            if error.code != "project_changed" {
+                flight
+                    .run
+                    .finish(app, &Err(AutomationError::Execution(error.message.clone())))?;
+            }
+            return respond(flight.request, Err(error));
+        }
         if let Err(error) = flight.run.finish(app, &outcome) {
             return respond(flight.request, Err(error.into()));
         }

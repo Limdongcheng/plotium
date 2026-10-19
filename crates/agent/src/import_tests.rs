@@ -227,7 +227,7 @@ fn schema_discovery_permissions_and_unexposed_core_tools_are_precise() {
     let context = app.session.project_context;
     let state = s.call(&mut app, "plotium_get_state", json!({})).unwrap();
     let caps = &state["connection_capabilities"];
-    assert_eq!(caps["tools"].as_array().unwrap().len(), 14);
+    assert_eq!(caps["tools"].as_array().unwrap().len(), 15);
     assert_eq!(caps["limits"]["table_read"]["max_rows"], 1000);
     assert_eq!(caps["limits"]["table_import"]["files"], 16);
     assert_eq!(

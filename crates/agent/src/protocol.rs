@@ -47,7 +47,10 @@ impl ServerHandler for Handler {
             .into());
         }
         let (response, mut receive) = oneshot::channel();
-        let image_request = request.name == "plotium_render_preview";
+        let image_request = matches!(
+            request.name.as_ref(),
+            "plotium_render_preview" | "plotium_preview_plan"
+        );
         let diagnostic_request = request.name == "plotium_figure_diagnose";
         let pending = PendingRequest {
             name: request.name.into_owned(),
@@ -165,6 +168,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
         {"required":["cursor"],"not":{"anyOf":[{"required":["canvas"]},{"required":["output"]},{"required":["checks"]},{"required":["targets"]},{"required":["overlap_targets"]},{"required":["view"]},{"required":["limit"]}]}}
     ]);
     tools.push(Tool::new("plotium_figure_diagnose", "Read native figure geometry and potential issues at explicit physical size. Coverage is mandatory: no issues is not proof of full coverage. Follow one-use continuation with the same context/revision; a new initial query replaces the previous scan. Audit summaries mark dirty without changing revision.", diagnostic.as_object().expect("local schema").clone()));
+    tools.push(Tool::new("plotium_preview_plan", "Read an uncommitted candidate PNG for one existing local edit plan. Does not execute or consume the plan. Requires current context, revision, reversible-modify permission and valid plan at capture and delivery. Use plotium_execute explicitly afterwards.", plotium_core::automation::plan_preview_schema().as_object().expect("local schema").clone()));
     let mut preview = plotium_core::automation::image_preview_schema();
     preview["properties"]["expected_revision"] = json!({"type":"integer","minimum":0});
     preview["required"] = json!(["expected_revision", "target"]);

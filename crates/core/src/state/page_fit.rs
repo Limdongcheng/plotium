@@ -132,26 +132,37 @@ impl PlotiumApp {
     /// history with follow-up entries.
     pub fn reconcile_page_fit(&mut self) {
         for ci in 0..self.doc.canvases.len() {
-            let canvas = &mut self.doc.canvases[ci];
-            if let Some(id) = canvas.size_preset_id.as_deref()
-                && !preset_by_id(id).is_some_and(|preset| preset.matches(canvas.size_mm))
-            {
-                canvas.size_preset_id = None;
-                self.mark_document_dirty();
-            }
-            let canvas = &self.doc.canvases[ci];
-            if !canvas.auto_height {
-                continue;
-            }
-            let Some(target) = auto_height_mm(canvas) else {
-                continue;
-            };
-            if (target - canvas.size_mm[1]).abs() > 0.05 {
-                self.doc.canvases[ci].size_mm[1] = target;
-                self.rebuild_canvas(ci);
+            let before = self.doc.canvases[ci].size_mm;
+            if self.doc.canvases[ci].reconcile_derived_page_size() {
+                if self.doc.canvases[ci].size_mm != before {
+                    self.rebuild_canvas(ci);
+                }
                 self.mark_document_dirty();
             }
         }
+    }
+}
+
+impl CanvasDocument {
+    /// Derived geometry only; a snapshot can reconcile without touching the live document.
+    pub(crate) fn reconcile_derived_page_size(&mut self) -> bool {
+        let mut changed = false;
+        if self
+            .size_preset_id
+            .as_deref()
+            .is_some_and(|id| !preset_by_id(id).is_some_and(|p| p.matches(self.size_mm)))
+        {
+            self.size_preset_id = None;
+            changed = true;
+        }
+        if self.auto_height
+            && let Some(height) = auto_height_mm(self)
+            && (height - self.size_mm[1]).abs() > 0.05
+        {
+            self.size_mm[1] = height;
+            changed = true;
+        }
+        changed
     }
 }
 

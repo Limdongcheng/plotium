@@ -1,6 +1,8 @@
 //! Desktop-thread capability boundary. No project state crosses the bridge.
 use std::collections::HashMap;
+mod candidate;
 mod export;
+pub(crate) use candidate::CandidateTicket;
 mod guides;
 #[cfg(test)]
 mod plan_budget_tests;
@@ -96,6 +98,7 @@ impl From<&AutomationError> for Failure {
 #[derive(Default)]
 pub struct Session {
     pub allow_modify: bool,
+    permission_epoch: u64,
     pub(crate) diagnostic: Option<crate::diagnostics::RetainedScan>,
     context: Option<plotium_core::state::ProjectContextId>,
     plans: HashMap<String, ToolPlan>,
@@ -296,6 +299,13 @@ impl Session {
         }
         if name == "plotium_figure_diagnose" {
             return self.call_diagnostic(app, arguments, blocked);
+        }
+        if name == "plotium_preview_plan" {
+            let (snapshot, run, ticket) = self.prepare_candidate(app, arguments, blocked)?;
+            let outcome = snapshot.render();
+            self.check_candidate_delivery(app, &ticket, blocked)?;
+            run.finish(app, &outcome)?;
+            return Ok(json!(outcome?));
         }
         if name == "plotium_render_preview" {
             let (snapshot, run) = self.prepare_preview(app, arguments, blocked)?;

@@ -136,7 +136,7 @@ impl AgentConnections {
                     format!("AI request failed ({}): {}", error.code, error.message);
                 self.error = Some(app.session.status.clone());
             }
-            if let Err(error) = connection.poll_preview(app) {
+            if let Err(error) = connection.poll_preview_when_available(app, blocked) {
                 app.session.status =
                     format!("AI request failed ({}): {}", error.code, error.message);
                 self.error = Some(app.session.status.clone());

@@ -157,22 +157,38 @@ pub(super) fn execute(
     let definition = requested_definition(&tool_id, &plan.request.parameters)?;
     match tool_id.as_str() {
         TOOL_INSPECT => inspect(app, plan, definition, compatible),
-        TOOL_SET => {
-            let params: PropertyWriteParams = parse(&tool_id, plan.request.parameters.clone())?;
-            let value = decode_value(&tool_id, definition, &params.value)?;
-            let commit = app
-                .plan_property_write(definition.id, &compatible, &value)
-                .map_err(|error| property_error(&tool_id, error))?;
-            commit_and_report(app, plan, commit, "set")
-        }
-        TOOL_RESET => {
-            let commit = app
-                .plan_property_reset(definition.id, &compatible)
-                .map_err(|error| property_error(&tool_id, error))?;
-            commit_and_report(app, plan, commit, "reset to its default")
+        TOOL_SET | TOOL_RESET => {
+            let commit = prepare_commit(app, plan, &compatible)?;
+            commit_and_report(
+                app,
+                plan,
+                commit,
+                if tool_id == TOOL_SET {
+                    "set"
+                } else {
+                    "reset to its default"
+                },
+            )
         }
         _ => Err(AutomationError::UnknownTool(tool_id)),
     }
+}
+
+pub(super) fn prepare_commit(
+    app: &PlotiumApp,
+    plan: &ToolPlan,
+    targets: &[TargetRef],
+) -> Result<crate::properties::PropertyCommit, AutomationError> {
+    let tool = plan.request.tool_id.as_str();
+    let definition = requested_definition(tool, &plan.request.parameters)?;
+    let commit = if tool == TOOL_SET {
+        let params: PropertyWriteParams = parse(tool, plan.request.parameters.clone())?;
+        let value = decode_value(tool, definition, &params.value)?;
+        app.plan_property_write(definition.id, targets, &value)
+    } else {
+        app.plan_property_reset(definition.id, targets)
+    };
+    commit.map_err(|e| property_error(tool, e))
 }
 
 fn inspect(
