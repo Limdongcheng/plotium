@@ -24,6 +24,14 @@ pub enum FigureEdit {
         target: TargetRef,
         frame_pt: [f32; 4],
     },
+    ContentFrame {
+        target: TargetRef,
+        frame_pt: [f32; 4],
+    },
+    ImageReplace {
+        target: TargetRef,
+        path: std::path::PathBuf,
+    },
     PanelLabel {
         target: TargetRef,
         text: String,
@@ -263,7 +271,9 @@ impl PlotiumApp {
             && params.edits.iter().any(|e| {
                 !matches!(
                     e,
-                    FigureEdit::PanelLabel { .. } | FigureEdit::TextSet { .. }
+                    FigureEdit::PanelLabel { .. }
+                        | FigureEdit::TextSet { .. }
+                        | FigureEdit::ImageReplace { .. }
                 )
             })
         {
@@ -275,7 +285,8 @@ impl PlotiumApp {
         let mut created = Vec::new();
         let mut input_bytes = 0usize;
         let mut image_count = 0;
-        for edit in &params.edits {
+        let mut content_edits = Vec::new();
+        for (edit_index, edit) in params.edits.iter().enumerate() {
             match edit {
                 FigureEdit::Page {
                     size_mm,
@@ -301,6 +312,26 @@ impl PlotiumApp {
                 FigureEdit::PanelFrame { target, frame_pt } => {
                     let id = panel_id(&page, target)?;
                     author_frame(&mut page, id, frame(*frame_pt)?)?;
+                    modified.push(target.clone());
+                }
+                FigureEdit::ContentFrame { target, frame_pt } => {
+                    content_edits.push(super::figure_edit_content::set_frame(
+                        &mut page, target, *frame_pt, edit_index,
+                    )?);
+                    modified.push(target.clone());
+                }
+                FigureEdit::ImageReplace { target, path } => {
+                    let id = super::figure_edit_content::image_target(&page, target)?;
+                    let asset = super::figure_edit_image::freeze_image(
+                        &self.doc.assets,
+                        &mut assets,
+                        path,
+                        &mut input_bytes,
+                        &mut image_count,
+                    )?;
+                    content_edits.push(super::figure_edit_content::replace_image(
+                        &mut page, id, target, &asset, edit_index,
+                    )?);
                     modified.push(target.clone());
                 }
                 FigureEdit::PanelLabel {
@@ -440,24 +471,14 @@ impl PlotiumApp {
                     frame_pt,
                     path,
                 } => {
-                    image_count += 1;
-                    if image_count > 8 {
-                        return Err("At most 8 local images per batch.".into());
-                    }
-                    let candidate =
-                        super::figure_edit_image::prepare_image(path, &mut input_bytes)?;
-                    let id = self
-                        .doc
-                        .assets
-                        .iter()
-                        .find_map(|(id, a)| (a.sha256 == candidate.sha256).then_some(*id))
-                        .or_else(|| {
-                            assets.iter().find_map(|a: &AssetRecord| {
-                                (a.sha256 == candidate.sha256).then_some(a.id)
-                            })
-                        })
-                        .unwrap_or(candidate.id);
-                    let image = RasterImageContent::new(id);
+                    let asset = super::figure_edit_image::freeze_image(
+                        &self.doc.assets,
+                        &mut assets,
+                        path,
+                        &mut input_bytes,
+                        &mut image_count,
+                    )?;
+                    let image = RasterImageContent::new(asset.id);
                     created.push(insert(
                         &mut page,
                         parent,
@@ -465,9 +486,6 @@ impl PlotiumApp {
                         *frame_pt,
                         ContentKind::RasterImage(image),
                     )?);
-                    if id == candidate.id {
-                        assets.push(candidate);
-                    }
                 }
             }
         }
@@ -477,7 +495,8 @@ impl PlotiumApp {
             validate_frame(o.frame, "content")?;
         }
         let panel_frames=page.panels.iter().map(|p|json!({"target":TargetRef::resource(panel_resource(&page,p)),"frame_pt":[p.frame.x,p.frame.y,p.frame.width,p.frame.height]})).collect::<Vec<_>>();
-        let result = json!({"canvas":params.canvas,"size_mm":page.size_mm,"margin_mm":page.layout.margin_mm,"gutter_mm":page.layout.gutter_mm,"panel_frames":panel_frames,"created":created,"modified":modified,"frame_contract":"Panel frames are page-relative pt; resizing proportionally scales child-local frames. New content frames are parent-local pt (page pt for canvas parent). No automatic reflow."});
+        let content_frames = super::figure_edit_content::final_frames(&page, &params.edits)?;
+        let result = json!({"canvas":params.canvas,"size_mm":page.size_mm,"margin_mm":page.layout.margin_mm,"gutter_mm":page.layout.gutter_mm,"panel_frames":panel_frames,"content_edits":content_edits,"content_frames":content_frames,"created":created,"modified":modified,"frame_contract":"Panel frames are page-relative pt; resizing proportionally scales child-local frames. Content frames are parent-local pt (page pt for canvas parent); content_frame changes only the specified item. No automatic reflow."});
         Ok(FigureEditPlan {
             expected_revision: revision,
             canvas: params.canvas.clone(),

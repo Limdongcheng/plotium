@@ -1,6 +1,6 @@
 //! Bounded explicit local raster input; the existing native asset store owns bytes.
-use super::AssetId;
-use super::AssetRecord;
+use super::{AssetId, AssetRecord};
+use std::collections::BTreeMap;
 use std::{io::Read, path::Path};
 pub(super) fn prepare_image(path: &Path, total: &mut usize) -> Result<AssetRecord, String> {
     if !path.is_absolute() {
@@ -44,4 +44,44 @@ pub(super) fn prepare_image(path: &Path, total: &mut usize) -> Result<AssetRecor
         pixel_size: [probe.width, probe.height],
         bytes,
     })
+}
+
+/// Metadata for a frozen, deduplicated asset. Encoded bytes stay in the native
+/// store or in the candidate's asset actions, never in the protocol response.
+pub(super) struct FrozenImageRef {
+    pub id: AssetId,
+    pub format: String,
+    pub pixel_size: [u32; 2],
+}
+
+pub(super) fn freeze_image(
+    existing: &BTreeMap<AssetId, AssetRecord>,
+    pending: &mut Vec<AssetRecord>,
+    path: &Path,
+    total: &mut usize,
+    count: &mut usize,
+) -> Result<FrozenImageRef, String> {
+    *count += 1;
+    if *count > 8 {
+        return Err("At most 8 local images per batch, including creation and replacement.".into());
+    }
+    let candidate = prepare_image(path, total)?;
+    let id = existing
+        .iter()
+        .find_map(|(id, a)| (a.sha256 == candidate.sha256).then_some(*id))
+        .or_else(|| {
+            pending
+                .iter()
+                .find_map(|a| (a.sha256 == candidate.sha256).then_some(a.id))
+        })
+        .unwrap_or(candidate.id);
+    let frozen = FrozenImageRef {
+        id,
+        format: candidate.format.clone(),
+        pixel_size: candidate.pixel_size,
+    };
+    if id == candidate.id {
+        pending.push(candidate);
+    }
+    Ok(frozen)
 }

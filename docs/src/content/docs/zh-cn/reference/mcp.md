@@ -599,6 +599,8 @@ Series 身份和来源绑定。编辑或 Undo/Redo 后先读取最新 revision�
 | --- | --- |
 | `page` | 至少提供 `size_mm: [宽,高]`、`margin_mm: [上,右,下,左]`、`gutter_mm` 之一，均为 mm |
 | `panel_frame` | `target: 完整面板目标`、`frame_pt: [x,y,宽,高]`，页面 pt |
+| `content_frame` | `target: 完整内容目标`、完整 `frame_pt: [x,y,宽,高]`，父局部 pt；只改该内容 |
+| `image_replace` | `target: 完整 raster 目标`、`path`；以冻结的本地 PNG/JPEG 仅替换资产引用 |
 | `panel_label` | `target`、`text`、`visible`；写入原生手动面板标签，保留位置和字号 |
 | `align` | `panels: [完整面板目标,...]`、`edge: left\|center\|right\|top\|middle\|bottom`；至少两个面板 |
 | `distribute` | `panels`、`axis: horizontal\|vertical`；至少三个面板 |
@@ -643,7 +645,7 @@ GUI 已有子集 Grid 按钮；使用当前页面边距／gutter，不修改已�
 字节、字号 1–72 pt；名称／手动标签最多 1024 字节且不得空白。每批 1–200 项，
 每次布局最多 200 个面板。
 
-图片预检仅读取明确指定的绝对路径普通文件：每批最多 8 张、每文件编码大小 1 MiB、
+图片预检仅读取明确指定的绝对路径普通文件：每批最多 8 次图片输入（创建与替换合计，重复输入也计数）、每文件编码大小 1 MiB、
 每批编码合计 4 MiB，每张解码 RGBA8 最多 4 MiB。PNG/JPEG 探测和解码复用原生 I/O；
 预检冻结字节，提交后嵌入原生资产库，不依赖外部路径，相同编码资产复用。资产缺失、
 损坏或格式不支持使整批以 `invalid_parameters` 及明确资产错误拒绝。不扫描目录、
@@ -656,6 +658,60 @@ Read and modify。失败执行也消费一次性计划；沿用 32 个计划及 
 一次 Undo 恢复整批，Redo 恢复同一原生内容／资产身份。执行响应丢失后先检查拟建目标，
 不能盲目重复创建。可继续用普通 GUI Geometry、文字和图片 inspector 编辑，并查看
 实际 PNG；原生文字 frame 过小时可能裁切，布局不自动消除冲突。
+
+## 移动已有内容或原位换图
+
+需要扩宽已有说明框，或只替换两份共享资产图片中的一份时，先用
+`plotium_document_inspect(view:"self")` 读取该内容。复制完整目标，不用名称、选择状态
+或集合位置；使用当前 context/revision 预检 `figure.edit`，例如：
+
+```json
+[
+  {"op":"content_frame","target":{"resource":{"id":"CANVAS_UUID/CONTENT_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"CONTENT_ID"}},"frame_pt":[12,18,140,30]},
+  {"op":"image_replace","target":{"resource":{"id":"CANVAS_UUID/IMAGE_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"IMAGE_ID"}},"path":"/absolute/local/replacement.png"}
+]
+```
+
+将数组放入 `parameters.edits`，同级 `parameters.canvas` 使用发现的完整画布目标，
+不传顶层 `ids/targets`。示例为两个不同内容；移动并替换同一图片时重复其完整目标。
+文字内容／字号仍用 `text_set`。
+
+`content_frame` 支持 plot、text、raster 及已有 rect/ellipse/line/arrow，不创建或
+改父级。输入必须是完整 frame，不是相对增量。面板内使用父局部 pt，页直属使用页面
+pt；左上原点，X 向右、Y 向下。读取新增完整 `parent`、`frame_space`、原生平移换算的
+`page_frame` 和 `geometry` 限制。位置允许超出面板／页面，不自动钳制或吸附。
+分量及换算边界须有限，宽高至少 1 pt；不改变 GUI 拖拽下限。
+
+只改目标内容：父级、兄弟 frame／顺序，plot 的绑定、Series 身份、来源、单位、
+手动轴范围和样式，以及文字内容／字号均保留。目标和父级须解锁，父面板须为 Free
+布局，Auto height 须关闭；无关兄弟锁定不阻止编辑。`geometry.frame_editable` 和
+`frame_edit_error` 返回原生限制，与连接修改权限独立。
+
+图片 `preserve_aspect:true` 保持**现有 frame 比例**，不是替换图片的像素比例。
+复用原生算法：宽／高相对缩放中与 1 偏离较大者决定等比缩放（相等时取宽），并满足
+1 pt 下限；请求 X/Y 固定为左上锚点。预检明确返回可能不同的 `requested_frame_pt`
+与 `effective_frame_pt`。`geometry` 同时提供 `min_size_pt`、`preserve_aspect`、
+`aspect_ratio`。`fit` 独立控制框内 contain/cover/stretch。
+
+`image_replace` 仅赋值目标 AssetId，保留 ContentId、父级、frame、z-order、名称、
+可见性及全部图片属性：`page_index`、crop、fit、90°步进旋转、opacity、interpolation、
+preserve_aspect。其他旧资产引用不变。保留的 crop/fit 可能使新图呈现不同，不自动清空
+设置。PNG/JPEG 要求既有 `page_index=0`；非零页整批拒绝，不静默归零。换图要求目标／
+父级解锁，但不要求 Free 布局或关闭 Auto height；`image.replaceable`、`replace_error`
+返回适用性。
+
+创建和替换共享上述图片预算、字节冻结、编码资产去重、嵌入及 Undo 生命周期。
+预检后改动／删除源文件不影响候选或 Redo，不回写源文件、不回收资产。坏文件、不支持
+格式、错误／失效目标、锁定或无效几何均拒绝整批。
+
+`preflight.figure_plan.result.content_edits` 按输入顺序逐项提供 `edit_index`、`op`、
+`target`、`parent`、`frame_space`、`before_frame_pt`、`effective_frame_pt`、`page_frame`
+和 `geometry`；frame 修改另有 `requested_frame_pt`，换图另有 `asset_change`，包含
+前后 AssetId（`before/after`）、`format` 和 `pixel_size`。这些值表示该编辑步骤的状态。
+`result.content_frames` 返回各不同目标在整批完成后的最终几何，包含后续显式父面板缩放的影响。
+执行在 `ToolResult.value` 返回同一结果。两项沿用原有权限、context/revision 屏障和
+一次性计划；一次 Undo 恢复整批 frame／资产引用，Redo 恢复同一身份和冻结图片。
+提交后重新读取并查看实际图像。
 
 ## 读取实际画布图像
 
