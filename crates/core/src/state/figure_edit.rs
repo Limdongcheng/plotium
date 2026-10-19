@@ -111,6 +111,30 @@ pub struct FigureEditPlan {
     #[serde(skip)]
     pub(super) assets: Vec<AssetRecord>,
 }
+impl FigureEditPlan {
+    pub(crate) fn is_deletion(&self) -> bool {
+        self.deletion.is_some()
+    }
+    pub(crate) fn preview_payload_bytes(&self) -> usize {
+        let objects = if let Some(c) = &self.candidate {
+            &c.objects
+        } else if let Some(d) = &self.deletion {
+            &d.after.objects
+        } else {
+            return 0;
+        };
+        objects
+            .iter()
+            .fold(0usize, |n, o| {
+                n.saturating_add(2048).saturating_add(match &o.kind {
+                    ContentKind::Plot(p) => crate::automation::candidate_figure_cost(p.figure()),
+                    ContentKind::Text(t) => t.text.len(),
+                    _ => 0,
+                })
+            })
+            .saturating_add(self.assets.iter().map(|a| a.bytes.len()).sum::<usize>())
+    }
+}
 impl std::fmt::Debug for FigureEditPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("FigureEditPlan").field(&self.result).finish()
@@ -531,15 +555,29 @@ impl PlotiumApp {
             assets,
         })
     }
+    pub(crate) fn validate_figure_edit_preview(&self, plan: &FigureEditPlan) -> Result<(), String> {
+        if plan.expected_revision.0 != self.doc.automation_revision {
+            return Err("Document revision is stale".into());
+        }
+        if let Some(change) = &plan.deletion {
+            change.check_selection(self)?;
+        } else if plan.candidate.is_none() {
+            return Err("Frozen candidate is unavailable".into());
+        }
+        Ok(())
+    }
     pub fn commit_figure_edit(&mut self, plan: FigureEditPlan) -> Result<(), String> {
+        let action = self.figure_edit_action(plan)?;
+        self.try_execute_action(action).map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn figure_edit_action(&self, plan: FigureEditPlan) -> Result<Action, String> {
         if plan.expected_revision.0 != self.doc.automation_revision {
             return Err("Document revision is stale.".into());
         }
         if let Some(mut change) = plan.deletion {
             change.recheck_selection(self)?;
-            return self
-                .try_execute_action(Action::DeleteFigureTargets { change })
-                .map_err(|e| e.to_string());
+            return Ok(Action::DeleteFigureTargets { change });
         }
         let page = plan
             .candidate
@@ -578,8 +616,7 @@ impl PlotiumApp {
                 after: after_layout,
             });
         }
-        self.try_execute_action(Action::Composite(actions))
-            .map_err(|e| e.to_string())
+        Ok(Action::Composite(actions))
     }
 }
 fn apply_frames(

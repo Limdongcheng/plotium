@@ -310,6 +310,22 @@ impl ComputeService {
         }
     }
 
+    pub(crate) fn inactive() -> Self {
+        let (job_tx, _) = std::sync::mpsc::channel();
+        let (_, done_rx) = std::sync::mpsc::channel();
+        Self {
+            job_tx,
+            done_rx,
+            next_gen: 0,
+            latest: HashMap::new(),
+            active: HashMap::new(),
+            deferred_processing: HashMap::new(),
+            completed_processing: Vec::new(),
+            field_runtime: FieldRuntime::default(),
+            failures: Vec::new(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn enqueue_ilt(
         &mut self,

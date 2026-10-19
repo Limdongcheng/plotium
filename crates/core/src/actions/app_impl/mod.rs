@@ -59,6 +59,11 @@ impl PlotiumApp {
         Ok(())
     }
 
+    pub(crate) fn apply_preview_action(&mut self, action: &Action) -> Result<(), ActionApplyError> {
+        validate_action(self, action, &mut ValidationShape::from_app(self))?;
+        self.apply_action(action)
+    }
+
     pub fn undo(&mut self) {
         self.finish_pending_wheel_zoom(f64::INFINITY, true);
         self.finish_pending_wheel_property(f64::INFINITY, true);

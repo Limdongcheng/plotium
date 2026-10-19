@@ -95,6 +95,7 @@ impl Session {
     /// itself can be requested in either access mode with fresh desktop consent.
     pub fn set_allow_modify(&mut self, allow: bool) {
         if self.allow_modify != allow {
+            self.permission_epoch = self.permission_epoch.wrapping_add(1);
             self.revoke_exports();
         }
         self.allow_modify = allow;

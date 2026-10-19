@@ -276,6 +276,21 @@ parents and source data remain; removing the last Series is rejected. An empty
 panel can be deleted explicitly, but nonempty panels cannot cascade through MCP.
 See [exact deletion and refusal rules](/reference/mcp/#delete-exact-content-or-selected-series).
 
+### Inspect a proposed correction before applying it
+
+Ask “Discover the exact objects, read diagnostics and the actual PNG, then propose
+the smallest local correction. For **every** plan, show and inspect its candidate
+PNG before explicitly executing that same plan; afterward read the real PNG and
+fresh diagnostics. Preserve my data, units, manual ranges, other same-name objects,
+and intentional clipping or overlap. Do not shrink text or hide data to clear warnings.”
+
+Candidate preview supports native guide edits, content geometry, image replacement,
+text updates and exact deletion. It needs **Read and modify**, but leaves authored
+state and Undo/Redo untouched; the normal read audit can still mark the project
+unsaved. If you edit while the agent is reviewing a candidate, its old plan must be
+replaced. One execution remains one native Undo step. See the [support matrix and
+candidate metadata](/reference/mcp/#preview-a-plan-before-committing-it).
+
 ### Deliver the editable project and final figures
 
 Have the agent import CSV/TSV and check explicit units, then create line-with-error

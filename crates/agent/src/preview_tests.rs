@@ -290,6 +290,7 @@ fn worker_failure_reaches_client_and_leaves_a_failed_run() {
     connection.preview = Some(crate::preview::PreviewFlight {
         worker: std::thread::spawn(|| panic!("controlled renderer failure")),
         run,
+        candidate: None,
         cancellation: request.cancellation.child_token(),
         request,
     });

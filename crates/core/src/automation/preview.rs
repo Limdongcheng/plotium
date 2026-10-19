@@ -110,6 +110,7 @@ pub struct ImagePreviewSnapshot {
     target: TargetRef,
     revision: DocumentRevision,
     max_edge: u32,
+    candidate: Option<super::candidate_preview::CandidateIdentity>,
 }
 impl ImagePreviewSnapshot {
     /// Call on the desktop before releasing access to live state. Only referenced
@@ -140,6 +141,23 @@ impl ImagePreviewSnapshot {
                 .map_err(|e| invalid(&format!("Explicit curve unavailable: {e}")))?;
             }
         }
+        Self::capture_canvas(c, &app.doc.assets, params, plan.frozen_targets.revision)
+    }
+
+    pub(crate) fn capture_canvas(
+        c: &CanvasDocument,
+        assets: &BTreeMap<AssetId, AssetRecord>,
+        params: ImagePreviewParams,
+        revision: DocumentRevision,
+    ) -> Result<Self, AutomationError> {
+        if params.max_edge == 0 {
+            return Err(invalid("max_edge must be positive"));
+        }
+        check_budget(
+            params.max_edge as u64,
+            PREVIEW_MAX_EDGE as u64,
+            "max_edge exceeds 2048 px",
+        )?;
         let [w, h] = c.size_pt();
         if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
             return Err(invalid("canvas dimensions must be finite and positive"));
@@ -154,7 +172,7 @@ impl ImagePreviewSnapshot {
             .collect::<BTreeSet<_>>();
         let mut bytes = 0usize;
         for id in &ids {
-            let a = app.doc.assets.get(id).ok_or_else(|| {
+            let a = assets.get(id).ok_or_else(|| {
                 AutomationError::PreviewAsset(format!(
                     "asset {id} is missing; replace it before previewing"
                 ))
@@ -167,22 +185,49 @@ impl ImagePreviewSnapshot {
             )?;
         }
         Ok(Self {
-            canvas: c.clone(),
+            canvas: {
+                let mut c = c.clone();
+                c.reconcile_derived_page_size();
+                c
+            },
             assets: ids
                 .into_iter()
-                .map(|id| (id, app.doc.assets[&id].clone()))
+                .map(|id| (id, assets[&id].clone()))
                 .collect(),
             target: params.target,
-            revision: plan.frozen_targets.revision,
+            revision,
+            candidate: None,
             max_edge: params.max_edge,
         })
     }
+    pub(crate) fn with_candidate(
+        mut self,
+        identity: super::candidate_preview::CandidateIdentity,
+    ) -> Self {
+        self.candidate = Some(identity);
+        self
+    }
     pub fn render(self) -> Result<ToolResult, AutomationError> {
+        self.render_cancellable(|| false)
+    }
+    pub fn render_cancellable(
+        self,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ToolResult, AutomationError> {
+        let check = || {
+            if cancelled() {
+                Err(AutomationError::PreviewCancelled)
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
         // Probe original headers, not persisted pixel-size hints. This happens
         // before decode and counts each distinct asset page exactly once.
         let mut pages = BTreeSet::new();
         let mut decoded = 0u64;
         for o in &self.canvas.objects {
+            check()?;
             if let CanvasObjectKind::RasterImage(i) = &o.kind {
                 i.validate().map_err(AutomationError::PreviewAsset)?;
                 if !pages.insert((i.asset, i.page_index)) {
@@ -213,9 +258,11 @@ impl ImagePreviewSnapshot {
                 )?;
             }
         }
+        check()?;
         let document =
             prepare_render_document(&self.canvas, &self.assets, MissingImagePolicy::Block)
                 .map_err(|e| AutomationError::PreviewAsset(e.to_string()))?;
+        check()?;
         let svg = plotium_render::svg::export_document(&document);
         check_budget(
             svg.len() as u64,
@@ -231,8 +278,10 @@ impl ImagePreviewSnapshot {
             max_pixels: PREVIEW_MAX_PIXELS,
             max_bytes: PREVIEW_MAX_PIXELS * 4,
         };
+        check()?;
         let raster = rasterize_svg(&svg, [w, h], options)
             .map_err(|e| AutomationError::Execution(e.to_string()))?;
+        check()?;
         let png = raster
             .to_png()
             .map_err(|e| AutomationError::Execution(e.to_string()))?;
@@ -241,12 +290,22 @@ impl ImagePreviewSnapshot {
             PREVIEW_PNG_BYTES as u64,
             "PNG exceeds 4 MiB; request a smaller max_edge",
         )?;
+        check()?;
+        let mut value = json!({"target":self.target,"width_px":raster.width(),"height_px":raster.height(),
+            "mime_type":"image/png","png_base64":base64::engine::general_purpose::STANDARD.encode(png)});
+        if let Some(identity) = self.candidate {
+            value["plan_id"] = json!(identity.plan_id);
+            value["basis_project_context"] = json!(identity.project_context);
+            value["basis_revision"] = json!(self.revision);
+            value["candidate"] = json!(true);
+            value["output"] = json!({"size_mm":self.canvas.size_mm,"size_pt":self.canvas.size_pt(),"max_edge":self.max_edge});
+        } else {
+            value["render_revision"] = json!(self.revision);
+        }
         Ok(super::tool_executors::readonly_value(
             IMAGE_PREVIEW,
             self.revision,
-            json!({
-            "target":self.target,"render_revision":self.revision,"width_px":raster.width(),"height_px":raster.height(),
-            "mime_type":"image/png","png_base64":base64::engine::general_purpose::STANDARD.encode(png)}),
+            value,
         ))
     }
 }

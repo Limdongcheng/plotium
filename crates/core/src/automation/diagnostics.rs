@@ -174,3 +174,7 @@ pub(super) fn freeze(
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn candidate_figure_cost(f: &plotium_figure::Figure) -> usize {
+    capture::figure_cost(f).0
+}

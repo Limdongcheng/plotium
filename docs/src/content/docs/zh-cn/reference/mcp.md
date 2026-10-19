@@ -83,7 +83,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 ## 不依赖名称发现结构
 
 先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
-十四个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+十五个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；资源列出某项能力，不代表此连接已开放该操作。
 这里可预检 `project.save`、`figure.export`、`resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
@@ -898,6 +898,58 @@ stdio 结束时关闭；其他工具仍使用原来的单次调用 transport，�
 `invalid_parameters`，过期 revision 返回 `stale_revision`。
 每连接最多同时渲染一张预览，重复请求返回 `busy`；渲染期间其他已有工具仍可用。
 取消请求或停止连接后不交付图像；停止连接、切换项目会丢弃旧任务。
+
+## 提交前读取计划候选
+
+`plotium_plan` 返回后，用**原** plan ID、context、revision 和一个受影响的完整画布
+target 调用 `plotium_preview_plan`：
+
+```json
+{
+  "plan_id": "RETURNED_PLAN_ID",
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "target": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "max_edge": 1440
+}
+```
+
+响应包含实际 MCP PNG image 内容块。`ToolResult.value` 返回 `plan_id`、
+`basis_project_context`、`basis_revision`、`candidate: true`、`target`、
+`width_px`、`height_px`、`mime_type` 和 `output`（`size_mm`、`size_pt`、`max_edge`）。
+没有 `render_revision`：候选尚未提交。读取结果的 `before_revision` 和 `after_revision`
+均指向基线。实际读图后，再明确以原 `plan_id` 调用 `plotium_execute`；随后读取
+`plotium_render_preview` 和 fresh `plotium_figure_diagnose`。候选预览不增加候选诊断
+或自动修图循环。保留诊断的 `measurement_basis`、`coverage` 和 `unsupported`；
+估计文字边界不是字形墨迹，潜在图例冲突不是已确认遮挡。
+
+| 已有计划 | 候选支持范围 |
+| --- | --- |
+| `properties.set` / `properties.reset` | 上述五个 `object.guides.*` 属性及原生多目标批次 |
+| `figure.edit` 局部编辑 | `content_frame`、`image_replace`、`text_set` 及原生批次 |
+| `figure.edit` 纯删除批次 | `content_delete`、原本为空的 `panel_delete`、显式列绑定 `series_delete`；原拒绝规则不变 |
+| 其他操作，包括保存和导出 | 返回 `unsupported_operation`，不改变其正常 execute 合同 |
+
+受影响画布须使用普通折线／散点、原生文字、形状和栅格内容；预览不启动科学计算。
+跨画布 guide 计划在隔离原生上下文应用完整批次，可逐个请求受影响画布，仍是一个计划、
+一个 Undo 步骤。自动轴、guide 依赖和派生页高复用原生 action 与 renderer，不另建布局模型。
+基线、输出设置和字体相同时，候选内容和几何与 execute 一致；不保证跨机器字体／renderer
+不同情况下的像素相等。
+
+候选读取需要 **Read and modify**；截取和后台交付时均检查 context、revision、空闲状态、
+当前权限及计划仍未提交。渲染中撤权再授权也会阻止交付。预览不消费计划、不延长生命周期、
+不赋予执行权限。普通编辑计划没有时钟 TTL，共享每会话 32 个计划上限，context／连接变化
+会清空。execute 提交只可一次，包括失败提交。`expired_plan` 表示计划不存在或已消费；
+其他拒绝由 `stale_revision`、`project_changed`、`permission_denied`、`busy`、
+`request_cancelled` 及上述图像错误表达。人工编辑或切项目后须重新发现和规划；连接中断后
+不要重放结果未知的 execute。
+
+预览借用冻结输入和图像字节，不重读换图路径、不重分配已规划身份，也不在真实项目执行
+再 Undo。它不改变 authored 内容、数据、绑定、选择、历史、automation revision 或持久
+资产。沿用读审计：dirty 如实增加，只保存元数据，**不保存 PNG 字节**。无候选文件或缓存。
+候选与真实预览共享单个渲染槽、取消和上述图像预算；另以 64 MiB 原生快照估计约束候选
+构造（画布几何、来源字段按每元素 64 字节、元数据及冻结资产），不表示整个进程内存上限。
+切项目取消的任务在有界 renderer 退出前继续占用渲染槽。
 
 ## 精确放置单图图例
 

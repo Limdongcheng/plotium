@@ -67,7 +67,7 @@ fn session_discovery_walks_to_exact_series_and_preserves_original_tools() {
             .as_array()
             .unwrap()
             .len(),
-        14
+        15
     );
     let execute = state["connection_capabilities"]["tools"]
         .as_array()

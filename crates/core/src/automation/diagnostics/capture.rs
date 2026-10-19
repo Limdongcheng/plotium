@@ -359,7 +359,7 @@ pub(super) fn finite(r: Rect) -> bool {
         && r.width > 0.
         && r.height > 0.
 }
-fn figure_cost(f: &plotium_figure::Figure) -> (usize, usize) {
+pub(super) fn figure_cost(f: &plotium_figure::Figure) -> (usize, usize) {
     let mut text = f.title.len() + f.guide_title.len() + f.x.label.len() + f.y.label.len();
     let mut bytes = size_of::<plotium_figure::Figure>();
     for axis in [&f.x, &f.y] {

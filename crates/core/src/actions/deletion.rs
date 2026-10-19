@@ -34,29 +34,38 @@ impl DeleteSelection {
         }
     }
     fn filtered(&self, page: &CanvasDocument) -> Self {
+        self.filtered_members(page.resource_id, &page.objects, &page.panels)
+    }
+    fn filtered_members(
+        &self,
+        canvas: CanvasId,
+        objects: &[ContentItem],
+        panels: &[Panel],
+    ) -> Self {
+        let exists = |id| objects.iter().any(|o| o.id == id);
+        let panel_exists = |id| panels.iter().any(|p| p.id == id);
         let mut after = self.clone();
-        after.selected = self.selected.filter(|id| page.object(*id).is_some());
-        if self.active == Some(page.resource_id) {
+        after.selected = self.selected.filter(|id| exists(*id));
+        if self.active == Some(canvas) {
             let ids: Vec<_> = self
                 .objects
                 .objects()
                 .iter()
                 .copied()
-                .filter(|id| page.object(*id).is_some())
+                .filter(|id| exists(*id))
                 .collect();
             after.objects = if ids.is_empty() {
                 Selection::None
             } else {
                 Selection::Objects(ids)
             };
-            after.layer = self.layer.filter(|id| page.object(*id).is_some());
-            after.lead = self.lead.filter(|id| page.object(*id).is_some());
+            after.layer = self.layer.filter(|id| exists(*id));
+            after.lead = self.lead.filter(|id| exists(*id));
         }
         after.hierarchy = HierarchicalSelection::default();
         for path in self.hierarchy.paths() {
-            if path.canvas != page.resource_id
-                || (path.panel.is_none_or(|id| page.panel(id).is_some())
-                    && path.content.is_none_or(|id| page.object(id).is_some()))
+            if path.canvas != canvas
+                || (path.panel.is_none_or(panel_exists) && path.content.is_none_or(exists))
             {
                 after
                     .hierarchy
@@ -66,7 +75,7 @@ impl DeleteSelection {
         }
         after.label = self
             .label
-            .filter(|(canvas, id)| *canvas != page.resource_id || page.object(*id).is_some());
+            .filter(|(owner, id)| *owner != canvas || exists(*id));
         after
     }
     fn value(&self) -> Value {
@@ -158,19 +167,31 @@ impl DeletionChange {
     }
     /// Selection does not advance the document revision. Recheck only a deletion's
     /// actual selection effect; unrelated live selection must not be overwritten.
-    pub(crate) fn recheck_selection(&mut self, app: &PlotiumApp) -> Result<(), String> {
+    fn current_selection(
+        &self,
+        app: &PlotiumApp,
+    ) -> Result<Option<(DeleteSelection, DeleteSelection)>, String> {
         let ci = app
             .doc
             .canvas_index(self.canvas)
             .ok_or("Deletion canvas disappeared.")?;
-        let mut candidate = app.doc.canvases[ci].clone();
-        candidate.objects.clone_from(&self.after.objects);
-        candidate.panels.clone_from(&self.after.panels);
-        let current = Self::new(app, ci, &candidate);
-        if self.selection_value() != current.selection_value() {
+        let before = DeleteSelection::capture(app, &app.doc.canvases[ci]);
+        let after = before.filtered_members(self.canvas, &self.after.objects, &self.after.panels);
+        let value = if before == after {
+            Value::Null
+        } else {
+            before.change_value(&after)
+        };
+        if self.selection_value() != value {
             return Err("Deletion selection effect changed; preflight again.".into());
         }
-        self.selection = current.selection;
+        Ok((before != after).then_some((before, after)))
+    }
+    pub(crate) fn check_selection(&self, app: &PlotiumApp) -> Result<(), String> {
+        self.current_selection(app).map(|_| ())
+    }
+    pub(crate) fn recheck_selection(&mut self, app: &PlotiumApp) -> Result<(), String> {
+        self.selection = self.current_selection(app)?;
         Ok(())
     }
     pub(crate) fn retain_allocators(&mut self, page: &CanvasDocument) {
