@@ -368,3 +368,8 @@ mod table_update_tests;
 mod export_tests;
 #[cfg(test)]
 mod save_tests;
+
+#[cfg(test)]
+mod guide_fixture;
+#[cfg(test)]
+mod guide_tests;

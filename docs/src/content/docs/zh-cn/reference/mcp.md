@@ -69,6 +69,11 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 | `object.axes.x_display_unit / object.axes.y_display_unit` | 图对象 | 属性查询返回的兼容单位代码 |
 | `object.axes.x_range / object.axes.y_range` | 图对象 | 自动或手动范围对象 |
 | `object.figure.typography.tick_pt / object.figure.typography.label_pt / object.figure.typography.legend_pt` | 图对象 | 1–72 pt |
+| `object.guides.visibility` | 图对象 | `auto`, `show`, `hide` |
+| `object.guides.placement` | 图对象 | `auto`, `inside`, `outside_right`, `outside_bottom`, `custom` |
+| `object.guides.layout` | 图对象 | `auto`, `vertical`, `horizontal` |
+| `object.guides.title` | 图对象 | 文本 |
+| `object.guides.position` | 图对象 | [0,1] 内的 `[x,y]` 或 `null` |
 | `series.contour.line_width` | 图对象＋Series | 0.05–10 pt |
 | `series.contour.count` | 图对象＋Series | 1–256 |
 | `document.figure.typography.tick_pt / document.figure.typography.label_pt` | document | 1–72 pt |
@@ -697,6 +702,70 @@ Read and modify。失败执行也消费一次性计划；沿用 32 个计划及 
 每连接最多同时渲染一张预览，重复请求返回 `busy`；渲染期间其他已有工具仍可用。
 取消请求或停止连接后不交付图像；停止连接、切换项目会丢弃旧任务。
 
+## 精确放置单图图例
+
+Guide 属性使用 `ids:[PLOT_OBJECT_ID]`，不接受 Series 组件。按完整画布/对象身份
+发现目标，不依赖唯一名称。每次用 `properties.set` 设置一个 key/value，检查计划后
+再执行返回的单次 plan ID：
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "tool_id": "properties.set",
+  "ids": ["CANVAS_UUID/OBJECT_ID"],
+  "parameters": {"key":"object.guides.position","value":[0,1]}
+}
+```
+
+`position` 接受恰好两个 [0,1] 内的有限数，或 `null`。坐标表示图例框左上角在
+坐标轴绘图区内可供整个图例框移动的空间中的比例，x 向右、y 向下：
+`origin = plot_origin + [x,y] * max(plot_size - legend_size, 0)`。
+它不是屏幕像素、整页比例或数据坐标。[0,0] 为左上角；能够容纳时，[1,1] 使
+右下角对齐。输出尺寸、图例内容或布局改变时，由 renderer 重新换算。
+
+原生属性及必要联动如下：
+
+- `visibility`：`auto`、`show`、`hide`。Auto 在至少两个原生条目时显示普通图例，
+  Show 允许单条目，Hide 隐藏 guide 而非数据。
+- `placement`：`auto`、`inside`、`outside_right`、`outside_bottom`、`custom`。
+  Custom 保留已有原点，没有则从 [1,0] 开始，同时设置 Inside；其他模式清除自定义原点。
+- `position`：[x,y] 设置 Inside/custom。`null`、position reset、placement Auto
+  和 placement reset 都清除原点及 placement override，与 GUI 双击一致。
+  读取 `null` 仅表示无自定义原点；实际模式由 placement 决定，也可能位于图外。
+- `layout`：`auto`、`vertical`、`horizontal`，保留原生布局规则。
+- `title`：文本；空白文本沿用原生规范化，清除标题 override。
+
+visibility/layout/title 各自只重置自己的 override。位置修改及重置保留这些字段、
+字号、绑定、曲线样式和手动轴范围。同名同色等条目仍按原生规则合并，因此六条曲线
+不一定形成六个图例条目。已有四项属性保留 color scale 行为；二维位置仅适用于
+原生普通图例内容，不受 guide 显示开关限制；无内容时仍可读取/重置保留的原点，
+但不能设置新坐标，也不独立移动 colorbar。
+
+适用属性的查询 readings 增加 `guide_geometry`，包含
+`coordinate_space:"object_local_pt"`、`scale:1`、`plot_rect`、可空的
+`legend_rect`/`color_scale_rect`（x/y/width/height）、`entry_count`、可空的
+`available_travel_pt`、`effective_position`、`fits_plot`（两个尺寸容纳布尔值），
+以及 `not_rendered_reason`（`hidden`、`no_entries`、`auto_single_entry` 或 null）。
+`measurement_basis:"renderer_layout_text_width_estimate"` 表明这是渲染使用的布局框，
+文字宽度沿用原生估算，不是精确字形边界；这里不检测对象/父容器的可见性和裁切。
+实际位置按可移动距离解析，不钳制图外
+placement；零移动距离的轴返回零。guide 隐藏或自动省略时几何返回 null 并说明原因，
+属性值仍保留配置的原点。
+
+图例过大时不静默缩字：相应轴的可移动距离为零，`fits_plot` 为 false，实际位置
+可能不同于请求原点。尺寸能容纳不代表没有裁切或遮挡曲线，仍须查看原生 PNG 及
+最终导出。此信息仅观察 guide 布局，不是全图诊断。
+
+Guide 写入在提交前验证全部显式目标；存在但不适用的目标以 `invalid_parameters`
+拒绝整批，不沿用旧属性的跳过策略；旧属性行为不变。重复 ID 处理一次。每次一个属性、
+最多 200 个 ID、一次 Undo/Redo；标题最多 16,384 UTF-8 字节，结构化响应最多
+256 KiB（超限为 `response_too_large`），继续共享 32 个待执行计划上限。
+形状错误、非有限或越界值返回 `invalid_parameters`。查询仍报告不适用目标。
+只读连接可以查询及预检，execute 需要可撤销修改权限；context/revision 变化、撤权、
+busy 和过期计划保留原有单次生命周期。查询可能写审计记录并标记 dirty，但不改变
+automation revision 或 Undo 历史。能力发现见 `connection_capabilities.guide_contract`。
+
 ## 精确修改显示，不重建图对象
 
 直接使用 `creation.series_defaults[].target`，或通过 `plotium_document_inspect`
@@ -735,7 +804,7 @@ Read and modify。失败执行也消费一次性计划；沿用 32 个计划及 
 - `{"mode":"manual","min":0,"max":10,"unit":"mA"}`：在明确的兼容单位内设置
   有限且递增的范围。`unit:null` 只用于坐标单位未知的图，不能凭显示修改引入单位。
 - 重置**全部**轴设置是另一个原生操作，不是 Auto 的副作用；`properties.reset`
-  只重置指定属性。
+  轴属性 reset 只清除指定 override；guide 原点/placement 按上文的联动规则重置。
 
 显示单位接受属性查询返回的兼容代码，例如 s→ms、mA→A。图对象仍保持 R4 坐标单位契约：
 原始数据、手动范围存储、位移及误差幅度的含义不变；刻度及自动派生的单位文字改变，

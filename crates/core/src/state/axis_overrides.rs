@@ -232,6 +232,17 @@ impl AxisOverrides {
         figure.legend_position = self.legend_position;
     }
 
+    /// A dragged or explicitly positioned legend is always an inside guide.
+    pub fn set_legend_position(&mut self, position: [f32; 2]) {
+        self.guide_placement = Some(plotium_figure::GuidePlacement::Inside);
+        self.legend_position = Some(position);
+    }
+
+    pub fn reset_guide_placement(&mut self) {
+        self.guide_placement = None;
+        self.legend_position = None;
+    }
+
     pub fn normalized(mut self) -> Self {
         self.x_label = normalize_label(self.x_label);
         self.y_label = normalize_label(self.y_label);

@@ -277,8 +277,7 @@ fn update_furniture_drag(app: &mut PlotiumApp, ci: usize, canvas_rect: egui::Rec
                 return;
             };
             let mut overrides = plot_object.axis_overrides.clone();
-            overrides.guide_placement = Some(plotium_figure::GuidePlacement::Inside);
-            overrides.legend_position = Some(position);
+            overrides.set_legend_position(position);
             app.set_axis_overrides_value(ci, object, &overrides);
         }
         FurnitureTarget::RegionLabel {
@@ -356,8 +355,7 @@ fn reset_furniture_position(app: &mut PlotiumApp, ci: usize, hit: FurnitureHit) 
                 return;
             };
             let mut after = before.clone();
-            after.legend_position = None;
-            after.guide_placement = None;
+            after.reset_guide_placement();
             app.execute_action(Action::set_axis_overrides(ci, object, before, after));
             app.session.status = "Restored automatic legend placement.".into();
         }

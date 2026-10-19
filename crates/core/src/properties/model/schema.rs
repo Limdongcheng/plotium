@@ -247,6 +247,8 @@ impl FloatDisplay {
 /// context-free.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueSchema {
+    /// Optional origin within the categorical legend's available travel, 0..=1.
+    NormalizedPosition,
     AxisRange,
     UnitCode,
     Bool,
@@ -305,6 +307,7 @@ impl ValueSchema {
 /// stored: the authoritative value stays in the typed domain model.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyValue {
+    NormalizedPosition(Option<[f64; 2]>),
     AxisRange(AxisRangeValue),
     Bool(bool),
     Text(String),
@@ -318,6 +321,7 @@ pub enum PropertyValue {
 impl PropertyValue {
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::NormalizedPosition(_) => "normalized_position",
             Self::AxisRange(_) => "axis_range",
             Self::Bool(_) => "bool",
             Self::Text(_) => "text",

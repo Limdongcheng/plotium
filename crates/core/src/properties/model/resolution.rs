@@ -143,6 +143,7 @@ pub enum Availability {
 /// capabilities permit, and the bounds and unit that its current state implies.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedSchema {
+    NormalizedPosition,
     AxisRange {
         unit: Option<String>,
         view: [f64; 2],

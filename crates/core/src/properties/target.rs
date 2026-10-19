@@ -362,6 +362,7 @@ pub(crate) fn resolved_schema(
     capabilities: &FieldCapabilities,
 ) -> ResolvedSchema {
     match definition.value_schema {
+        ValueSchema::NormalizedPosition => ResolvedSchema::NormalizedPosition,
         ValueSchema::AxisRange => ResolvedSchema::AxisRange {
             unit: None,
             view: [0., 1.],

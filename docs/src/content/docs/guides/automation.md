@@ -255,6 +255,16 @@ existing files also need explicit replacement confirmation. Saving has separate,
 one-use authorization, is not undoable, and finishes only when the agent receives
 a completed save receipt. Later edits and reads may still be unsaved.
 
+### Refine a legend without changing the data
+
+Ask “On the left panel only, move the legend to its available bottom-left corner,
+keep it vertical and title it Samples. Keep all curves, units and manual ranges.
+Show me the before/after preview; report if the legend cannot fit.” The agent
+should discover the exact plot ID rather than match a duplicate plot name, then
+inspect the native PNG. You can continue dragging the legend in the GUI;
+double-click restores automatic placement. Check Undo/Redo before saving.
+See [guide coordinates and reset rules](/reference/mcp/#position-a-plots-legend-precisely).
+
 ### Deliver the editable project and final figures
 
 Have the agent import CSV/TSV and check explicit units, then create line-with-error
