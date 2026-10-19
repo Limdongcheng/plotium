@@ -125,6 +125,25 @@ impl<'a> ProjectResourceProvider<'a> {
         let (dimensions, units, mut children) = match dataset {
             Dataset::Table(table) => {
                 capabilities.push(cap(CAP_TRANSFORM));
+                let connection = super::table_update::connection_table_freshness(self.app, id);
+                metadata.insert(
+                    "table_mcp_refreshable".into(),
+                    connection.mcp_refreshable.to_string(),
+                );
+                metadata.insert(
+                    "table_mcp_refresh_reason".into(),
+                    connection.mcp_refresh_reason,
+                );
+                let freshness = connection.native;
+                metadata.insert(
+                    "table_freshness".into(),
+                    format!("{:?}", freshness.status).to_lowercase(),
+                );
+                metadata.insert(
+                    "table_refreshable".into(),
+                    freshness.refreshable.to_string(),
+                );
+                metadata.insert("table_freshness_reason".into(), freshness.reason);
                 let snapshot = &table.typed_state.envelope.revision.snapshot;
                 let columns = snapshot
                     .schema

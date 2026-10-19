@@ -179,7 +179,10 @@ pub fn refresh_typed_plan_cancellable(
     understood_extensions: &BTreeSet<String>,
     cancel: &AtomicBool,
 ) -> plotium_data::Result<TypedTableState> {
-    if derived.envelope.revision.reason == RevisionReason::ManualEdit {
+    if matches!(
+        derived.envelope.revision.reason,
+        RevisionReason::ManualEdit | RevisionReason::Rebase
+    ) {
         return refresh_patched_plan(
             derived,
             inputs,
@@ -243,6 +246,10 @@ fn refresh_unpatched_plan(
     let mut revision = refreshed.envelope.revision;
     revision.parents = vec![derived.envelope.revision.id];
     revision.reason = RevisionReason::Refresh;
+    revision.operation.parameters.insert(
+        "memory_limit_bytes".into(),
+        serde_json::json!(memory_limit_bytes),
+    );
     revision.validate()?;
     let mut envelope = derived.envelope.clone();
     envelope.advance(revision)?;
@@ -258,9 +265,29 @@ fn refresh_patched_plan(
     cancel: &AtomicBool,
 ) -> plotium_data::Result<TypedTableState> {
     let (base, patches) = patch_chain(derived)?;
+    // A previously refreshed recipe has parents too. Keep its actual ancestry,
+    // not a new envelope that drops those required revisions (or later patches).
+    let mut base_envelope = derived.envelope.clone();
+    base_envelope.revision = base.clone();
+    let mut ancestors = BTreeSet::new();
+    let mut pending = base.parents.clone();
+    while let Some(id) = pending.pop() {
+        if ancestors.insert(id) {
+            let revision = derived
+                .envelope
+                .history
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or_else(|| {
+                    DataError::PatchConflict("recipe ancestor is absent from history".into())
+                })?;
+            pending.extend(revision.parents.iter().copied());
+        }
+    }
+    base_envelope.history.retain(|r| ancestors.contains(&r.id));
     let refreshed_base = refresh_unpatched_plan(
         &TypedTableState {
-            envelope: TableEnvelopeV1::new(base.clone()),
+            envelope: base_envelope,
             store: derived.store.clone(),
         },
         inputs,
@@ -371,7 +398,10 @@ fn patch_chain(
         .collect::<BTreeMap<_, _>>();
     let mut current = &derived.envelope.revision;
     let mut edits = BTreeMap::new();
-    while current.reason == RevisionReason::ManualEdit {
+    while matches!(
+        current.reason,
+        RevisionReason::ManualEdit | RevisionReason::Rebase
+    ) {
         let Some(plotium_data::RelPlanV1 {
             root: plotium_data::Relation::Patch { edits: patches, .. },
             ..

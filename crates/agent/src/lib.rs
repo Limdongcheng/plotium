@@ -358,3 +358,6 @@ mod rendezvous_tests;
 
 #[cfg(test)]
 mod figure_edit_tests;
+
+#[cfg(test)]
+mod table_update_tests;

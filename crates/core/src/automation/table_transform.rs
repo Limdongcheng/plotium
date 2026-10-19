@@ -54,6 +54,10 @@ pub fn parse_table_transform(value: Value) -> Result<TableTransformParams, Autom
     validation::validate_params(&params)?;
     Ok(params)
 }
+/// The connection's bounded recipe subset; native executors remain unrestricted.
+pub(super) fn validate_connection_plan(plan: &RelPlanV1) -> Result<(), AutomationError> {
+    validation::validate_plan(plan)
+}
 pub struct TableTransformSnapshot {
     params: TableTransformParams,
     input_id: DatasetId,

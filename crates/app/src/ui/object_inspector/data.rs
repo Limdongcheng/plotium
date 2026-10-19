@@ -282,9 +282,9 @@ pub(super) fn data_section(app: &mut PlotiumApp, ci: usize, object: ObjectId, ui
 
     let candidates = app.stack_candidates(&binding);
     if binding.coordinates.is_some() {
-        ui.weak(
-            "Column rebinding edits existing curves; adding default fields is unavailable here.",
-        );
+        if super::curve_append::show(app, ci, object, ui) {
+            return;
+        }
     } else if app.series_stackable(&binding) {
         if candidates.is_empty() {
             ui.weak("No other datasets to stack.");

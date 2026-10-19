@@ -1,4 +1,4 @@
-use super::{CurveFitReference, StoredCurveFitAnalysis, TableDataset, TypedTableState};
+use super::{StoredCurveFitAnalysis, TableDataset, TableSeriesBinding, TypedTableState};
 use plotium_data::{ColumnId, RevisionId, RowId};
 
 /// Incremental typed cell transaction. Undo and redo switch immutable
@@ -11,7 +11,8 @@ pub struct TableEditDelta {
     before_typed: TypedTableState,
     after_typed: Option<TypedTableState>,
     before_curve_fit_analyses: Vec<StoredCurveFitAnalysis>,
-    before_series_fits: Vec<Option<CurveFitReference>>,
+    before_x_binding: Option<ColumnId>,
+    before_series_bindings: Vec<TableSeriesBinding>,
     pub typed_diagnostic: Option<String>,
 }
 
@@ -33,11 +34,8 @@ impl TableEditDelta {
             before_typed: dataset.typed_state.clone(),
             after_typed: Some(dataset.typed_state.clone()),
             before_curve_fit_analyses: dataset.curve_fit_analyses.clone(),
-            before_series_fits: dataset
-                .series_bindings
-                .iter()
-                .map(|binding| binding.fit.clone())
-                .collect(),
+            before_x_binding: dataset.x_binding,
+            before_series_bindings: dataset.series_bindings.clone(),
             typed_diagnostic: None,
         }
     }
@@ -93,7 +91,16 @@ impl TableEditDelta {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.typed_values.is_empty()
+        self.before_revision == self.after_revision && self.typed_diagnostic.is_none()
+    }
+
+    /// Adopt a prepared native revision through the same undo/analysis boundary
+    /// used by the sheet editor. The caller has already checked its base revision.
+    pub fn from_revision(dataset: &TableDataset, after: TypedTableState) -> Self {
+        let mut delta = Self::new_dataset(dataset);
+        delta.after_revision = after.envelope.revision.id;
+        delta.after_typed = Some(after);
+        delta
     }
 
     pub fn typed_state(&self, forward: bool) -> Option<TypedTableState> {
@@ -104,17 +111,16 @@ impl TableEditDelta {
         }
     }
 
-    pub(crate) fn restore_curve_fits(&self, dataset: &mut TableDataset) {
+    pub(crate) fn restore_presentation(&self, dataset: &mut TableDataset) {
+        // Native refresh may retire schema-bound presentation fields. Undo must
+        // restore those bindings together with their old revision and analyses.
+        dataset.x_binding = self.before_x_binding;
+        dataset
+            .series_bindings
+            .clone_from(&self.before_series_bindings);
         dataset
             .curve_fit_analyses
             .clone_from(&self.before_curve_fit_analyses);
-        for (binding, fit) in dataset
-            .series_bindings
-            .iter_mut()
-            .zip(&self.before_series_fits)
-        {
-            binding.fit.clone_from(fit);
-        }
     }
 
     fn build_revision(&self) -> plotium_data::Result<TypedTableState> {
@@ -143,7 +149,9 @@ impl TableEditDelta {
 mod tests {
     use super::*;
     use crate::actions::Action;
-    use crate::state::{Dataset, FloatSeries, PlotiumApp, materialized_float_series_table};
+    use crate::state::{
+        CurveFitReference, Dataset, FloatSeries, PlotiumApp, materialized_float_series_table,
+    };
 
     #[test]
     fn cell_edit_writes_only_a_new_typed_revision() {

@@ -33,7 +33,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 ## 权限与支持范围
 
 支持的修改使用 Plotium 的 **Undo** 与 **Redo**。只读立即阻止后续修改执行，包括
-待执行计划；表格读取及属性预检仍可用，导入、原生曲线绑定、创建及处理预检要求读取和
+待执行计划；表格读取及属性预检仍可用，导入、原生曲线绑定、创建及处理／补丁／刷新预检要求读取和
 修改权限。权限会记住，直到手动更改。
 
 项目查询及计划创建须同时提交 `expected_revision` 和 `expected_project_context`，
@@ -46,7 +46,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 实际 agent 项目读取和执行保存运行记录，使项目进入未保存状态；握手、工具发现、
 已认证状态查询、每五秒心跳及静态属性目录查询均不生成记录。
 
-连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理和
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理、单元格补丁、已存配方显式刷新和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 | 取值 |
@@ -75,8 +75,8 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
 这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
-`data.import`／`data.transform` 模式、`figure.edit`、`plot.create` 及 `plot.series.bind`／`plot.series.materialize_default`。
-只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理预检和所有修改执行。
+`data.import`／`data.transform` 模式、`table.patch`、`table.refresh`、`figure.edit`、`plot.create` 及 `plot.series.append`／`plot.series.bind`／`plot.series.materialize_default`。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理／补丁／刷新预检和所有修改执行。
 
 使用返回的 revision 列举文档画布：
 
@@ -324,8 +324,117 @@ DatasetId、TableId、revision、fingerprint、原始 RowId 和从零开始的 `
 512 MiB 预留预算，每项按请求声明的预算计费。完整响应最多 256 KiB；准备结果摘要最多 128 KiB，为请求和计划外层预留空间。限制也可从
 `connection_capabilities.limits.table_transform` 发现。预算失败返回
 `transform_budget_exceeded`，取消返回 `request_cancelled`，均不留下派生表或成功执行
-结果。修正输入或预算后重新规划。刷新和源数据补丁不由本接口开放。
+结果。修正输入或预算后重新规划。后续更新使用下述独立的单元格补丁及显式刷新操作。
 
+
+## 补丁修改单元格，再显式刷新派生表
+
+`table.patch` 的顶层 `ids` 恰好指定一个 DatasetId，不传 `targets`；参数须包含
+当前表 revision。RowId、ColumnId 必须复制自表格读取结果，分页 offset、行号及
+列名不能代替身份。例如：
+
+```json
+{
+  "tool_id": "table.patch",
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 12,
+  "ids": ["DATASET_UUID"],
+  "parameters": {
+    "table_revision": "TABLE_REVISION_UUID",
+    "edits": [{
+      "row_id": "RETURNED_ROW_UUID",
+      "column_id": "RETURNED_COLUMN_UUID",
+      "value": {"kind": "float64", "value": 2.5}
+    }]
+  }
+}
+```
+
+值沿用读取结果的 `kind`／`value` 格式：Int64 及纳秒时间类型用十进制字符串；
+Float64 用 JSON 数字或 `"NaN"`／`"+Inf"`／`"-Inf"`；缺失值为
+`{"kind":"null"}`。类型及 nullable 必须严格匹配，不能用 Float64 补丁隐式扩宽
+Int64 列；分类值只能指定已有 level 的索引。此操作不修改扩展类型或实时计算的区域表。
+
+每批 1–1000 个不同单元格，参数最多 64 KiB。缺行、缺列、重复单元格、类型错误或
+旧 revision 均拒绝整批，不留下部分修改。不增删行、改 schema、重导入或回写源
+CSV/TSV。准备返回 `update:{status:"prepared",output,before_table_revision,changed}`，
+执行前不修改项目。相同值返回 `changed:false`，不推进文档 revision 或增加 Undo。
+
+表格元数据、行页和 Series 来源返回
+`freshness:{status,refreshable,reason,sources,mcp_refreshable,mcp_refresh_reason}`。
+`refreshable` 表示原生刷新能力；`mcp_refreshable` 另检查连接支持的配方范围，
+不表示当前权限模式。数据集资源元数据分别暴露 `table_refreshable`、
+`table_mcp_refreshable` 和 `table_mcp_refresh_reason`，以及 `table_freshness` 及其原因。`source` 为没有派生配方的源表，`current`
+为已记录输入 revision 仍匹配，`stale` 为直接或上游输入已变化，`unavailable`
+为来源或受支持配方缺失。数据浏览器将受影响的关系派生表标为 **Out of date**，
+数据表窗口说明原因。旧结果仍可读取、绘制，同时明确带有失效状态。修改表会清除
+该表的已存曲线拟合分析，Undo 恢复；失效派生表中的分析只描述旧结果，不代表当前源数据。
+
+只有明确请求才刷新：以 `ids:["DERIVED_DATASET_UUID"]` 和
+`parameters:{"table_revision":"CURRENT_DERIVED_REVISION"}` 规划 `table.refresh`。
+仅支持已保存的单源 `snapshot_read`／`project`／`filter`／`stable_sort`／
+`computed_column` 配方，表达式和复杂度限制与 data-only 处理相同；按当前源快照，
+沿既有 reference 执行器和 lineage 路径刷新。其他原生配方（包括 Pivot）会被 MCP
+刷新明确拒绝；原生 GUI/core 的刷新能力不变。采用候选前验证 TableId、列 schema
+（含 ColumnId、类型和单位）保留，每个输出 RowId 必须属于当前输入；不匹配时
+整次拒绝，不修改表、图绑定或 Undo。先刷新失效上游；缺来源或配方时说明原因，不自动重算其他数据。派生表已有人工
+单元格修改按稳定 RowId rebase，身份缺失或歧义时拒绝整次刷新，不回退到行位置；
+连续刷新仍保留这些修改。`include_provenance:true` 返回当前 `operation`，以及
+沿编辑／rebase 历史解析的有效 `refresh_recipe`。
+
+可选 `memory_limit_bytes` 依次采用显式值、配方已保存预算、512 MiB 默认值，范围
+1–536870912；仍表示物化结果估算，不是峰值内存。补丁／处理／刷新共享一个后台
+预检、四个待执行候选及 512 MiB 预留上限，每个补丁预留 64 KiB。准备摘要最多
+128 KiB，完整响应最多 256 KiB；schema 和限制见 `operation_constraints` 与
+`limits.table_update`。
+
+两项操作的预检和执行都要求 **Read and modify**；候选采用前重验权限、文档／表
+revision 及当前输入。取消、切换项目、停止连接或输入过期丢弃未提交结果，失败执行
+也消费 plan。响应丢失后先检查实际状态，不重放已提交操作。
+
+补丁与刷新各自对应一次 Undo／Redo。DatasetId、TableId、ColumnId、已有 RowId
+及原生图／Series 身份保留，筛选可改变结果包含哪些已有行。只更新 revision 和来源
+映射，不改人工颜色、轴范围或面板 frame。失效状态由保存的 provenance 与当前
+revision 计算，因此 Undo／Redo 同时恢复数值及对应失效状态。原生表格编辑与刷新
+使用同一个 typed revision 提交服务。
+
+## 把派生曲线加入已有图
+
+新计算的表需要与原曲线同图显示时，使用 `plot.series.append`，无需替换图对象。
+GUI 中选择已有显式坐标图，打开 **Data → Add curve**，选择源表、X/Y 与可选的
+Y 误差列，再按 **Append curve**。非显式图原有的默认字段 **Add series** 行为不变。
+
+MCP 不传顶层 `ids`/`targets`，在参数内指定完整图对象目标：
+
+```json
+{
+  "expected_project_context": "<当前 context>",
+  "expected_revision": 23,
+  "tool_id": "plot.series.append",
+  "parameters": {
+    "plot": {"resource": {"id": "<canvas-id>/<content-id>", "kind": "plotium.canvas.object", "parent_id": "<canvas-id>", "local_id": "<content-id>"}},
+    "series": [{"kind": "line", "source": {
+      "dataset_id": "<派生 DatasetId>", "field_id": 0,
+      "table_id": "<派生 TableId>", "table_revision": "<派生表 revision>",
+      "x_column_id": "<X ColumnId>", "y_column_id": "<signal_x2 ColumnId>",
+      "y_error_column_id": null
+    }}]
+  }
+}
+```
+
+目标、FieldId、表和列 ID 均从实际发现结果复制，名称不是身份。目标必须已有
+显式坐标；每批追加 1–200 条明确选择的折线/散点，追加后该图最多 200 条曲线。
+共享绑定验证器在一次原子提交前检查全部源 revision、完整曲线数据、误差和单位。
+兼容单位转换到图的现有坐标单位；不兼容的整批失败，不部分添加。沿用绑定服务的
+2,000,000 曲线行及待执行计划预算和 256 KiB 响应限制，包含受影响图的已有曲线。
+
+`preflight.binding_plan.appended` 返回拟新增的 Series 目标，`bindings` 同时包含
+未改变的已有绑定及新增绑定。执行采用预检冻结的 ID；一次 Undo 仅移除新增曲线，
+Redo 恢复同一身份。Undo 后另行追加不会复用已退役 ID。已有 Series 样式、坐标含义、
+人工轴范围、plot/Panel 身份及 frame 均不改变。预检和执行都要求 Read and modify；
+context、revision 和权限沿用绑定编辑的一次性计划生命周期。响应丢失后先查拟新增
+目标，不盲目再次追加。
 
 ## 精确重绑已有曲线，不影响另一张图
 

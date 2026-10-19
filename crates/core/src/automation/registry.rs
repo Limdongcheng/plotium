@@ -56,6 +56,7 @@ pub(super) fn validate_parameters(
         "resources.search" => parse::<SearchParams>(tool, value).map(drop),
         "data.preview" => parse::<PreviewParams>(tool, value).map(drop),
         "results.compare" => parse::<CompareParams>(tool, value).map(drop),
+        CURVE_APPEND => parse::<crate::state::CurveAppendParams>(tool, value).map(drop),
         PLOT_CREATE => parse::<crate::state::PlotCreateParams>(tool, value).map(drop),
         FIGURE_EDIT => parse::<crate::state::FigureEditParams>(tool, value).map(drop),
         CURVE_BIND => parse::<CurveBindParams>(tool, value).map(drop),
@@ -63,6 +64,8 @@ pub(super) fn validate_parameters(
         "resource.rename" => parse::<RenameParams>(tool, value).map(drop),
         "figure.apply_theme" => parse::<ThemeParams>(tool, value).map(drop),
         "processing.apply_scheme" => parse::<SchemeParams>(tool, value).map(drop),
+        TABLE_PATCH => parse::<TablePatchParams>(tool, value).map(drop),
+        TABLE_REFRESH => parse::<TableRefreshParams>(tool, value).map(drop),
         TABLE_COLUMNS => parse::<TableColumnsParams>(tool, value).map(drop),
         TABLE_READ_ROWS => parse::<TableReadRowsParams>(tool, value).map(drop),
         "data.import" if is_table_import(&value) => {
@@ -284,6 +287,11 @@ impl V1Schema for DocumentInspectParams {
     }
 }
 
+impl V1Schema for crate::state::CurveAppendParams {
+    fn schema() -> serde_json::Value {
+        curve_append_schema()
+    }
+}
 impl V1Schema for CurveBindParams {
     fn schema() -> serde_json::Value {
         curve_binding_schema(false)
@@ -304,8 +312,21 @@ impl V1Schema for crate::state::FigureEditParams {
         figure_edit_schema()
     }
 }
+impl V1Schema for TablePatchParams {
+    fn schema() -> serde_json::Value {
+        table_patch_schema()
+    }
+}
+impl V1Schema for TableRefreshParams {
+    fn schema() -> serde_json::Value {
+        table_refresh_schema()
+    }
+}
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!("plot.series.append", "Append explicit curves", "Atomically append selected curves to an existing explicit plot", crate::state::CurveAppendParams, [KIND_CANVAS_OBJECT], [], EffectLevel::Reversible, true),
+        tool!("table.patch", "Patch existing table cells", "Atomic typed cell patch by stable RowId and ColumnId", TablePatchParams, [KIND_DATASET], [], EffectLevel::Reversible, true),
+        tool!("table.refresh", "Refresh a derived table", "Explicitly rerun a saved native recipe on current source revisions", TableRefreshParams, [KIND_DATASET], [], EffectLevel::Reversible, true),
         tool!("figure.edit", "Edit native figure layout and content", "Atomic page, explicit Panel layout, text and local image authoring", crate::state::FigureEditParams, [KIND_CANVAS], [], EffectLevel::Reversible, true),
         tool!("plot.create", "Create native single plot", "Atomically create a native single plot and required containers using explicit table curves", crate::state::PlotCreateParams,
             [KIND_DOCUMENT,KIND_CANVAS,KIND_PANEL], [], EffectLevel::Reversible, true),

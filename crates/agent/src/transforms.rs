@@ -9,7 +9,7 @@ use std::{
     thread::JoinHandle,
 };
 pub(crate) struct TransformFlight {
-    worker: JoinHandle<Result<PreparedTableTransform, AutomationError>>,
+    worker: JoinHandle<Result<PreparedTableOperation, AutomationError>>,
     pub(super) cancel: Arc<AtomicBool>,
     plan: ToolPlan,
     request: PendingRequest,

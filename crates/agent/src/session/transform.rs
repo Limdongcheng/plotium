@@ -9,7 +9,7 @@ impl Session {
         if !self.allow_modify {
             return Err(Failure::new(
                 "permission_denied",
-                "Switch to Read and modify before preparing a transform",
+                "Switch to Read and modify before preparing a table operation",
             ));
         }
         if blocked {
@@ -22,7 +22,7 @@ impl Session {
         let reserved: u64 = self
             .transforms
             .values()
-            .map(PreparedTableTransform::reserved_bytes)
+            .map(PreparedTableOperation::reserved_bytes)
             .sum();
         if self.plans.len() >= 32
             || self.transforms.len() >= TABLE_TRANSFORM_PREPARED
@@ -30,7 +30,7 @@ impl Session {
         {
             return Err(Failure::new(
                 "plan_limit",
-                "Execute pending plans first; transforms retain at most four candidates and reserve at most 512 MiB",
+                "Execute pending plans first; table operations retain at most four candidates and reserve at most 512 MiB",
             ));
         }
         Ok(())
@@ -40,21 +40,26 @@ impl Session {
         app: &PlotiumApp,
         mut arguments: Value,
         blocked: bool,
-    ) -> Result<(ToolPlan, TableTransformSnapshot), Failure> {
+    ) -> Result<(ToolPlan, TableOperationSnapshot), Failure> {
         check_context(app, &mut arguments)?;
         // Permission precedes potentially expensive IR decoding.
         self.check_transform_ready(app, blocked, 0)?;
         let args: Plan = decode(arguments)?;
-        if args.tool_id != "data.transform"
-            || args.parameters.get("mode").and_then(Value::as_str) != Some("table_data_only")
+        if !is_table_operation(&args.tool_id)
+            || (args.tool_id == "data.transform"
+                && args.parameters.get("mode").and_then(Value::as_str) != Some("table_data_only"))
         {
             return Err(Failure::new(
                 "unsupported_operation",
-                "Only data.transform mode table_data_only is exposed",
+                "Use data.transform mode table_data_only, table.patch or table.refresh",
             ));
         }
-        let params = parse_table_transform(args.parameters.clone())?;
-        self.check_transform_ready(app, blocked, params.memory_limit_bytes)?;
+        let reservation = if args.tool_id == "data.transform" {
+            parse_table_transform(args.parameters.clone())?.memory_limit_bytes
+        } else {
+            0
+        };
+        self.check_transform_ready(app, blocked, reservation)?;
         if args.targets.is_some() || args.ids.as_ref().is_none_or(|ids| ids.len() != 1) {
             return Err(Failure::new(
                 "invalid_parameters",
@@ -62,27 +67,38 @@ impl Session {
             ));
         }
         let request = request(
-            "data.transform",
+            &args.tool_id,
             args.parameters,
             args.ids.expect("validated ids"),
             args.expected_revision,
         );
-        let snapshot = TableTransformSnapshot::capture(app, &request)?;
+        let snapshot = TableOperationSnapshot::capture(app, &request)?;
+        if let TableOperationSnapshot::Update(update) = &snapshot {
+            self.check_transform_ready(app, blocked, update.reserved_bytes())?;
+        }
         Ok((plan_tool(app, request)?, snapshot))
     }
     pub(crate) fn finish_transform_plan(
         &mut self,
         app: &PlotiumApp,
         plan: ToolPlan,
-        prepared: PreparedTableTransform,
+        prepared: PreparedTableOperation,
         blocked: bool,
     ) -> Result<Value, Failure> {
         self.check_transform_ready(app, blocked, prepared.reserved_bytes())?;
         let mut plan = plan_tool(app, plan.request)?;
-        plan.estimated_changes =
-            vec!["Create one native derived table; no canvas or plot is created.".into()];
+        let update = matches!(prepared, PreparedTableOperation::Update(_));
+        plan.estimated_changes = vec![
+            if update {
+                "Update one existing table; preserve all plot identities and authored display."
+            } else {
+                "Create one native derived table; no canvas or plot is created."
+            }
+            .into(),
+        ];
         let id = format!("{}:{}", app.session.project_context, uuid::Uuid::new_v4());
-        let value = json!({"plan_id":id,"preflight":plan,"transform":prepared.preflight()?});
+        let mut value = json!({"plan_id":id,"preflight":plan});
+        value[if update { "update" } else { "transform" }] = prepared.preflight()?;
         if serde_json::to_vec(&value)
             .map_err(|e| Failure::new("execution_failed", e.to_string()))?
             .len()

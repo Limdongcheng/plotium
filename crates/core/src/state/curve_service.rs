@@ -1,6 +1,8 @@
 //! One semantic planner/commit boundary for desktop and automation column edits.
+mod append;
 use super::*;
 use crate::automation::{ComponentRef, DocumentRevision, TargetRef, canvas_object_ref};
+pub use append::CurveAppendParams;
 use plotium_data::{ColumnId, RevisionId, TableId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -68,6 +70,8 @@ struct CurvePlotChange {
 pub struct CurveEditPlan {
     pub expected_revision: DocumentRevision,
     pub bindings: Vec<CurveBindingSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub appended: Vec<TargetRef>,
     #[serde(skip)]
     changes: Vec<CurvePlotChange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +89,7 @@ impl CurveEditPlan {
         Self {
             expected_revision: revision,
             bindings,
+            appended: vec![],
             changes: vec![],
             creation: Some(creation),
             insertion: Some(Box::new(insertion)),
@@ -107,6 +112,7 @@ impl PartialEq for CurveEditPlan {
         self.expected_revision == b.expected_revision
             && self.bindings == b.bindings
             && self.creation == b.creation
+            && self.appended == b.appended
     }
 }
 
@@ -310,6 +316,7 @@ impl PlotiumApp {
         Ok(CurveEditPlan {
             expected_revision: revision,
             bindings,
+            appended: vec![],
             changes,
             creation: None,
             insertion: None,
@@ -416,6 +423,7 @@ impl PlotiumApp {
         Ok(CurveEditPlan {
             expected_revision: revision,
             bindings: Vec::new(),
+            appended: vec![],
             changes: vec![change],
             creation: None,
             insertion: None,

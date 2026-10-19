@@ -15,7 +15,7 @@ struct Feedback {
     message: String,
     failed: bool,
 }
-fn column_choice(
+pub(super) fn column_choice(
     ui: &mut Ui,
     label: &str,
     id: &mut ColumnId,

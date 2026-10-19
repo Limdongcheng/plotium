@@ -34,6 +34,9 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
     if request.tool_id == "data.transform" && is_table_transform(&request.parameters) {
         TableTransformSnapshot::capture(app, &request)?;
     }
+    if matches!(request.tool_id.as_str(), TABLE_PATCH | TABLE_REFRESH) {
+        TableUpdateSnapshot::capture(app, &request)?;
+    }
     let provider = ProjectResourceProvider::new(app);
     if request.expected_revision != provider.revision() {
         return Err(AutomationError::StaleRevision {
@@ -409,11 +412,14 @@ pub(super) fn execute_planned_tool(
         "figure.apply_theme" => execute_theme(app, &plan)?,
         PLOT_CREATE => super::plot_creation::execute(app, &plan)?,
         FIGURE_EDIT => super::figure_edit::execute(app, &plan)?,
-        CURVE_BIND | CURVE_MATERIALIZE => super::curve_bindings::execute(app, &plan)?,
+        CURVE_BIND | CURVE_MATERIALIZE | CURVE_APPEND => {
+            super::curve_bindings::execute(app, &plan)?
+        }
         "processing.apply_scheme" => execute_scheme(app, &plan)?,
         TABLE_COLUMNS | TABLE_READ_ROWS => super::table_read::execute_table_read(app, &plan)?,
         "data.import" => execute_import(app, &plan)?,
         "data.transform" => execute_transform(app, &plan)?,
+        TABLE_PATCH | TABLE_REFRESH => super::table_update::execute(app, &plan)?,
         "figure.export" => execute_export(app, &plan)?,
         id if properties::is_property_tool(id) => {
             let targets = compatible_target_refs(&plan).cloned().collect();

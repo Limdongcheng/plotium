@@ -308,6 +308,15 @@ fn render_dataset_node(
             || app.session.ui.data_selection.contains(&di)
             || (app.doc.datasets[di].as_table().is_some()
                 && crate::ui::canvas::frame_is_selected(app, FrameRef::Sheet(di)));
+        if let Some(table) = app.doc.datasets[di].as_table()
+            && table.lineage.as_ref().is_some_and(|l| l.kind == plotium_core::state::DerivationKind::RelationalTransform)
+        {
+            let freshness = app.doc.table_freshness(table.resource_id);
+            if matches!(freshness.status, plotium_core::state::TableFreshnessState::Stale | plotium_core::state::TableFreshnessState::Unavailable) {
+                ui.colored_label(ui.visuals().warn_fg_color, "Out of date")
+                    .on_hover_text(freshness.reason);
+            }
+        }
         let mut resp = ui.selectable_label(selected, app.doc.datasets[di].display_name());
         if let Some(tooltip) = data_browser::sources_tooltip(app, di) {
             resp = resp.on_hover_text(tooltip);
