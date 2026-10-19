@@ -327,7 +327,7 @@ fn descriptors() -> Vec<ToolDescriptor> {
         tool!("plot.series.append", "Append explicit curves", "Atomically append selected curves to an existing explicit plot", crate::state::CurveAppendParams, [KIND_CANVAS_OBJECT], [], EffectLevel::Reversible, true),
         tool!("table.patch", "Patch existing table cells", "Atomic typed cell patch by stable RowId and ColumnId", TablePatchParams, [KIND_DATASET], [], EffectLevel::Reversible, true),
         tool!("table.refresh", "Refresh a derived table", "Explicitly rerun a saved native recipe on current source revisions", TableRefreshParams, [KIND_DATASET], [], EffectLevel::Reversible, true),
-        tool!("figure.edit", "Edit native figure layout and content", "Atomic page, explicit Panel layout, text and local image authoring", crate::state::FigureEditParams, [KIND_CANVAS], [], EffectLevel::Reversible, true),
+        tool!("figure.edit", "Edit native figure layout and content", "Atomic page, Panel layout, content-local frames, text and frozen local image creation/replacement", crate::state::FigureEditParams, [KIND_CANVAS], [], EffectLevel::Reversible, true),
         tool!("plot.create", "Create native single plot", "Atomically create a native single plot and required containers using explicit table curves", crate::state::PlotCreateParams,
             [KIND_DOCUMENT,KIND_CANVAS,KIND_PANEL], [], EffectLevel::Reversible, true),
         tool!(

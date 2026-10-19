@@ -32,6 +32,16 @@ pub fn figure_edit_schema() -> Value {
             json!({"target":target,"frame_pt":arr(4)}),
         ),
         variant(
+            "content_frame",
+            vec!["target", "frame_pt"],
+            json!({"target":target,"frame_pt":{"type":"array","minItems":4,"maxItems":4,"items":number,"description":"Complete finite [x,y,width,height] parent-local pt frame (page pt for loose content), width/height at least 1 pt; edits this item only. Raster preserve_aspect constrains dimensions; read the effective frame in preflight."}}),
+        ),
+        variant(
+            "image_replace",
+            vec!["target", "path"],
+            json!({"target":target,"path":{"type":"string","description":"Absolute explicitly named PNG/JPEG regular file; frozen at preflight. Replace only the asset reference of a raster at page_index 0; retain all other fields."}}),
+        ),
+        variant(
             "panel_label",
             vec!["target", "text", "visible"],
             json!({"target":target,"text":name,"visible":{"type":"boolean"}}),
@@ -67,7 +77,7 @@ pub fn figure_edit_schema() -> Value {
             json!({"parent":target,"name":name,"frame_pt":arr(4),"path":{"type":"string","description":"Absolute explicitly named local PNG/JPEG regular file; frozen at preflight, no adjacent file lookup."}}),
         ),
     ];
-    json!({"type":"object","additionalProperties":false,"required":["canvas","edits"],"properties":{"canvas":target,"edits":{"type":"array","minItems":1,"maxItems":200,"items":{"oneOf":variants}}},"description":"Atomic native authoring on one exact canvas. Panel frames [x,y,w,h] are page pt, resize scales child-local frames. New content frames are parent-local pt. Page size/margins/gutter use mm; margins [top,right,bottom,left]. Grid uses native Frame-basis cells in supplied Panel order, existing page margins/gutter; no page-layout preference change or non-target reflow. Align uses bounding edges/centres, distribution equal centre spacing with endpoints fixed. Unlocked free-layout Panels only. No top-level ids/targets."})
+    json!({"type":"object","additionalProperties":false,"required":["canvas","edits"],"properties":{"canvas":target,"edits":{"type":"array","minItems":1,"maxItems":200,"items":{"oneOf":variants}}},"description":"Atomic native authoring on one exact canvas. Panel frames [x,y,w,h] are page pt, resize scales child-local frames. New content frames are parent-local pt. Page size/margins/gutter use mm; margins [top,right,bottom,left]. Grid uses native Frame-basis cells in supplied Panel order, existing page margins/gutter; no page-layout preference change or non-target reflow. Align uses bounding edges/centres, distribution equal centre spacing with endpoints fixed. Panel layout ops require unlocked free-layout Panels. content_frame requires the item and parent unlocked, a free-layout parent and Auto height off; image_replace requires the item and parent unlocked, not a layout mode change. Hidden exact targets remain addressable. No top-level ids/targets."})
 }
 fn invalid(message: impl Into<String>) -> AutomationError {
     AutomationError::InvalidParameters {

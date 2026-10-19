@@ -8,17 +8,8 @@ pub(crate) fn preserve_aspect_frame(
     let ObjectDragKind::Resize(handle) = kind else {
         return candidate;
     };
-    let width_scale = candidate.width / before.width;
-    let height_scale = candidate.height / before.height;
-    let scale = if (width_scale - 1.0).abs() >= (height_scale - 1.0).abs() {
-        width_scale
-    } else {
-        height_scale
-    }
-    .max(MIN_OBJECT_SIZE_PT / before.width)
-    .max(MIN_OBJECT_SIZE_PT / before.height);
-    let width = before.width * scale;
-    let height = before.height * scale;
+    let [width, height] =
+        plotium_core::state::aspect_locked_size(before, candidate, MIN_OBJECT_SIZE_PT);
     let right = before.x + before.width;
     let bottom = before.y + before.height;
     match handle {

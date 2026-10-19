@@ -170,12 +170,12 @@ impl Node<'_> {
                 out["locked"] = json!(p.locked);
             }
             Self::Content(c, o) => {
-                out["frame"] = frame(o.frame);
-                out["frame_space"] = json!(if c.parent_panel(o.id).is_some() {
-                    "panel_local_pt"
-                } else {
-                    "page_pt"
-                });
+                out.as_object_mut().expect("local detail object").extend(
+                    content_geometry_detail(c, o)
+                        .as_object()
+                        .expect("geometry object")
+                        .clone(),
+                );
                 out["locked"] = json!(o.locked);
                 match &o.kind {
                     ContentKind::Plot(p) => {
@@ -189,6 +189,15 @@ impl Node<'_> {
                     }
                     ContentKind::RasterImage(image) => {
                         out["asset_id"] = json!(image.asset);
+                        out["image"] = json!({
+                            "page_index":image.page_index,"crop":image.crop,
+                            "fit":match image.fit { crate::state::ImageFit::Contain=>"contain",crate::state::ImageFit::Cover=>"cover",crate::state::ImageFit::Stretch=>"stretch" },
+                            "rotation":match image.rotation { crate::state::QuarterTurn::Zero=>0,crate::state::QuarterTurn::Clockwise90=>90,crate::state::QuarterTurn::Clockwise180=>180,crate::state::QuarterTurn::Clockwise270=>270 },
+                            "opacity":image.opacity,"interpolation":match image.interpolation {crate::state::ImageInterpolation::Auto=>"auto",crate::state::ImageInterpolation::Nearest=>"nearest",crate::state::ImageInterpolation::Linear=>"linear"},
+                            "preserve_aspect":image.preserve_aspect,
+                            "replaceable":c.validate_content_edit(o.id,false).is_ok() && image.page_index==0,
+                            "replace_error":c.validate_content_edit(o.id,false).err().or_else(||(image.page_index!=0).then(||"PNG/JPEG replacement requires page_index 0; the existing page index is never reset.".to_owned()))
+                        });
                     }
                     ContentKind::Shape(shape) => {
                         out["shape"] = json!(match shape.shape {
@@ -211,6 +220,22 @@ impl Node<'_> {
         }
         out
     }
+}
+pub(crate) fn content_geometry_detail(c: &CanvasDocument, o: &ContentItem) -> Value {
+    let parent = c.parent_panel(o.id).and_then(|id| c.panel(id));
+    let preserve_aspect =
+        matches!(&o.kind, ContentKind::RasterImage(image) if image.preserve_aspect);
+    let error = c.validate_content_edit(o.id, true).err();
+    json!({
+        "parent":parent.map(|p|TargetRef::resource(panel_resource(c,p))).unwrap_or_else(||canvas_target(c)),
+        "frame":frame(o.frame),
+        "frame_space":if parent.is_some(){"panel_local_pt"}else{"page_pt"},
+        "page_frame":c.content_page_frame(o.id).map(frame),
+        "geometry":{"min_size_pt":[crate::state::MIN_CONTENT_FRAME_PT,crate::state::MIN_CONTENT_FRAME_PT],
+            "preserve_aspect":preserve_aspect,
+            "aspect_ratio":preserve_aspect.then_some(o.frame.width / o.frame.height),
+            "frame_editable":error.is_none(),"frame_edit_error":error}
+    })
 }
 fn frame(f: crate::state::ObjectFrame) -> Value {
     json!({"x":f.x,"y":f.y,"width":f.width,"height":f.height,"unit":"pt"})

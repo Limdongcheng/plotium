@@ -29,6 +29,7 @@ mod tools;
 mod types;
 mod workflow;
 
+pub(crate) use document::content_geometry_detail;
 pub use document::{
     DOCUMENT_INSPECT, DOCUMENT_PAGE_DEFAULT, DOCUMENT_PAGE_MAX, DOCUMENT_RESPONSE_BYTES,
     DocumentInspectParams, DocumentView, KIND_PANEL, document_inspect_schema, document_root_target,

@@ -53,6 +53,7 @@ mod board;
 mod charts;
 mod compute;
 mod content;
+mod content_geometry;
 mod craft;
 mod craft_fields;
 mod cursors;
@@ -64,6 +65,7 @@ mod curve_candidate;
 mod curve_extract;
 mod curve_service;
 mod figure_edit;
+mod figure_edit_content;
 mod figure_edit_image;
 mod plot_creation;
 pub use figure_edit::*;
@@ -161,6 +163,7 @@ pub use board::*;
 pub use charts::*;
 pub use compute::*;
 pub use content::*;
+pub use content_geometry::*;
 pub use craft::*;
 pub(crate) use craft_fields::*;
 pub use cursors::*;
@@ -298,6 +301,8 @@ mod plot_creation_tests;
 #[cfg(test)]
 mod display_tests;
 
+#[cfg(test)]
+mod figure_content_tests;
 #[cfg(test)]
 mod figure_edit_tests;
 

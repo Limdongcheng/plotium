@@ -122,7 +122,9 @@ parented content appears only under its panel. `view: "self"`, with pagination
 arguments omitted, reads one target's details, `ancestors` and `child_count`.
 The content kinds are plot, text, shape and raster image; image pixels and data
 rows are not returned. Frames use points: a panel is page-relative, while content
-inside it is panel-local. Canvas dimensions are in millimetres.
+inside it is panel-local. Content details include its exact `parent`, `frame_space`,
+converted `page_frame`, and `geometry` constraints/editability. Raster details retain
+`asset_id` and add `image` attributes and replacement eligibility. Canvas dimensions are in millimetres.
 
 Series discovery uses the plot's current display binding, like property addressing.
 Inactive channel or display-mode alternatives remain stored but are not listed or
@@ -712,6 +714,8 @@ One batch changes one canvas, in supplied edit order, with one Undo/Redo:
 | --- | --- |
 | `page` | At least one of `size_mm: [width,height]`, `margin_mm: [top,right,bottom,left]`, `gutter_mm`; all in mm |
 | `panel_frame` | `target: EXACT_PANEL_TARGET`, `frame_pt: [x,y,width,height]` in page pt |
+| `content_frame` | `target: EXACT_CONTENT_TARGET`, complete `frame_pt: [x,y,width,height]` in parent-local pt; changes only this item |
+| `image_replace` | `target: EXACT_RASTER_TARGET`, `path`; replaces only its asset reference with frozen local PNG/JPEG |
 | `panel_label` | `target`, `text`, `visible`; writes a native manual panel label, preserving its position/font |
 | `align` | `panels: [EXACT_PANEL_TARGET,...]`, `edge: left\|center\|right\|top\|middle\|bottom`; at least two panels |
 | `distribute` | `panels`, `axis: horizontal\|vertical`; at least three panels |
@@ -763,7 +767,7 @@ and manual labels permit 1024 bytes (nonblank). A batch permits 1–200 edits an
 at most 200 panels per layout operation.
 
 Image preflight reads only explicitly named absolute regular files: at most 8
-images, 1 MiB encoded per file, 4 MiB encoded per batch, and 4 MiB decoded RGBA8
+image inputs (creation and replacement combined; duplicates still count), 1 MiB encoded per file, 4 MiB encoded per batch, and 4 MiB decoded RGBA8
 per image. PNG/JPEG probing and decoding reuse native image I/O; bytes are frozen
 in the plan and embedded in the native asset store at commit. Identical encoded
 assets are shared, not linked to the external path. Missing/damaged assets or
@@ -782,6 +786,77 @@ execute response, inspect the proposed targets before making another create call
 Use the ordinary GUI Object Geometry, text and image inspectors to continue
 editing. Preview the actual canvas PNG after layout changes; native text frames
 can clip long text, and layout never silently shrinks fonts or resolves collisions.
+
+## Move existing content or replace an image in place
+
+To widen an existing caption or replace one of two images sharing an asset, first
+inspect the exact content with `plotium_document_inspect`, `view: "self"`. Copy
+its complete target, not its name, selection or collection position. Use the
+current context/revision and plan `figure.edit` with edits such as:
+
+```json
+[
+  {"op":"content_frame","target":{"resource":{"id":"CANVAS_UUID/CONTENT_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"CONTENT_ID"}},"frame_pt":[12,18,140,30]},
+  {"op":"image_replace","target":{"resource":{"id":"CANVAS_UUID/IMAGE_ID","kind":"plotium.canvas.object","parent_id":"CANVAS_UUID","local_id":"IMAGE_ID"}},"path":"/absolute/local/replacement.png"}
+]
+```
+
+Place this array in `parameters.edits` alongside the discovered whole-canvas
+`parameters.canvas`. Omit top-level `ids`/`targets`. The two targets above may be
+different items; to move and replace the same image, repeat that image's target.
+Existing text/font edits still use `text_set`.
+
+`content_frame` supports native plot, text, raster and existing rect/ellipse/line/
+arrow content, without creating or reparenting anything. It sets a **complete**
+frame, not a relative delta. Coordinates use the parent's local pt, or page pt
+for loose content: top-left origin, X rightwards, Y downwards. `parent` identifies
+the actual canvas/panel; `page_frame` uses the native parent-origin translation.
+Positions may extend beyond the panel or page and are not clamped or snapped.
+All components and converted bounds must be finite, and width/height must be at
+least 1 pt. This numeric minimum does not change the GUI drag minimum.
+
+Only the target item changes: its parent and siblings keep their frames/order;
+plot bindings, Series identities, sources, units, manual axis ranges and styles,
+and text contents/fonts remain intact. The target and its parent must be unlocked;
+a parent must use Free layout and Auto height must be off. A locked sibling does
+not block this edit. `geometry.frame_editable` and `frame_edit_error` report these
+native eligibility conditions, independent of connection modify permission.
+
+For a raster with `preserve_aspect: true`, dimensions preserve the **existing
+frame ratio**, not the replacement's pixel ratio. The native aspect rule chooses
+the width/height scale with the larger absolute departure from 1 (width wins a
+tie), bounded by the 1 pt minimum. Requested X/Y remain the top-left anchor.
+Preflight reports `requested_frame_pt` and `effective_frame_pt`; they may differ.
+`geometry` exposes `min_size_pt`, `preserve_aspect` and `aspect_ratio`.
+`fit` independently controls contain/cover/stretch rendering within the frame.
+
+`image_replace` sets only the target's AssetId. It retains ContentId, parent,
+frame, z-order, name, visibility and all native image attributes:
+`page_index`, crop, fit, quarter-turn rotation, opacity, interpolation and
+preserve_aspect. Other references to the old asset remain unchanged. A retained
+crop/fit can make the new image look different; settings are never reset to hide
+that effect. PNG/JPEG replacement requires the existing `page_index` to be 0;
+other pages reject the batch instead of silently changing page index. Replacement
+requires the target/parent unlocked, but not Free layout or Auto height off.
+`image.replaceable` and `replace_error` disclose that eligibility.
+
+Creation and replacement share the image budgets above, byte freezing, encoded
+asset deduplication, embedding and Undo lifecycle. Changing or deleting the source
+after preflight cannot alter the candidate or Redo. There is no source write or
+asset garbage collection. Bad files, unsupported formats, wrong/stale targets,
+locked targets and invalid geometry reject the whole batch, not just that edit.
+
+`preflight.figure_plan.result.content_edits` reports each new edit in input order:
+`edit_index`, `op`, `target`, `parent`, `frame_space`, `before_frame_pt`,
+`effective_frame_pt`, `page_frame` and `geometry`; frame edits add
+`requested_frame_pt`, replacement adds `asset_change` with `before`/`after`
+AssetIds, `format` and `pixel_size`. These are the state at that edit's step.
+`result.content_frames` gives the final geometry for each distinct targeted
+content after all edits, including any later explicit parent-panel resize.
+Execute returns the same result in `ToolResult.value`. Both operations reuse the
+same permission/context/revision checks and one-use plans as other figure edits;
+one Undo restores the batch's frames and asset references, Redo restores the
+same identities and frozen image. Inspect/render the committed state afterwards.
 
 ## Read the actual canvas image
 
