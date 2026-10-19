@@ -159,5 +159,29 @@ impl Drop for Lease {
                 }
             }
         }
+        // A fork/exec in another thread may briefly retain a copied descriptor.
+        // Explicitly end this lease before close rather than waiting on copies.
+        if let Err(error) = self._lock.unlock() {
+            eprintln!("Could not release Plotium MCP ownership: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn drop_releases_lock_even_while_a_descriptor_clone_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("mcp");
+        let lease = Lease::acquire(dir.clone()).unwrap();
+        // A concurrently spawned process can briefly hold a copied descriptor
+        // before exec closes it. Ownership ends with the Lease, not that copy.
+        let copied_descriptor = lease._lock.try_clone().unwrap();
+        drop(lease);
+        let replacement = Lease::acquire(dir).unwrap();
+        drop(copied_descriptor);
+        drop(replacement);
     }
 }

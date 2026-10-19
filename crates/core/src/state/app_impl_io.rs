@@ -115,6 +115,10 @@ impl PlotiumApp {
         let save_include_view_snapshots = loaded.doc.save_include_view_snapshots;
         loaded.session.operation_history = std::mem::take(&mut self.session.operation_history);
         loaded.session.ui.dismissed_feedback_order = self.session.ui.dismissed_feedback_order;
+        self.session
+            .external_saves
+            .revoke("Project changed; inspect the old save receipt before any new request.");
+        loaded.session.external_saves = std::mem::take(&mut self.session.external_saves);
         *self = loaded;
         // Project loading constructs a fresh app, but app preferences outlive
         // document swaps. In particular, a value whose disk flush failed must

@@ -7,6 +7,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
+#[path = "replacement.rs"]
+mod replacement;
+#[cfg(windows)]
+use replacement::platform_replace_checked;
+pub(super) use replacement::requires_save_recovery;
+
+pub(super) const SAVE_TEMP_PREFIX: &str = ".plotium-save-";
 const RECOVERY_FILE: &str = "recovery.plotium";
 const RECOVERY_LOCK_FILE: &str = "slot.lock";
 static REVISION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -41,22 +48,109 @@ pub struct RecoveryManager {
     claimed: HashMap<PathBuf, Arc<File>>,
 }
 
+#[cfg(test)]
 pub(super) fn commit_project_file(
     temp: &Path,
     target: &Path,
     backup_count: usize,
 ) -> Result<Option<String>> {
-    let backup_count =
-        backup_count.min(usize::from(crate::settings::MAX_PROJECT_BACKUP_GENERATIONS));
-    let backup = commit_with_replacer(temp, target, backup_count, atomic_replace)?;
-    sync_file(target)?;
-    sync_parent(target)?;
-    let warning = backup.and_then(|path| {
-        conceal_backup(&path)
-            .err()
-            .map(|error| format!("The backup was created but could not be hidden: {error}"))
-    });
-    Ok(warning)
+    commit_project_file_with_progress(
+        temp,
+        target,
+        backup_count,
+        &super::SaveProgress::default(),
+        None,
+    )
+}
+pub(super) fn commit_project_file_with_progress(
+    temp: &Path,
+    target: &Path,
+    backup_count: usize,
+    progress: &super::SaveProgress,
+    guard: Option<&super::SaveTarget>,
+) -> Result<Option<String>> {
+    commit_project_with_progress(
+        temp,
+        target,
+        backup_count,
+        |temp, target, backup| {
+            atomic_replace_checked(temp, target, backup, || {
+                guard.map_or(Ok(()), |guard| guard.verify().map_err(io::Error::other))
+            })
+        },
+        |path| {
+            sync_file(path)?;
+            sync_parent(path)
+        },
+        progress,
+    )
+}
+
+// Installation is recorded at the replacer boundary, before fallible backup
+// rotation and sync. A later failure must never be reported as an untouched file.
+#[cfg(test)]
+fn commit_project_with(
+    temp: &Path,
+    target: &Path,
+    backup_count: usize,
+    replacer: impl FnOnce(&Path, &Path, Option<&Path>) -> io::Result<()>,
+    sync: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<Option<String>> {
+    let progress = super::SaveProgress::default();
+    commit_project_with_progress(temp, target, backup_count, replacer, sync, &progress)
+}
+fn commit_project_with_progress(
+    temp: &Path,
+    target: &Path,
+    backup_count: usize,
+    replacer: impl FnOnce(&Path, &Path, Option<&Path>) -> io::Result<()>,
+    sync: impl FnOnce(&Path) -> io::Result<()>,
+    progress: &super::SaveProgress,
+) -> Result<Option<String>> {
+    let mut installed = false;
+    let result = (|| -> io::Result<Option<String>> {
+        let backup_count =
+            backup_count.min(usize::from(crate::settings::MAX_PROJECT_BACKUP_GENERATIONS));
+        let backup = commit_with_replacer(temp, target, backup_count, |temp, target, backup| {
+            replacer(temp, target, backup)?;
+            installed = true;
+            progress.installed();
+            Ok(())
+        })?;
+        sync(target)?;
+        progress.committed();
+        Ok(backup.and_then(|path| {
+            conceal_backup(&path)
+                .err()
+                .map(|error| format!("The backup was created but could not be hidden: {error}"))
+        }))
+    })();
+    result.map_err(|error| {
+        if installed {
+            ProjectError::InstalledUnconfirmed(error.to_string())
+        } else {
+            error.into()
+        }
+    })
+}
+
+pub(super) fn commit_new_project_file(
+    temp: &Path,
+    target: &Path,
+    progress: &super::SaveProgress,
+) -> Result<Option<String>> {
+    // Link creation is atomic and fails if another process creates the target;
+    // unlike rename it cannot overwrite a file the user never approved.
+    std::fs::hard_link(temp, target)?;
+    progress.installed();
+    let result = (|| -> io::Result<()> {
+        std::fs::remove_file(temp)?;
+        sync_file(target)?;
+        sync_parent(target)
+    })();
+    result.map_err(|error| ProjectError::InstalledUnconfirmed(error.to_string()))?;
+    progress.committed();
+    Ok(None)
 }
 
 pub(super) fn commit_recovery_file(temp: &Path, target: &Path) -> Result<()> {
@@ -95,12 +189,19 @@ fn commit_with_replacer(
     } else {
         stage_primary_backup(target)?
     };
-    if let Err(replace_error) = replacer(temp, target, backup.as_deref()) {
+    if let Err(mut replace_error) = replacer(temp, target, backup.as_deref()) {
+        if replacement::finish_partial_rollback(
+            &mut replace_error,
+            target,
+            staged_backup.as_deref(),
+        ) {
+            return Err(replace_error);
+        }
         if let Err(restore_error) = restore_primary_backup(target, staged_backup.as_deref()) {
             return Err(io::Error::new(
                 replace_error.kind(),
                 format!(
-                    "{replace_error}; additionally failed to restore the previous backup: {restore_error}"
+                    "{replace_error}; additionally failed to restore the previous backup from {staged_backup:?}: {restore_error}"
                 ),
             ));
         }
@@ -113,18 +214,25 @@ fn commit_with_replacer(
 
 fn stage_primary_backup(target: &Path) -> io::Result<Option<PathBuf>> {
     let primary = backup_path(target, 0);
-    let staging = temporary_path(&primary);
-    if staging.exists() {
-        if primary.exists() {
-            remove_if_exists(&staging)?;
-        } else {
-            std::fs::rename(&staging, &primary)?;
-        }
-    }
     if !primary.exists() {
         return Ok(None);
     }
-    std::fs::rename(&primary, &staging)?;
+    // Keep this owned name until rotation/restoration succeeds. If restoration
+    // fails, the previous backup must remain available rather than be dropped.
+    let (file, staging) = backup_temporary(&primary)?.keep().map_err(|e| e.error)?;
+    drop(file);
+    if let Err(error) = std::fs::rename(&primary, &staging) {
+        if let Err(cleanup) = remove_if_exists(&staging) {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; could not remove empty backup staging {}: {cleanup}",
+                    staging.display()
+                ),
+            ));
+        }
+        return Err(error);
+    }
     Ok(Some(staging))
 }
 
@@ -180,76 +288,74 @@ fn backup_path(target: &Path, index: usize) -> PathBuf {
     target.with_file_name(format!("{hidden_name}{suffix}"))
 }
 
-#[cfg(unix)]
-fn backup_install_staging_path(backup: &Path) -> PathBuf {
-    let name = backup
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "project.plotium.bak".to_owned());
-    backup.with_file_name(format!("{name}.new.tmp"))
+fn backup_temporary(target: &Path) -> io::Result<tempfile::NamedTempFile> {
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    tempfile::Builder::new()
+        .prefix(".plotium-backup-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+}
+
+fn atomic_replace(temp: &Path, target: &Path, backup: Option<&Path>) -> io::Result<()> {
+    atomic_replace_checked(temp, target, backup, || Ok(()))
+}
+
+fn atomic_replace_checked(
+    temp: &Path,
+    target: &Path,
+    backup: Option<&Path>,
+    verify: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(replacer) = replacement::REPLACE_TEST.with(|hook| hook.take()) {
+        verify()?;
+        return replacer(temp, target, backup);
+    }
+    platform_replace_checked(temp, target, backup, verify)
 }
 
 #[cfg(unix)]
-fn atomic_replace(temp: &Path, target: &Path, backup: Option<&Path>) -> io::Result<()> {
+fn platform_replace_checked(
+    temp: &Path,
+    target: &Path,
+    backup: Option<&Path>,
+    verify: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     if let Some(backup) = backup {
-        let staging = backup_install_staging_path(backup);
-        remove_if_exists(&staging)?;
-        std::fs::copy(target, &staging)?;
-        File::open(&staging)?.sync_all()?;
-        std::fs::rename(&staging, backup)?;
+        let mut staging = backup_temporary(backup)?;
+        io::copy(&mut File::open(target)?, staging.as_file_mut())?;
+        staging.as_file().sync_all()?;
+        staging.persist(backup).map_err(|e| e.error)?;
     }
+    #[cfg(test)]
+    BEFORE_REPLACE_TEST.with(|hook| {
+        if let Some(hook) = hook.take() {
+            hook(target);
+        }
+    });
+    // Check after potentially long backup I/O. This narrows the race but is not
+    // a compare-and-swap against non-cooperating writers after this check.
+    verify()?;
     // POSIX rename replaces an existing regular file atomically. Both paths are
     // siblings, so a cross-device rename cannot occur.
     std::fs::rename(temp, target)
 }
 
-#[cfg(windows)]
-fn atomic_replace(temp: &Path, target: &Path, backup: Option<&Path>) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
-    };
-
-    let target_exists = target.exists();
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>()
-    };
-    let temp = wide(temp);
-    let target = wide(target);
-    let backup = backup.map(wide);
-    // SAFETY: all pointers refer to NUL-terminated buffers that remain alive for
-    // the call. ReplaceFileW is the Windows primitive that preserves the old
-    // destination when replacement fails and can create the backup atomically.
-    let ok = unsafe {
-        if target_exists {
-            ReplaceFileW(
-                target.as_ptr(),
-                temp.as_ptr(),
-                backup.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
-                0,
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        } else {
-            MoveFileExW(temp.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH)
-        }
-    };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(not(any(unix, windows)))]
-fn atomic_replace(temp: &Path, target: &Path, backup: Option<&Path>) -> io::Result<()> {
+fn platform_replace_checked(
+    temp: &Path,
+    target: &Path,
+    backup: Option<&Path>,
+    verify: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     if let Some(backup) = backup {
         std::fs::copy(target, backup)?;
         File::open(backup)?.sync_all()?;
     }
+    verify()?;
     std::fs::rename(temp, target)
 }
 
@@ -607,6 +713,19 @@ fn recovery_is_stale(metadata: &RecoveryMetadata) -> Result<bool> {
 fn clear_snapshot_files(path: &Path) -> Result<()> {
     remove_if_exists(path)?;
     remove_if_exists(&temporary_path(path))?;
+    // Only called for exclusively owned recovery slots. A crash can leave a
+    // private save temporary behind even though normal failures clean it up.
+    if let Some(parent) = path.parent() {
+        for entry in std::fs::read_dir(parent)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(SAVE_TEMP_PREFIX)
+                && name.to_string_lossy().ends_with(".tmp")
+            {
+                remove_if_exists(&entry.path())?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -635,3 +754,8 @@ fn cleanup_slot_dir(dir: &Path) -> Result<()> {
 #[cfg(test)]
 #[path = "persistence_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static BEFORE_REPLACE_TEST: std::cell::Cell<Option<fn(&Path)>> = const { std::cell::Cell::new(None) };
+}

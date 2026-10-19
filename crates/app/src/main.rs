@@ -8,9 +8,12 @@ mod agent_install;
 mod fonts;
 mod graphics;
 mod observability;
+mod project_save;
 mod scale;
 mod shell;
 mod shot;
+#[cfg(all(test, unix))]
+mod test_settings;
 mod typography;
 mod ui;
 
@@ -69,6 +72,10 @@ struct ManualProjectSaveJob {
     path: std::path::PathBuf,
     include_view_snapshots: bool,
     captured_generation: u64,
+    identity: plotium_core::project::SaveSnapshotIdentity,
+    persisted_revision: String,
+    progress: plotium_core::project::SaveProgress,
+    external_save_id: Option<String>,
     continue_transition: bool,
     handle: std::thread::JoinHandle<
         Result<plotium_core::project::SaveOutcome, plotium_core::project::ProjectError>,
@@ -158,88 +165,26 @@ impl Shell {
 
 impl Shell {
     fn start_pending_project_save(&mut self, ctx: &egui::Context) {
-        if self.manual_save_job.is_some() || self.recovery_job.is_some() {
-            if self.app.session.ui.pending_project_save.is_some() {
-                ctx.request_repaint_after(Duration::from_millis(100));
-            }
-            return;
-        }
-        let Some(pending) = self.app.session.ui.pending_project_save.take() else {
-            return;
-        };
-        let operation_id = self.app.session.begin_operation();
-        let captured_generation = self.app.doc.edit_generation;
-        let request = plotium_core::project::prepare_project_save(
-            &self.app,
-            &pending.path,
-            pending.include_view_snapshots,
+        project_save::start_pending_project_save(
+            &mut self.app,
+            &mut self.manual_save_job,
+            self.recovery_job.as_ref(),
+            ctx,
         );
-        self.app.session.status = format!("Saving project {}…", pending.path.display());
-        self.manual_save_job = Some(ManualProjectSaveJob {
-            operation_id,
-            path: pending.path,
-            include_view_snapshots: pending.include_view_snapshots,
-            captured_generation,
-            continue_transition: pending.continue_transition,
-            handle: std::thread::spawn(move || {
-                plotium_core::project::save_project_snapshot(request)
-            }),
-        });
-        ctx.request_repaint_after(Duration::from_millis(100));
     }
 
     fn drive_project_transition(&mut self, ctx: &egui::Context) {
-        use plotium_core::state::{ProjectTransition, ProjectTransitionPhase};
-
-        let Some(mut transition) = self.app.session.ui.project_transition.clone() else {
+        use plotium_core::state::ProjectTransition;
+        let Some(target) = project_save::ready_project_transition(
+            &mut self.app,
+            &mut self.manual_save_job,
+            self.recovery_job.as_ref(),
+            ctx,
+        ) else {
             return;
         };
-        let phase = shell::phase_after_polls(
-            transition.phase,
-            self.app.doc.dirty,
-            self.manual_save_job.is_some() || self.recovery_job.is_some(),
-        );
-        if phase != transition.phase {
-            transition.phase = phase;
-            if let Some(pending) = self.app.session.ui.project_transition.as_mut() {
-                pending.phase = phase;
-            }
-            ctx.request_repaint();
-        }
-        if phase == ProjectTransitionPhase::CheckUnsaved {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        }
-        if transition.phase == ProjectTransitionPhase::NeedsConfirmation
-            && let Some(save) = self.manual_save_job.as_mut()
-        {
-            save.continue_transition = true;
-            transition.phase = ProjectTransitionPhase::Saving;
-            if let Some(pending) = self.app.session.ui.project_transition.as_mut() {
-                pending.phase = ProjectTransitionPhase::Saving;
-            }
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        }
-        if transition.phase == ProjectTransitionPhase::NeedsConfirmation
-            && let Some(save) = self.app.session.ui.pending_project_save.as_mut()
-        {
-            save.continue_transition = true;
-            if let Some(pending) = self.app.session.ui.project_transition.as_mut() {
-                pending.phase = ProjectTransitionPhase::Saving;
-            }
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        }
-        if transition.phase != ProjectTransitionPhase::Ready {
-            return;
-        }
-        if self.manual_save_job.is_some() || self.recovery_job.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        }
 
-        let completed = match transition.target {
+        let completed = match target {
             ProjectTransition::New => {
                 self.clear_recovery_for_project_swap();
                 self.app.start_new_project();

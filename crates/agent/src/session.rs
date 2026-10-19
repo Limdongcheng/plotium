@@ -1,5 +1,6 @@
 //! Desktop-thread capability boundary. No project state crosses the bridge.
 use std::collections::HashMap;
+pub(crate) mod save;
 mod table;
 mod transform;
 
@@ -88,6 +89,8 @@ pub struct Session {
     plans: HashMap<String, ToolPlan>,
     imports: HashMap<String, PreparedTableImport>,
     transforms: HashMap<String, PreparedTableOperation>,
+    saves: HashMap<String, save::SavePlan>,
+    save_permits: Vec<plotium_core::project::SaveAuthorization>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,6 +199,9 @@ impl Session {
         blocked: bool,
     ) -> Result<Value, Failure> {
         let changed = self.synchronize_context(app);
+        if name == "plotium_save_status" {
+            return self.save_status(app, arguments);
+        }
         if changed && name == "plotium_execute" {
             return Err(project_changed());
         }
@@ -215,6 +221,9 @@ impl Session {
                 && context != app.session.project_context.to_string()
             {
                 return Err(project_changed());
+            }
+            if let Some(plan) = self.saves.remove(&args.plan_id) {
+                return self.execute_save(app, &args.plan_id, plan, blocked);
             }
             // Consume even on authorization, busy or revision failure.
             let plan = self.plans.remove(&args.plan_id).ok_or_else(|| {
@@ -293,11 +302,14 @@ impl Session {
             )?;
             return Ok(
                 json!({"project_context": app.session.project_context, "revision": app.doc.automation_revision, "project": result.value,
-                "selection": selection, "connection_capabilities": crate::capabilities::manifest(self.allow_modify), "permissions": {"allow_reversible_modify": self.allow_modify}}),
+                "selection": selection, "connection_capabilities": crate::capabilities::manifest(self.allow_modify), "permissions": {"allow_reversible_modify": self.allow_modify,"save":"per_request_desktop_authorization"}, "save_state":{"current_path":app.doc.project_path,"persisted_revision":app.doc.project_revision,"dirty":app.doc.dirty,"edit_generation":app.doc.edit_generation,"receipts":app.session.external_saves.receipts().collect::<Vec<_>>()}}),
             );
         }
         if name == "plotium_plan" {
             let args: Plan = decode(arguments)?;
+            if args.tool_id == "project.save" {
+                return self.plan_save(app, args);
+            }
             if !crate::capabilities::EDIT_OPERATIONS.contains(&args.tool_id.as_str()) {
                 return Err(Failure::new(
                     "unsupported_operation",
@@ -317,7 +329,7 @@ impl Session {
                         "Native edits carry their own exact targets or parent",
                     ));
                 }
-                if self.plans.len() >= 32 {
+                if self.plans.len() + self.saves.len() >= 32 {
                     return Err(Failure::new(
                         "plan_limit",
                         "Execute a pending plan before preparing another",
@@ -394,7 +406,7 @@ impl Session {
                     "Only datasets, canvases and canvas objects may be renamed",
                 ));
             }
-            if self.plans.len() >= 32 {
+            if self.plans.len() + self.saves.len() >= 32 {
                 return Err(Failure::new(
                     "plan_limit",
                     "32 plans are pending; execute a plan or restart the connection",
@@ -490,6 +502,7 @@ pub fn ensure_idle(app: &PlotiumApp) -> Result<(), Failure> {
         || app.session.table_transform_job.is_some()
         || app.session.table_refresh_job.is_some()
         || ui.project_transition.is_some()
+        || app.session.external_saves.busy()
         || ui.project_save_in_progress
         || ui.interaction.is_active()
         || ui.property_gesture.is_some()
@@ -605,6 +618,7 @@ impl Session {
             .context
             .is_some_and(|id| id != app.session.project_context);
         if changed || app.session.ui.project_transition.is_some() {
+            self.revoke_saves();
             self.plans.clear();
             self.imports.clear();
             self.transforms.clear();

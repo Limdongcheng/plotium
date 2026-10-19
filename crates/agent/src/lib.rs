@@ -235,6 +235,7 @@ impl Connection {
         self.errors.try_recv().ok()
     }
     pub fn stop(&mut self) {
+        self.session.revoke_saves();
         self.active.store(false, Ordering::Release);
         self.cancel.cancel();
         self.requests.close();
@@ -361,3 +362,6 @@ mod figure_edit_tests;
 
 #[cfg(test)]
 mod table_update_tests;
+
+#[cfg(test)]
+mod save_tests;

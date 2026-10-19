@@ -46,6 +46,7 @@ pub struct PendingProjectSave {
     pub include_view_snapshots: bool,
     /// Continue the pending project transition only after this save succeeds.
     pub continue_transition: bool,
+    pub external_save_id: Option<String>,
 }
 
 impl PlotiumApp {
@@ -58,6 +59,9 @@ impl PlotiumApp {
     }
 
     pub fn request_project_transition(&mut self, target: ProjectTransition) {
+        self.session
+            .external_saves
+            .revoke("Project transition requested; save authorization revoked.");
         let phase = if self.doc.dirty {
             ProjectTransitionPhase::NeedsConfirmation
         } else if target == ProjectTransition::Quit {
@@ -78,6 +82,7 @@ impl PlotiumApp {
             path,
             include_view_snapshots,
             continue_transition,
+            external_save_id: None,
         });
         self.session.ui.project_save_in_progress = true;
         if continue_transition && let Some(transition) = self.session.ui.project_transition.as_mut()

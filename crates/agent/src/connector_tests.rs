@@ -22,7 +22,7 @@ fn one_stdio_session_survives_offline_start_restart_and_revocation_without_repla
         let server = tokio::spawn(connector.clone().serve(server_io));
         let client = ().serve(client_io).await.unwrap();
         let service = server.await.unwrap().unwrap();
-        assert_eq!(client.list_all_tools().await.unwrap().len(), 11);
+        assert_eq!(client.list_all_tools().await.unwrap().len(), 12);
         let result = client
             .call_tool(CallToolRequestParams::new("plotium_get_state"))
             .await

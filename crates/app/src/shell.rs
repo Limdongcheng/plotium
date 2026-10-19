@@ -60,17 +60,66 @@ pub(super) fn poll_manual_project_save(
         .expect("finished project save worker is present");
     let result = match job.handle.join() {
         Ok(result) => result,
-        Err(_) => Err(plotium_core::project::ProjectError::Invalid(
-            "project save worker failed unexpectedly".to_owned(),
-        )),
+        Err(_) => match job.progress.phase() {
+            plotium_core::project::SavePhase::NotInstalled => {
+                Err(plotium_core::project::ProjectError::Invalid(
+                    "project save worker failed before target installation".into(),
+                ))
+            }
+            plotium_core::project::SavePhase::InstalledUnconfirmed => {
+                Err(plotium_core::project::ProjectError::InstalledUnconfirmed(
+                    "project save worker failed after target installation".into(),
+                ))
+            }
+            plotium_core::project::SavePhase::Committed => Ok(plotium_core::project::SaveOutcome {
+                revision: job.persisted_revision.clone(),
+                backup_warning: Some(
+                    "Save worker ended after durable commit; inspect diagnostics.".into(),
+                ),
+            }),
+        },
     };
-    let saved = app.complete_project_save(
-        job.operation_id,
-        &job.path,
-        job.include_view_snapshots,
-        job.captured_generation,
-        result,
-    );
+    let phase = plotium_core::project::save_result_phase(&result);
+    let error = result.as_ref().err().map(ToString::to_string);
+    let same_project = app.session.project_context == job.identity.project_context;
+    let apply = same_project
+        && job
+            .external_save_id
+            .as_ref()
+            .is_none_or(|id| app.external_save_can_apply(id));
+    let saved = if apply {
+        app.complete_captured_project_save(
+            job.operation_id,
+            &job.path,
+            job.include_view_snapshots,
+            &job.identity,
+            &job.persisted_revision,
+            result,
+        )
+    } else {
+        false
+    };
+    if same_project && !apply && phase != plotium_core::project::SavePhase::NotInstalled {
+        // Stop cannot undo an already installed file. Keep its recovery baseline
+        // truthful, but never clear dirty after revoked authorization.
+        app.retain_installed_save_baseline(
+            &job.path,
+            job.include_view_snapshots,
+            &job.persisted_revision,
+        );
+    }
+    if let Some(id) = &job.external_save_id {
+        app.finish_external_save(
+            id,
+            phase,
+            same_project && phase != plotium_core::project::SavePhase::NotInstalled,
+            error,
+        );
+    }
+    if !same_project {
+        ctx.request_repaint();
+        return;
+    }
     app.session.ui.project_save_in_progress = false;
     if job.continue_transition {
         if let Some(transition) = app.session.ui.project_transition.as_mut() {
@@ -84,7 +133,7 @@ pub(super) fn poll_manual_project_save(
                 plotium_core::state::ProjectTransitionPhase::NeedsConfirmation
             };
         }
-    } else if !saved {
+    } else if !saved && job.external_save_id.is_none() {
         app.session.ui.save_project_options = true;
     }
     ctx.request_repaint();
@@ -215,6 +264,14 @@ mod tests {
             path: "test.plotium".into(),
             include_view_snapshots: false,
             captured_generation: app.doc.edit_generation,
+            identity: plotium_core::project::SaveSnapshotIdentity {
+                project_context: app.session.project_context,
+                document_revision: app.doc.automation_revision,
+                edit_generation: app.doc.edit_generation,
+            },
+            persisted_revision: "test".into(),
+            progress: Default::default(),
+            external_save_id: None,
             continue_transition: false,
             handle: std::thread::spawn(move || {
                 receive.recv().unwrap();
@@ -279,5 +336,72 @@ mod tests {
                 .is_ok()
         );
         assert!(app.session.ui.settings_dialog.is_none());
+    }
+}
+
+#[cfg(test)]
+mod save_lifecycle_tests {
+    use super::*;
+    #[test]
+    fn installed_external_save_after_stop_retains_dirty_baseline_but_never_crosses_projects() {
+        for change_project in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("captured.plotium");
+            let mut app = PlotiumApp::new_with_settings(Default::default());
+            app.start_new_project();
+            let target = plotium_core::project::SaveTarget::inspect(&path).unwrap();
+            let path = target.path.clone();
+            let authorization = app
+                .request_external_save("save".into(), target, 0, false)
+                .unwrap();
+            app.decide_external_save("save", true, false);
+            let request = app.capture_external_save("save").unwrap();
+            let identity = request.identity().clone();
+            let persisted = request.persisted_revision().to_owned();
+            let progress = request.progress();
+            let (send, receive) = std::sync::mpsc::channel();
+            let mut job = Some(ManualProjectSaveJob {
+                operation_id: app.session.begin_operation(),
+                path: path.clone(),
+                include_view_snapshots: false,
+                captured_generation: identity.edit_generation,
+                identity,
+                persisted_revision: persisted.clone(),
+                progress,
+                external_save_id: Some("save".into()),
+                continue_transition: false,
+                handle: std::thread::spawn(move || {
+                    let result = plotium_core::project::save_project_snapshot(request);
+                    send.send(()).unwrap();
+                    result
+                }),
+            });
+            receive.recv_timeout(Duration::from_secs(5)).unwrap();
+            authorization.revoke();
+            if change_project {
+                app.start_new_project();
+            }
+            while !job.as_ref().unwrap().handle.is_finished() {
+                std::thread::yield_now();
+            }
+            poll_manual_project_save(&mut app, &mut job, &egui::Context::default());
+            let receipt = app.session.external_saves.receipt("save").unwrap();
+            assert_eq!(
+                receipt.phase,
+                Some(plotium_core::project::SavePhase::Committed)
+            );
+            assert_eq!(receipt.state_applied, !change_project);
+            assert!(path.exists());
+            if change_project {
+                assert!(app.doc.project_path.is_none());
+                assert!(!app.doc.dirty);
+            } else {
+                assert_eq!(
+                    app.doc.project_revision.as_deref(),
+                    Some(persisted.as_str())
+                );
+                assert!(app.doc.dirty);
+            }
+        }
     }
 }
