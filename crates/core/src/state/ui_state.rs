@@ -621,6 +621,7 @@ pub struct Session {
     /// empty untitled project.
     pub project_present: bool,
     pub project_context: super::ProjectContextId,
+    pub external_saves: super::ExternalSaves,
     pub active_canvas: Option<usize>,
     /// Pan/zoom of the board that holds every page-frame.
     pub board: BoardViewport,

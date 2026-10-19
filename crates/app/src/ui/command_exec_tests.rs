@@ -1,5 +1,6 @@
 use super::*;
 use plotium_core::actions::Action;
+#[cfg(unix)]
 use plotium_core::properties::{AggregateValue, PropertyAddress, PropertyValue, app_preferences};
 use plotium_core::settings::Settings;
 use plotium_core::state::{BoardFitTarget, CanvasDocument, DEFAULT_CANVAS_SIZE_MM, ViewportMode};
@@ -16,6 +17,7 @@ fn app_with_active_canvases(count: usize) -> PlotiumApp {
     app
 }
 
+#[cfg(unix)]
 fn catalog_snap(app: &mut PlotiumApp, enabled: bool) {
     let commit = app
         .plan_property_write(
@@ -88,6 +90,7 @@ fn new_panel_frame_avoids_existing_panel_overlap_when_space_exists() {
     );
 }
 
+#[cfg(unix)]
 fn resolved_snap(app: &PlotiumApp) -> AggregateValue<PropertyValue> {
     app.resolve_property(&PropertyAddress::new(
         app.app_target(),
@@ -98,36 +101,42 @@ fn resolved_snap(app: &PlotiumApp) -> AggregateValue<PropertyValue> {
 }
 
 #[test]
+#[cfg(unix)]
 fn settings_toolbar_and_toggle_command_share_the_snap_catalog_value() {
-    let mut app = PlotiumApp::new_with_settings(Settings::default());
+    crate::test_settings::isolated(
+        "ui::command_exec::tests::settings_toolbar_and_toggle_command_share_the_snap_catalog_value",
+        || {
+            let mut app = PlotiumApp::new_with_settings(Settings::default());
 
-    // Preferences rows submit this same catalog write.
-    catalog_snap(&mut app, false);
-    assert_eq!(
-        resolved_snap(&app),
-        AggregateValue::Uniform(PropertyValue::Bool(false))
-    );
+            // Preferences rows submit this same catalog write.
+            catalog_snap(&mut app, false);
+            assert_eq!(
+                resolved_snap(&app),
+                AggregateValue::Uniform(PropertyValue::Bool(false))
+            );
 
-    // The canvas toolbar keeps its existing setter surface, whose
-    // implementation now plans and commits the catalog property.
-    app.set_snap_enabled(true);
-    assert_eq!(
-        resolved_snap(&app),
-        AggregateValue::Uniform(PropertyValue::Bool(true))
-    );
+            // The canvas toolbar keeps its existing setter surface, whose
+            // implementation now plans and commits the catalog property.
+            app.set_snap_enabled(true);
+            assert_eq!(
+                resolved_snap(&app),
+                AggregateValue::Uniform(PropertyValue::Bool(true))
+            );
 
-    let mut clipboard = ClipboardTablePaste::default();
-    execute(
-        CommandId::ToggleSnap,
-        &mut app,
-        &mut clipboard,
-        &egui::Context::default(),
+            let mut clipboard = ClipboardTablePaste::default();
+            execute(
+                CommandId::ToggleSnap,
+                &mut app,
+                &mut clipboard,
+                &egui::Context::default(),
+            );
+            assert_eq!(
+                resolved_snap(&app),
+                AggregateValue::Uniform(PropertyValue::Bool(false))
+            );
+            assert!(!app.settings.general.snap_enabled);
+        },
     );
-    assert_eq!(
-        resolved_snap(&app),
-        AggregateValue::Uniform(PropertyValue::Bool(false))
-    );
-    assert!(!app.settings.general.snap_enabled);
 }
 
 #[test]

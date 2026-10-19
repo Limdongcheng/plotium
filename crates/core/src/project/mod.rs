@@ -43,6 +43,8 @@ mod mass_spec_convert;
 mod nmr_snapshot;
 mod peaks2d;
 mod persistence;
+mod save;
+pub use save::*;
 mod pipeline_conv;
 mod scheme;
 mod templates;
@@ -89,6 +91,8 @@ pub enum ProjectError {
     Data(#[from] plotium_data::DataError),
     #[error("invalid project: {0}")]
     Invalid(String),
+    #[error("target installed, but durable completion was not confirmed: {0}")]
+    InstalledUnconfirmed(String),
     #[error("unsupported project content: {0}")]
     Unsupported(String),
 }
@@ -165,6 +169,9 @@ pub struct ProjectSaveRequest {
     include_view_snapshots: bool,
     revision: String,
     backup_count: usize,
+    identity: SaveSnapshotIdentity,
+    progress: SaveProgress,
+    authorization: Option<SaveAuthorization>,
 }
 
 pub fn save_project(
@@ -187,6 +194,13 @@ pub fn prepare_project_save(
         include_view_snapshots,
         revision: persistence::new_revision(),
         backup_count: usize::from(app.settings.general.project_backup_generations),
+        identity: SaveSnapshotIdentity {
+            project_context: app.session.project_context,
+            document_revision: app.doc.automation_revision,
+            edit_generation: app.doc.edit_generation,
+        },
+        authorization: None,
+        progress: SaveProgress::default(),
     }
 }
 
@@ -202,7 +216,11 @@ pub fn save_project_snapshot(request: ProjectSaveRequest) -> Result<SaveOutcome>
         request.include_view_snapshots,
         revision.clone(),
         None,
-        request.backup_count,
+        save::SaveCommitOptions {
+            backups: request.backup_count,
+            authorization: request.authorization.as_ref(),
+            progress: &request.progress,
+        },
     )?;
     Ok(SaveOutcome {
         backup_warning,
@@ -238,7 +256,11 @@ pub fn save_recovery_snapshot(request: RecoverySaveRequest, target: RecoveryTarg
         false,
         persistence::new_revision(),
         Some(request.metadata),
-        0,
+        save::SaveCommitOptions {
+            backups: 0,
+            authorization: None,
+            progress: &SaveProgress::default(),
+        },
     )?;
     Ok(())
 }
@@ -259,11 +281,21 @@ fn save_project_impl(
     include_view_snapshots: bool,
     revision: String,
     recovery: Option<RecoveryMetadata>,
-    backup_count: usize,
+    commit: save::SaveCommitOptions<'_>,
 ) -> Result<Option<String>> {
     validate_resource_ids(doc, true)?;
-    let tmp_path = temporary_path(path);
-    let file = File::create(&tmp_path)?;
+    // Exclusive creation avoids truncating a sibling or following an existing
+    // link before authorization. Ordinary failures clean up this private path;
+    // partial OS replacement failures retain it for explicit recovery.
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let (file, mut tmp_path) = tempfile::Builder::new()
+        .prefix(persistence::SAVE_TEMP_PREFIX)
+        .suffix(".tmp")
+        .tempfile_in(parent)?
+        .into_parts();
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
@@ -442,13 +474,27 @@ fn save_project_impl(
     file.sync_all()?;
     drop(file);
 
-    let backup_warning = if is_recovery {
-        persistence::commit_recovery_file(&tmp_path, path)?;
-        None
+    let result = if is_recovery {
+        persistence::commit_recovery_file(&tmp_path, path).map(|()| None)
+    } else if let Some(authorization) = commit.authorization {
+        authorization.commit(&tmp_path, path, commit.backups, commit.progress)
     } else {
-        persistence::commit_project_file(&tmp_path, path, backup_count)?
+        persistence::commit_project_file_with_progress(
+            &tmp_path,
+            path,
+            commit.backups,
+            commit.progress,
+            None,
+        )
     };
-    Ok(backup_warning)
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(persistence::requires_save_recovery)
+    {
+        tmp_path.disable_cleanup(true);
+    }
+    result
 }
 
 pub fn load_project(path: &Path) -> Result<PlotiumApp> {
@@ -702,3 +748,6 @@ mod tests_charts;
 mod xps_tests;
 #[cfg(test)]
 mod xrd_tests;
+
+#[cfg(test)]
+mod save_boundary_tests;

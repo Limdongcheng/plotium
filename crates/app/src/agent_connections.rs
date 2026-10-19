@@ -89,6 +89,7 @@ impl AgentConnections {
     }
     pub fn poll(&mut self, app: &mut PlotiumApp, ctx: &egui::Context, blocked: bool) {
         self.poll_installation(app);
+        app.session.external_saves.reconcile();
         if !app.settings.agent.enabled {
             self.stop();
         } else {

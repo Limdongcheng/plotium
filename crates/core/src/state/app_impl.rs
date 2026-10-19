@@ -54,6 +54,7 @@ impl PlotiumApp {
             session: Session {
                 project_present: false,
                 project_context: Default::default(),
+                external_saves: Default::default(),
                 active_canvas: None,
                 board: BoardViewport::default(),
                 board_views: Vec::new(),

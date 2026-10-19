@@ -248,7 +248,14 @@ fn orphaned_recovery_temp_file_is_reclaimed() {
     let owner = RecoveryManager::new_in(root.clone()).unwrap();
     let target = owner.target();
     let slot_dir = target.path().parent().unwrap().to_owned();
-    std::fs::write(temporary_path(target.path()), b"partial archive").unwrap();
+    let private_temp = tempfile::Builder::new()
+        .prefix(SAVE_TEMP_PREFIX)
+        .suffix(".tmp")
+        .tempfile_in(&slot_dir)
+        .unwrap();
+    // Model process termination, which bypasses TempPath cleanup.
+    let (_, orphan) = private_temp.keep().unwrap();
+    std::fs::write(&orphan, b"partial archive").unwrap();
     drop(target);
     drop(owner);
 
@@ -257,4 +264,130 @@ fn orphaned_recovery_temp_file_is_reclaimed() {
     assert!(!slot_dir.exists());
     finder.shutdown().unwrap();
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn save_phase_tracks_installation_not_error_text() {
+    use crate::project::SavePhase;
+    let dir = temp_dir("save-phases");
+    let target = dir.join("target.plotium");
+    let temp = dir.join("candidate.tmp");
+    std::fs::write(&target, b"old").unwrap();
+    std::fs::write(&temp, b"new").unwrap();
+    let before = commit_project_with(
+        &temp,
+        &target,
+        0,
+        |_, _, _| Err(io::Error::other("injected before replace")),
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert_eq!(before.save_phase(), SavePhase::NotInstalled);
+    assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    let after = commit_project_with(&temp, &target, 0, atomic_replace, |_| {
+        Err(io::Error::other("injected after replace, before sync"))
+    })
+    .unwrap_err();
+    assert_eq!(after.save_phase(), SavePhase::InstalledUnconfirmed);
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    assert!(!temp.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn save_phase_also_covers_backup_failure_after_replace() {
+    use crate::project::SavePhase;
+    let dir = temp_dir("save-backup-phase");
+    let target = dir.join("target.plotium");
+    let temp = dir.join("candidate.tmp");
+    std::fs::write(&target, b"old").unwrap();
+    std::fs::write(&temp, b"new").unwrap();
+    // Pruning an invalid backup directory fails after the target replacement.
+    std::fs::create_dir(backup_path(&target, 0)).unwrap();
+    let error = commit_project_file(&temp, &target, 0).unwrap_err();
+    assert_eq!(error.save_phase(), SavePhase::InstalledUnconfirmed);
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn authorized_save_rechecks_target_after_backup_preparation() {
+    use crate::project::*;
+    let dir = temp_dir("backup-target-drift").canonicalize().unwrap();
+    let target = dir.join("target.plotium");
+    std::fs::write(&target, b"authorized old target").unwrap();
+    std::fs::write(backup_path(&target, 0), b"prior backup").unwrap();
+    let mut app = crate::state::PlotiumApp::new_with_settings(Default::default());
+    app.settings.general.project_backup_generations = 1;
+    let permission = SaveAuthorization::pending(SaveTarget::inspect(&target).unwrap());
+    permission.grant(true).unwrap();
+    let mut request = prepare_project_save(&app, &target, false);
+    request.authorize(permission);
+    let progress = request.progress();
+    BEFORE_REPLACE_TEST.with(|hook| {
+        hook.set(Some(|path| {
+            std::fs::write(path, b"later external version during backup").unwrap();
+        }))
+    });
+    let result = save_project_snapshot(request);
+    assert_eq!(save_result_phase(&result), SavePhase::NotInstalled);
+    assert_eq!(progress.phase(), SavePhase::NotInstalled);
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"later external version during backup"
+    );
+    assert_eq!(
+        std::fs::read(backup_path(&target, 0)).unwrap(),
+        b"prior backup"
+    );
+    assert!(result.unwrap_err().to_string().contains("target changed"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+fn approved_replace_preserves_foreign_backup_temporary(suffix: &str) {
+    use crate::project::*;
+    let dir = temp_dir(suffix).canonicalize().unwrap();
+    let target = dir.join("target.plotium");
+    let sibling = dir.join(format!(".target.plotium.bak{suffix}"));
+    std::fs::write(&target, b"authorized old target").unwrap();
+    std::fs::write(backup_path(&target, 0), b"prior backup").unwrap();
+    std::fs::write(&sibling, b"unrelated sibling sentinel").unwrap();
+    let mut app = crate::state::PlotiumApp::new_with_settings(Default::default());
+    app.settings.general.project_backup_generations = 2;
+    let permission = SaveAuthorization::pending(SaveTarget::inspect(&target).unwrap());
+    permission.grant(true).unwrap();
+    let mut request = prepare_project_save(&app, &target, false);
+    request.authorize(permission);
+    let progress = request.progress();
+    let result = save_project_snapshot(request);
+    assert_eq!(save_result_phase(&result), SavePhase::Committed);
+    assert_eq!(progress.phase(), SavePhase::Committed);
+    assert!(load_project(&target).is_ok());
+    assert_eq!(
+        std::fs::read(&sibling).unwrap(),
+        b"unrelated sibling sentinel"
+    );
+    assert_eq!(
+        std::fs::read(backup_path(&target, 0)).unwrap(),
+        b"authorized old target"
+    );
+    assert_eq!(
+        std::fs::read(backup_path(&target, 1)).unwrap(),
+        b"prior backup"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn approved_replace_preserves_foreign_backup_copy_temporary() {
+    approved_replace_preserves_foreign_backup_temporary(".new.tmp");
+}
+#[cfg(unix)]
+#[test]
+fn approved_replace_preserves_foreign_backup_rotation_temporary() {
+    approved_replace_preserves_foreign_backup_temporary(".tmp");
 }

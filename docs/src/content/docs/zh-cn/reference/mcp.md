@@ -44,7 +44,8 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 执行计划绑定创建时的上下文。
 
 实际 agent 项目读取和执行保存运行记录，使项目进入未保存状态；握手、工具发现、
-已认证状态查询、每五秒心跳及静态属性目录查询均不生成记录。
+已认证状态查询、每五秒心跳、静态属性目录以及保存协调（预检、提交与
+`plotium_save_status`）均不生成审计记录。
 
 连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理、单元格补丁、已存配方显式刷新和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
@@ -71,12 +72,12 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 ## 不依赖名称发现结构
 
 先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
-十一个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+十二个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
-这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
+这里可预检 `project.save`、`resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
 `data.import`／`data.transform` 模式、`table.patch`、`table.refresh`、`figure.edit`、`plot.create` 及 `plot.series.append`／`plot.series.bind`／`plot.series.materialize_default`。
-只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理／补丁／刷新预检和所有修改执行。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理／补丁／刷新预检和所有可撤销修改执行；保存使用下文独立的逐次桌面授权。
 
 使用返回的 revision 列举文档画布：
 
@@ -502,7 +503,7 @@ X/Y 缺失也不忽略非法误差。误差表示非负绝对幅度，不从列�
 曲线计划共享同样的行预算，完整响应最多 256 KiB。全部目标、列、单位、行和
 revision 检查通过后才一次原子提交、一次 Undo，不部分成功、不跳过无效目标。
 只读连接拒绝绑定预检和执行。失败或过期执行也消费计划，须重读状态并重新规划。
-GUI 保存重开保留原生绑定和单位；MCP 不开放保存和导出，新建图使用下文的 `plot.create`。
+GUI 保存重开保留原生绑定和单位；MCP `project.save` 需桌面单独批准；导出尚未开放，新建图使用下文的 `plot.create`。
 
 ## 从已导入表格创建原生单图
 
@@ -748,7 +749,7 @@ Read and modify。失败执行也消费一次性计划；沿用 32 个计划及 
 已有文档级字号仍保持项目范围。
 
 修改后读取新 revision，再为实际画布调用 `plotium_render_preview`，查看 PNG 并
-核对 `render_revision`；用 GUI Undo/Redo 检查同一原生对象。MCP 保存/导出仍未开放。
+核对 `render_revision`；用 GUI Undo/Redo 检查同一原生对象。MCP 保存需单独的桌面授权；导出仍未开放。
 
 ## 查询并修改一条明确曲线
 
@@ -825,3 +826,74 @@ Series ID 仅在所属图对象内唯一，因此务必复制包含资源信息�
 `request_cancelled`、`connection_stopped`、`response_too_large` 和 `execution_failed`。`busy` 可在编辑手势、
 恢复确认或后台项目操作结束后重试；过期计划及 revision 冲突需重新读取和预检。
 AI connections (MCP) 设置页面显示最近操作和错误，后台反馈不会自行打开设置页面。
+
+
+## 保存当前桌面项目
+
+保存复用 **Save project** 的原生快照、后台 worker、备份和完成回调，保存当前
+桌面实际状态，不另开 CLI 项目。先读 `plotium_get_state`；`save_state` 给出当前路径、
+已存档案 revision、dirty、edit_generation 和近期保存回执。
+
+首次保存或另存时，不带 `ids`／`targets`：
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 46,
+  "tool_id": "project.save",
+  "parameters": {"path": "/absolute/path/figure.plotium"}
+}
+```
+
+省略 `path` 保存当前文件；未命名项目必须给出路径。父目录须已存在，目标为普通、
+非符号链接的 `.plotium` 文件或尚不存在的路径。预检解析父目录并冻结已观察的目标。
+可选 `include_view_snapshots` 覆盖当前项目的原生保存配置。计划返回 `save_id`、
+实际路径及 `overwrite_required`，不授予磁盘写权限。
+
+用 `plotium_execute {"plan_id":"PLAN_ID"}` 提交一次性计划，结果为
+`save.status: "awaiting_authorization"`。在 Plotium 核对准确路径，点击
+**Allow save**；已有文件还必须勾选 **Replace the existing file at this exact path**。
+**Deny** 不改目标。这与 **Read and modify** 独立，只授权本次保存，不能通过工具
+参数代为批准。Read only 模式也可发起此授权请求。目标变化须重新规划并确认；
+同时最多一个外部保存请求。
+
+序列化使用独占创建的私有唯一同目录临时文件，不写固定 `<target>.tmp`。
+已有目标在备份准备完成后、实际替换前再次复验预检冻结的文件元数据；发现变化即拒绝
+安装，保留后来版本。一次性权限准入与文件复验是两个边界；复验加替换并非跨进程
+compare-and-swap。非协作写入若发生在最后复验之后，或保留了所检查的元数据，
+仍可能无法察觉；应避免并发保存到同一路径。
+
+用 `plotium_save_status {"save_id":"SAVE_ID"}` 查询，不带项目 revision/context，
+保存中也可读取且不使项目 dirty。`awaiting_authorization`、`queued`、`saving`
+均未完成，`phase` 为 null；只有 `completed` 带最终阶段：
+
+| phase | 文件状态与下一步 |
+| --- | --- |
+| `not_installed` | 本次未把快照安装到目标。处理拒绝或错误、检查实际状态；仍需保存时重新取得授权。 |
+| `installed_unconfirmed` | 快照已替换／创建目标，但备份收尾或持久同步失败。保持项目打开，检查目标及存储后再明确授权重试；不能假定旧文件还在。 |
+| `committed` | 捕获的快照完成原生持久提交；后来的编辑仍可能未保存。 |
+
+Windows 替换部分失败时，即使新快照为 `not_installed`，旧目标仍可能已被移走或删除。
+Plotium 保留已序列化的候选文件，并报告准确恢复路径。只有不覆盖现有目标时才尝试
+从已知备份恢复原文件；无法完成时，保留并报告该备份及更早的暂存备份。如果 Windows
+移走原文件却未返回其位置，错误会明确说明。保持项目打开，检查所列文件后再决定是否
+重试；此类失败不会清除 dirty 状态。
+
+回执包含原始 `project_context`、`snapshot.document_revision`、
+`snapshot.edit_generation`、`persisted_revision`、准确路径、`state_applied`、
+`dirty_after_completion`、错误及恢复说明。查询结果另给当前 context/path/revision/dirty
+和 `matches_current_project`。快照在桌面批准后、后台工作前捕获；之后的新编辑
+保持 dirty，完成不等于当前所有编辑或后续读取产生的审计记录已落盘。
+已安装但未确认同步时仍保持 dirty，并记录已安装基线供原生恢复使用。
+保存规划／提交和状态查询仅用临时桌面回执，不加审计记录；其他项目读取仍沿用
+原有审计 dirty 语义。
+
+切项目或停止连接撤销待写权限。worker 只持有原项目快照和路径，并在安装边界检查
+授权；即便 document revision 相同，旧完成也不能装入另一项目或清它的 dirty。
+worker 原子确认授权并进入安装后，停止不保证取消这次原文件写入，须查回执；
+在此之前撤销则阻止安装。保存不加入 Undo，Undo 不删除或还原磁盘文件。
+
+桌面进程保留最近 16 条回执，跨连接恢复和项目切换有效，退出应用后不保留。响应丢失后
+先查询原 `save_id`，不要重放已提交调用。应用重启或 `unknown_save` 时，检查目标和
+新打开的项目，不自行假定成功或失败。稳定 stdio 配置继续可用；重开／重启后仍须
+重新读取状态、发现目标并规划。连接恢复不是保存成功的证据。

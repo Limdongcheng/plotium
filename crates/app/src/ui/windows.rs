@@ -1,8 +1,10 @@
 //! Modal and floating application windows grouped by responsibility.
 
 mod canvas_settings;
+mod external_save;
 mod panel_note_edit;
 mod project;
+pub(super) use external_save::external_save_window;
 mod text_edit;
 
 use super::*;

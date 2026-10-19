@@ -67,7 +67,7 @@ fn session_discovery_walks_to_exact_series_and_preserves_original_tools() {
             .as_array()
             .unwrap()
             .len(),
-        11
+        12
     );
     let execute = state["connection_capabilities"]["tools"]
         .as_array()
@@ -75,7 +75,11 @@ fn session_discovery_walks_to_exact_series_and_preserves_original_tools() {
         .iter()
         .find(|t| t["name"] == "plotium_execute")
         .unwrap();
-    assert_eq!(execute["currently_permitted"], false);
+    assert_eq!(execute["currently_permitted"], true);
+    assert_eq!(
+        execute["required_permission"],
+        "operation_specific: reversible_modify or per_request_desktop_save_authorization"
+    );
     s.allow_modify = true;
     let state = s.call(&mut app, "plotium_get_state", json!({})).unwrap();
     assert_eq!(

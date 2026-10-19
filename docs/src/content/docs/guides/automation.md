@@ -246,9 +246,15 @@ explicitly refresh saved recipes, and rename datasets,
 canvases or objects. Display edits cover exact-curve color, width, stroke style, markers, visibility
 and legend text; axis titles, display units and auto/manual ranges; plot-local
 tick, axis-title and legend sizes; and the existing contour/document font controls. Processing parameters, fitting and other
-computations beyond supported table transforms, other import formats, saving and
+computations beyond supported table transforms, other import formats and
 exporting are not available through this connection. Use Plotium's interface for
 those tasks. There is no built-in chat window.
+
+To save, ask “Save this desktop project to `/absolute/path/figure.plotium`.”
+Review the exact path in Plotium's **Allow AI to save this project?** prompt;
+existing files also need explicit replacement confirmation. Saving has separate,
+one-use authorization, is not undoable, and finishes only when the agent receives
+a completed save receipt. Later edits and reads may still be unsaved.
 
 ### Control access and review changes
 

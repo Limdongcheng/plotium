@@ -302,28 +302,34 @@ mod image_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn confirmed_export_updates_trim_through_the_catalog_and_never_dpi() {
-        let mut settings = plotium_core::settings::Settings::default();
-        settings.export.dpi = 600;
-        let mut app = PlotiumApp::new_with_settings(settings);
+        crate::test_settings::isolated(
+            "ui::export_dialog::tests::confirmed_export_updates_trim_through_the_catalog_and_never_dpi",
+            || {
+                let mut settings = plotium_core::settings::Settings::default();
+                settings.export.dpi = 600;
+                let mut app = PlotiumApp::new_with_settings(settings);
 
-        set_confirmed_trim_default(&mut app, true);
-        assert!(app.settings.export.trim_to_visible_content);
-        assert_eq!(app.settings.export.dpi, 600);
-        let resolved = app
-            .resolve_property(&plotium_core::properties::PropertyAddress::new(
-                app.app_target(),
-                plotium_core::properties::app_preferences::TRIM_TO_VISIBLE_CONTENT,
-            ))
-            .expect("the catalog reads the confirmed default");
-        assert_eq!(
-            resolved.value.uniform(),
-            Some(&plotium_core::properties::PropertyValue::Bool(true))
+                set_confirmed_trim_default(&mut app, true);
+                assert!(app.settings.export.trim_to_visible_content);
+                assert_eq!(app.settings.export.dpi, 600);
+                let resolved = app
+                    .resolve_property(&plotium_core::properties::PropertyAddress::new(
+                        app.app_target(),
+                        plotium_core::properties::app_preferences::TRIM_TO_VISIBLE_CONTENT,
+                    ))
+                    .expect("the catalog reads the confirmed default");
+                assert_eq!(
+                    resolved.value.uniform(),
+                    Some(&plotium_core::properties::PropertyValue::Bool(true))
+                );
+            },
         );
     }
 }
