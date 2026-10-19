@@ -48,11 +48,13 @@ impl ServerHandler for Handler {
         }
         let (response, mut receive) = oneshot::channel();
         let image_request = request.name == "plotium_render_preview";
+        let diagnostic_request = request.name == "plotium_figure_diagnose";
         let pending = PendingRequest {
             name: request.name.into_owned(),
             arguments,
             response,
             cancellation: context.ct.clone(),
+            transport: Some(context.peer.clone()),
         };
         if self.send.try_send(pending).is_err() {
             return Ok(CallToolResult::structured_error(
@@ -72,6 +74,7 @@ impl ServerHandler for Handler {
         };
         Ok(match outcome {
             Ok(value) if image_request => image_result(value, &context.id),
+            Ok(value) if diagnostic_request => diagnostic_result(value, &context.id),
             Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::structured_error(error.value()),
         }
@@ -153,6 +156,15 @@ pub(crate) fn definitions() -> Vec<Tool> {
         Tool::new(name, description, schema.as_object().expect("local schema is an object").clone())
     }).collect();
     tools.push(Tool::new("plotium_document_inspect", "Inspect bounded document structure and source bindings by full stable target. view self returns details; children pages direct children. Never uses selection.", document.as_object().expect("local schema is an object").clone()));
+    let mut diagnostic = plotium_core::automation::figure_diagnostic_schema();
+    diagnostic["properties"]["expected_revision"] = json!({"type":"integer","minimum":0});
+    diagnostic["properties"]["cursor"] = json!({"type":"string","format":"uuid"});
+    diagnostic["required"] = json!(["expected_revision"]);
+    diagnostic["oneOf"] = json!([
+        {"required":["canvas","output"],"not":{"required":["cursor"]}},
+        {"required":["cursor"],"not":{"anyOf":[{"required":["canvas"]},{"required":["output"]},{"required":["checks"]},{"required":["targets"]},{"required":["overlap_targets"]},{"required":["view"]},{"required":["limit"]}]}}
+    ]);
+    tools.push(Tool::new("plotium_figure_diagnose", "Read native figure geometry and potential issues at explicit physical size. Coverage is mandatory: no issues is not proof of full coverage. Follow one-use continuation with the same context/revision; a new initial query replaces the previous scan. Audit summaries mark dirty without changing revision.", diagnostic.as_object().expect("local schema").clone()));
     let mut preview = plotium_core::automation::image_preview_schema();
     preview["properties"]["expected_revision"] = json!({"type":"integer","minimum":0});
     preview["required"] = json!(["expected_revision", "target"]);
@@ -197,6 +209,19 @@ pub(crate) fn definitions() -> Vec<Tool> {
         }
     }
     tools
+}
+
+fn diagnostic_result(value: Value, request_id: &RequestId) -> CallToolResult {
+    let result = CallToolResult::structured(value);
+    let envelope = JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id: request_id.clone(),
+        result: &result,
+    };
+    match serde_json::to_vec(&envelope){
+        Ok(bytes) if bytes.len()<=plotium_core::automation::DOCUMENT_RESPONSE_BYTES=>result,
+        _=>CallToolResult::structured_error(Failure::new("response_too_large","MCP diagnostic response exceeds 256 KiB; use a smaller request ID and start a new scan").value()),
+    }
 }
 
 pub(crate) fn image_result(mut value: Value, request_id: &RequestId) -> CallToolResult {

@@ -16,6 +16,8 @@ mod figure_edit;
 mod plot_creation;
 pub use figure_edit::*;
 pub use plot_creation::*;
+mod diagnostics;
+pub use diagnostics::*;
 mod document;
 pub use curve_bindings::*;
 mod preview;

@@ -65,7 +65,10 @@ fn the_planning_of_pre_existing_tools_is_unchanged() {
         ToolRegistry::built_in()
             .descriptors()
             .filter(|d| !is_native_curve_tool(&d.id)
-                && !matches!(d.id.as_str(), FIGURE_EDIT | TABLE_PATCH | TABLE_REFRESH))
+                && !matches!(
+                    d.id.as_str(),
+                    FIGURE_EDIT | TABLE_PATCH | TABLE_REFRESH | FIGURE_DIAGNOSE
+                ))
             .count()
             - 7,
         "every tool that predates property, document discovery, image preview, table read and explicit curve binding tools is covered here"

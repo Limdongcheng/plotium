@@ -67,7 +67,7 @@ pub(super) fn write(s: &mut String, fig: &Figure, plot: Rect) {
     }
 }
 
-fn format_value(value: f32) -> String {
+pub(crate) fn format_value(value: f32) -> String {
     if value.abs() >= 10_000.0 || (value != 0.0 && value.abs() < 0.001) {
         format!("{value:.2e}")
     } else {

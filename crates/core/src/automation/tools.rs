@@ -72,6 +72,8 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
         super::curve_bindings::freeze(&request)?
     } else if matches!(request.tool_id.as_str(), TABLE_COLUMNS | TABLE_READ_ROWS) {
         super::table_read::freeze_table(app, &request)?
+    } else if request.tool_id == FIGURE_DIAGNOSE {
+        super::diagnostics::freeze(app, &request)?
     } else if request.tool_id == IMAGE_PREVIEW {
         super::preview::freeze(app, &request)?
     } else if request.tool_id == DOCUMENT_INSPECT {
@@ -302,7 +304,8 @@ impl PreparedToolRun {
                 finished_unix_ms: unix_ms(),
                 cancelled: matches!(
                     outcome,
-                    Err(AutomationError::PreviewCancelled
+                    Err(AutomationError::DiagnosticCancelled
+                        | AutomationError::PreviewCancelled
                         | AutomationError::TableTransformCancelled)
                 ),
                 nodes: records,
@@ -335,6 +338,10 @@ pub(super) fn record_run(document: &mut Document, mut manifest: RunManifest) {
     // A workflow and a direct call share the same persistence boundary. PNG
     // transport data is never project state, including when invoked by workflows.
     for node in &mut manifest.nodes {
+        if node.tool_id == FIGURE_DIAGNOSE {
+            let value = &node.result.value;
+            node.result.value = serde_json::json!({"project_context":value["project_context"],"basis_revision":value["basis_revision"],"canvas":value["canvas"],"output":value["output"],"coverage":value["coverage"],"truncated":value["truncated"],"audit":"summary_only"});
+        }
         if node.tool_id == IMAGE_PREVIEW
             && let Some(value) = node.result.value.as_object_mut()
         {
@@ -406,6 +413,16 @@ pub(super) fn execute_planned_tool(
         "resources.inspect" => execute_inspect(app, &plan)?,
         "data.preview" => execute_data_preview(app, &plan)?,
         "render.preview" => execute_render_preview(app, &plan)?,
+        FIGURE_DIAGNOSE => {
+            let params = parse(FIGURE_DIAGNOSE, plan.request.parameters.clone())?;
+            let mut scan = FigureDiagnosticScan::capture(app, before, params)?;
+            let mut value = scan.next_page(|| false)?;
+            value["continuation_available"] = serde_json::json!(false);
+            value["continuation_help"] = serde_json::json!(
+                "Use plotium_figure_diagnose for retained cursor pages; direct core calls return one bounded batch."
+            );
+            readonly_value(FIGURE_DIAGNOSE, before, value)
+        }
         IMAGE_PREVIEW => ImagePreviewSnapshot::capture(app, &plan)?.render()?,
         "results.compare" => execute_compare(app, &plan)?,
         "resource.rename" => execute_rename(app, &plan)?,

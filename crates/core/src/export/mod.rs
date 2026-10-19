@@ -1,5 +1,6 @@
 mod asset_render;
 mod fonts;
+pub(crate) use fonts::diagnostic_font_status;
 mod pdf;
 mod precheck;
 mod preset;

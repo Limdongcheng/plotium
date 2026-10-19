@@ -9,18 +9,16 @@ use serde_json::{Value, json};
 pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
     let src = &series.source;
     let resource = ResourceRef::from(src.resource);
-    let mut out = json!({"dataset":resource,"field":null,"field_id":src.field,"item_id":src.item(),"status":"resolved","binding_mode":"field"});
+    let mut out = json!({"dataset":resource,"field":null,"field_id":src.field,"item_id":src.item(),"status":binding_status(app,series),"binding_mode":"field"});
     let Some(dataset) = app
         .doc
         .datasets
         .iter()
         .find(|d| d.resource_id() == src.resource)
     else {
-        out["status"] = json!("missing_dataset");
         return out;
     };
     let Some(descriptor) = dataset.field_descriptor(src.field) else {
-        out["status"] = json!("missing_field");
         return out;
     };
     out["field"] = json!(child_ref(src.resource, &descriptor.local_id, KIND_FIELD));
@@ -33,11 +31,7 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
             .and_then(|c| c.item(item))
             .is_none()
     {
-        out["status"] = json!("missing_item");
         return out;
-    }
-    if !dataset.supports_encoding(src.field, &series.encoding) {
-        out["status"] = json!("incompatible_encoding");
     }
     if let Dataset::Table(table) = dataset {
         out["freshness"] = json!(crate::automation::table_update::connection_table_freshness(
@@ -54,19 +48,6 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
             out["x_column"] = column(columns.x_column_id);
             out["y_column"] = column(columns.y_column_id);
             out["error_column"] = json!(columns.y_error_column_id.map(column));
-            if columns.table_id != table.typed_state.envelope.revision.table_id {
-                out["status"] = json!("missing_table");
-            } else if [
-                Some(columns.x_column_id),
-                Some(columns.y_column_id),
-                columns.y_error_column_id,
-            ]
-            .into_iter()
-            .flatten()
-            .any(|id| schema.column(id).is_none())
-            {
-                out["status"] = json!("missing_column");
-            }
             out["units"] = json!([
                 schema
                     .column(columns.x_column_id)
@@ -85,9 +66,60 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
         // A table default field materializes its whole figure, not just the first
         // value column. R1 describes that expansion without changing its meaning.
         out["series_columns"]=json!(table.series_bindings.iter().map(|b|json!({"y_column":column(b.value_column),"error_column":b.uncertainty_column.map(column)})).collect::<Vec<_>>());
+    }
+    out
+}
+
+/// Shared status-only observation avoids constructing column/resource metadata
+/// when a bounded geometry query only needs to report a missing source.
+pub(in crate::automation) fn binding_status(
+    app: &PlotiumApp,
+    series: &SeriesBinding,
+) -> &'static str {
+    let src = series.source;
+    let Some(dataset) = app.doc.dataset_by_id(src.resource) else {
+        return "missing_dataset";
+    };
+    if dataset.field_descriptor(src.field).is_none() {
+        return "missing_field";
+    }
+    if let Some(item) = src.item()
+        && dataset
+            .trace_collection(src.field)
+            .and_then(|c| c.item(item))
+            .is_none()
+    {
+        return "missing_item";
+    }
+    let status = if dataset.supports_encoding(src.field, &series.encoding) {
+        "resolved"
+    } else {
+        "incompatible_encoding"
+    };
+    let Dataset::Table(table) = dataset else {
+        return status;
+    };
+    let schema = &table.typed_state.envelope.revision.snapshot.schema;
+    if let Some(columns) = src.columns() {
+        if columns.table_id != table.typed_state.envelope.revision.table_id {
+            return "missing_table";
+        }
+        if [
+            Some(columns.x_column_id),
+            Some(columns.y_column_id),
+            columns.y_error_column_id,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|id| schema.column(id).is_none())
+        {
+            return "missing_column";
+        }
+    } else {
         if table.x_binding.is_none() || table.series_bindings.is_empty() {
-            out["status"] = json!("unbound");
-        } else if table
+            return "unbound";
+        }
+        if table
             .x_binding
             .is_some_and(|id| schema.column(id).is_none())
             || table.series_bindings.iter().any(|b| {
@@ -96,8 +128,8 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
                         .is_some_and(|id| schema.column(id).is_none())
             })
         {
-            out["status"] = json!("missing_column");
+            return "missing_column";
         }
     }
-    out
+    status
 }

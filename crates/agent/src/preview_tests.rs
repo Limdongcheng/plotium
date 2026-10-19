@@ -30,6 +30,7 @@ fn pending(arguments: Value) -> (PendingRequest, oneshot::Receiver<Result<Value,
             arguments,
             response,
             cancellation: CancellationToken::new(),
+            transport: None,
         },
         receive,
     )

@@ -536,6 +536,10 @@ pub enum AutomationError {
     TableTransformCancelled,
     #[error("table transform budget exceeded: {0}")]
     TableTransformBudget(String),
+    #[error("figure diagnostic cancelled")]
+    DiagnosticCancelled,
+    #[error("figure diagnostic budget exceeded: {0}")]
+    DiagnosticBudget(String),
     #[error("preview request cancelled")]
     PreviewCancelled,
     #[error("preview budget exceeded: {0}")]

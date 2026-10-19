@@ -12,17 +12,22 @@ use rmcp::{
     },
 };
 use std::{path::PathBuf, time::Duration};
+#[path = "connector_diagnostics.rs"]
+mod diagnostics;
+use diagnostics::DiagnosticTransport;
 
 #[derive(Clone)]
 pub struct Connector {
     directory: PathBuf,
     client: reqwest::Client,
     identity: &'static str,
+    diagnostic: DiagnosticTransport,
 }
 impl Connector {
     pub fn new(desktop: bool) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             directory: runtime_dir()?,
+            diagnostic: Default::default(),
             client: reqwest::Client::builder()
                 .no_proxy()
                 .connect_timeout(Duration::from_secs(2))
@@ -58,6 +63,30 @@ impl Connector {
             return Err("Stale Plotium discovery; wait for the application to recover.".into());
         }
         Ok(entry)
+    }
+    async fn connect(
+        &self,
+        entry: Discovery,
+    ) -> Result<rmcp::service::RunningService<rmcp::RoleClient, ()>, &'static str> {
+        let mut config = StreamableHttpClientTransportConfig::with_uri(entry.url);
+        config.auth_header = Some(entry.token);
+        config.reinit_on_expired_session = false;
+        config.retry_config =
+            std::sync::Arc::new(rmcp::transport::common::client_side_sse::NeverRetry::default());
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            ().serve(StreamableHttpClientTransport::with_client(
+                self.client.clone(),
+                config,
+            )),
+        )
+        .await
+        {
+            Ok(Ok(client)) => Ok(client),
+            _ => Err(
+                "Plotium disconnected before the call; check application status and reread state.",
+            ),
+        }
     }
     async fn wait_for_loss(&self, instance: uuid::Uuid) {
         loop {
@@ -110,17 +139,18 @@ impl ServerHandler for Connector {
                 .into());
             }
         };
-        let mut config = StreamableHttpClientTransportConfig::with_uri(entry.url);
-        config.auth_header = Some(entry.token);
-        // RMCP defaults to replaying a POST after an expired HTTP session.
-        // Project operations are one-shot, so all recovery belongs to the next call.
-        config.reinit_on_expired_session = false;
-        config.retry_config =
-            std::sync::Arc::new(rmcp::transport::common::client_side_sse::NeverRetry::default());
+        if request.name == "plotium_figure_diagnose" {
+            return self.diagnostic_call(request, context, entry).await;
+        }
         let instance = entry.instance_id;
-        let mut client = match tokio::time::timeout(Duration::from_secs(5), ().serve(StreamableHttpClientTransport::with_client(self.client.clone(), config))).await {
-            Ok(Ok(client)) => client,
-            _ => return Ok(CallToolResult::structured_error(Failure::new("unavailable", "Plotium disconnected before the call; check application status and reread state.").value()).into()),
+        let mut client = match self.connect(entry).await {
+            Ok(client) => client,
+            Err(message) => {
+                return Ok(CallToolResult::structured_error(
+                    Failure::new("unavailable", message).value(),
+                )
+                .into());
+            }
         };
         let outcome = tokio::select! {
             _ = context.ct.cancelled() => Err("Request cancelled; inspect state before planning again"),
@@ -155,8 +185,11 @@ pub fn run_stdio(desktop: bool) -> Result<(), Box<dyn std::error::Error>> {
                 heartbeat.heartbeat().await;
             }
         });
+        let diagnostic = connector.diagnostic.clone();
         let service = connector.serve(rmcp::transport::stdio()).await?;
-        service.waiting().await?;
+        let outcome = service.waiting().await;
+        diagnostic.close().await;
+        outcome?;
         task.abort();
         Ok(())
     })

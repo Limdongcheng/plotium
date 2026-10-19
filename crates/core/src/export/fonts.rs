@@ -55,6 +55,18 @@ fn preferred_sans_family<'a>(families: impl Iterator<Item = (&'a str, bool)>) ->
         .or(first)
 }
 
+/// Diagnostics use the same export font discovery, while retaining estimated
+/// text bounds rather than claiming that every glyph was shaped successfully.
+pub(crate) fn diagnostic_font_status() -> &'static str {
+    let mut db = Database::new();
+    load_system_fonts(&mut db);
+    if db.faces().next().is_none() {
+        "missing"
+    } else {
+        "available_glyph_coverage_unverified"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::preferred_sans_family;

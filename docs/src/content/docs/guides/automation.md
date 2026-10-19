@@ -224,6 +224,7 @@ Use plain language in your AI client. For example:
 
 - **Inspect a figure:** “Use Plotium to preview my canvas and describe the curves
   and labels. Do not change anything.” Your client must support receiving images.
+- **Diagnose without editing:** “At 180 × 90 mm, locate text overflow and potential legend occlusion. Report coverage limits and inspect the native PNG. Keep intentional overlap and manual axis ranges.” See [figure diagnostics](/reference/mcp/#diagnose-figure-geometry-at-an-output-size).
 - **Adjust a line:** “Find the curve named Current, check its line width, then
   change only that curve to 1.5 pt.” This requires **Read and modify** access.
 - **Arrange a figure:** “Make this page 180 × 90 mm, arrange these two panels

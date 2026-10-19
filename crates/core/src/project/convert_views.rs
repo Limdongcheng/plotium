@@ -588,6 +588,7 @@ pub fn view_to_canvas(
                         &projections,
                         size_mm,
                     );
+                    super::render_provenance::restore(&mut figure, &derived);
                     crate::state::DerivedAxes::from_figure(&derived)
                 } else {
                     crate::state::DerivedAxes::from_figure(&figure)

@@ -59,7 +59,7 @@ fn real_http_mcp_handshake_discovery_bridge_and_authentication() {
                     .await
                     .unwrap();
             let tools = client.list_all_tools().await.unwrap();
-            assert_eq!(tools.len(), 13);
+            assert_eq!(tools.len(), 14);
             assert!(
                 tools
                     .iter()
@@ -122,6 +122,7 @@ fn stop_revokes_token_rejects_queue_and_restart_changes_credentials() {
         arguments: json!({}),
         response,
         cancellation: CancellationToken::new(),
+        transport: None,
     })
     .unwrap();
     first.stop();
@@ -298,6 +299,7 @@ fn cancelled_queued_edit_is_skipped_before_desktop_execution() {
         arguments: json!({"plan_id":plan["plan_id"]}),
         response,
         cancellation: cancellation.clone(),
+        transport: None,
     })
     .unwrap();
     cancellation.cancel();

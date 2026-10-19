@@ -61,7 +61,7 @@ unsaved. Handshakes, tool listing, authenticated status, five-second heartbeats,
 the static property catalog and save coordination (planning, submission and
 `plotium_save_status`), and export planning/submission/status do not add audit records.
 
-The connection supports CSV/TSV data-only import, native table queries, canvas previews,
+The connection supports CSV/TSV data-only import, native table queries, canvas previews, figure geometry diagnostics,
 document structure, native plot creation and page/panel/text/local-image authoring, explicit numeric curve bindings, supported table transforms, cell patches, explicit saved-recipe refreshes and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
@@ -93,7 +93,7 @@ are outside this interface.
 ## Discover structure without relying on names
 
 Start with `plotium_get_state {}`. Its `connection_capabilities` describes this
-connection's thirteen tools, input schemas, result contracts, supported operations,
+connection's fourteen tools, input schemas, result contracts, supported operations,
 property IDs, limits and current execution permission. Standard MCP `tools/list`
 also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability listed on a resource
@@ -932,6 +932,114 @@ Target/contract failures return `invalid_parameters` with the reason;
 After an unknown execute outcome, rediscover the current context, revision and
 exact targets before planning again; do not replay deletion automatically. View
 the committed PNG, then use native Undo/Redo and save/reopen to check the result.
+
+## Diagnose figure geometry at an output size
+
+Ask: “At 180 × 90 mm, report out-of-page content, clipped geometry, text overflow,
+intentional overlap between these two captions, and possible line/scatter occlusion
+by legends. Do not edit anything. Inspect the returned targets and native PNG.”
+
+After discovering the canvas, call `plotium_figure_diagnose` directly (no edit plan):
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "canvas": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "output": {"size_mm":[180,90]},
+  "checks": ["bounds","clipping","text_overflow","content_overlap","legend_occlusion"],
+  "view": "both",
+  "limit": 100
+}
+```
+
+Copy complete content or Series targets into optional `targets` to narrow the scan.
+A Series target also includes its owning plot frame and guides as context.
+Omission scans the canvas; it never uses GUI selection. `content_overlap` additionally
+requires explicit whole-content `overlap_targets` (at least two). It compares visible,
+page-clipped frames, not opaque pixels. `view` accepts `layout`, `issues` or `both`;
+coverage rows are always returned.
+
+`output.size_mm` must be positive and preserve the canvas aspect ratio (0.001 mm
+height tolerance). Like native export, it uniformly scales the existing page without
+reflow. Every initial query recalculates geometry. Results use `output_page_pt`:
+72 points per inch, top-left origin, X right, Y down. `output` includes native size
+and scale; text, stroke widths and bounds scale together. Panel-local frames are
+converted through the native page-frame service. Plot data uses the actual plot
+clip; a panel border is **not** a general content clip. Native raster frame and
+`clip_children` clipping are reported separately.
+
+`ToolResult.value` contains `project_context`, `basis_revision`, `canvas`, `output`,
+`items`, `coverage`, `budget`, `truncated` and `continuation`. Each issue has a full
+native `target`, an owner-relative `component`, `code`, `severity`, explanation and
+bounds/clip/intersection evidence. Pass `target` to `plotium_document_inspect`
+with `view: "self"`; names do not identify objects. `guide.legend` belongs to its
+plot, not a new resource. A curve conflict points to the existing Series and its
+owning plot's legend through `evidence.other_target` / `other_component`.
+
+- `out_of_canvas`, `partially_clipped`, `fully_clipped` and
+  `curve_primitives_clipped` / `shape_clipped` are informational facts, including intentional manual
+  range clipping. Curve evidence applies to the reported native run's point range.
+- `text_container_overflow` is a warning based on native width/line-spacing
+  **estimates**, not exact glyph ink. Text does not automatically wrap or shrink.
+- `content_frame_overlap` is informational; deliberate overlap is allowed.
+- `legend_occlusion_potential` is a warning, not a claim that data is invisible.
+  The scan visits projected line segments and marker shapes after effective
+  clipping, retaining dash phase across batches. It does not use a whole-curve
+  bounding box or sample points. Stroke envelopes and the legend layout rectangle
+  are conservative; rounded corners, translucency and exact antialiasing can differ.
+
+Native guide layout includes estimated text widths. Font availability is checked
+using native export font discovery; glyph coverage and cross-backend ink bounds
+remain unverified. Raster viewport geometry uses header dimensions, integer crop,
+rotation and fit; successful decoding and alpha-pixel coverage require the preview.
+Non-line/scatter internal geometry, error-bar clipping/occlusion, derived scientific
+annotations and opaque-pixel occlusion are not covered. Native rectangle, ellipse, line and arrow extrema use the actual page clip. Their frame/guide
+observations remain available; coverage states the limitation. This tool does not
+judge aesthetics, scientific correctness or statistical significance.
+
+**Read coverage even when no issues are returned.** Per-target statuses distinguish
+`complete`, `unsupported`, `unavailable` and `not_applicable` (for example hidden,
+empty rendered data or absent legend). Overall `partial` means more pages remain;
+`limited` means completed traversal with unsupported/unavailable parts. Estimates
+remain estimates even with completed traversal. Counts describe scanned objects,
+source points and overlap pairs, never a percentage of pixels. Missing assets/fonts,
+invalid sources and excluded geometry are reported, not treated as a clean figure.
+
+Follow a non-null `continuation` using only these arguments:
+
+```json
+{"expected_project_context":"PROJECT_CONTEXT","expected_revision":7,"cursor":"RETURNED_CURSOR"}
+```
+
+The one-use cursor binds the original target, output, checks and page configuration
+and expires after 300 idle seconds. A new initial query replaces the previous scan.
+Finish all pages before claiming coverage; an empty issue page can still be truncated.
+Only one diagnostic batch and one unread snapshot are retained per desktop connection.
+The native stdio facade keeps one diagnostic transport between pages and closes it
+when stdio ends; other tools retain their one-call, never-replayed transport.
+Limits are 200 explicit targets, 200 overlap targets / 19,900 pairs, 200 objects and
+1,000,000 source points per batch, 4,096 rendered runs and polygons per plot, 1 MiB text,
+64 MiB estimated snapshot payload and 16 MiB encoded-asset probes. Pages default to
+100 rows (maximum 200), with 96 KiB page values and 256 KiB JSON-RPC responses.
+These are payload/work budgets, not a total process-memory bound.
+Snapshot/text overflow returns `diagnostic_budget_exceeded`; narrow the target.
+Batch/row limits return `truncated: true` and a cursor without sampling.
+
+Context, revision, busy barriers and connection access are rechecked before delivery.
+Edits, project changes, cancellation, connection shutdown and transport closure
+invalidate affected work; expired/consumed cursors return `expired_cursor`.
+After `stale_revision` or `project_changed`, read state and start again, never combine
+old and new pages. Read-only access suffices. Reads change no object, binding, manual
+range, geometry, Undo history or automation revision, but audit summaries mark the
+project dirty under the existing read policy. Geometry, issues, cursors and PNGs are
+not persisted as diagnostic copies.
+
+Use `preview_request` to obtain the native PNG, then inspect it. Convert a returned
+X coordinate to pixels using `x * width_px / output.size_pt[0]`; use height
+for Y. Check its `render_revision` against `basis_revision`. Editor zoom does not
+change these units. Direct core `figure.diagnose` returns one bounded batch without
+a retained cursor; the MCP query provides continuation. No automatic fix is applied.
 
 ## Read the actual canvas image
 

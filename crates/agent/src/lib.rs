@@ -2,6 +2,7 @@
 mod capabilities;
 pub mod client_config;
 pub mod connector;
+mod diagnostics;
 pub mod discovery;
 mod imports;
 mod preview;
@@ -34,6 +35,7 @@ pub struct PendingRequest {
     pub arguments: serde_json::Value,
     pub response: oneshot::Sender<Result<serde_json::Value, Failure>>,
     pub cancellation: CancellationToken,
+    pub transport: Option<rmcp::Peer<rmcp::RoleServer>>,
 }
 
 impl PendingRequest {
@@ -57,6 +59,7 @@ pub struct Connection {
     lease: Option<discovery::Lease>,
     activity: Arc<std::sync::Mutex<Activity>>,
     preview: Option<preview::PreviewFlight>,
+    diagnostic: Option<diagnostics::DiagnosticFlight>,
     import: Option<imports::ImportFlight>,
     transform: Option<transforms::TransformFlight>,
 }
@@ -156,6 +159,7 @@ impl Connection {
             worker: Some(worker),
             session,
             preview: None,
+            diagnostic: None,
             import: None,
             transform: None,
         })
@@ -190,6 +194,9 @@ impl Connection {
     /// Drop all document-bound work before polling completions in a new context.
     pub fn synchronize_project(&mut self, app: &plotium_core::state::PlotiumApp) {
         if self.session.synchronize_context(app) || app.session.ui.project_transition.is_some() {
+            if let Some(flight) = self.diagnostic.take() {
+                flight.cancel("project_changed");
+            }
             if let Some(flight) = self.preview.take() {
                 flight.cancellation.cancel();
                 if flight
@@ -251,6 +258,9 @@ impl Connection {
             {
                 // Client already disconnected.
             }
+        }
+        if let Some(flight) = self.diagnostic.take() {
+            flight.cancel("connection_stopped");
         }
         self.preview = None;
         self.import = None;
@@ -378,3 +388,6 @@ mod guide_tests;
 
 #[cfg(test)]
 mod deletion_tests;
+
+#[cfg(test)]
+mod diagnostic_tests;

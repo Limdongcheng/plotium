@@ -7,8 +7,8 @@ use crate::{
 use plotium_figure::{AxisFrame, AxisTrace, Figure};
 use std::fmt::Write as _;
 
-mod color_scale;
-mod document;
+pub(crate) mod color_scale;
+pub(crate) mod document;
 #[cfg(all(windows, feature = "emf"))]
 pub(crate) use document::prepared_raster;
 mod curves;

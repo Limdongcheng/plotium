@@ -41,6 +41,9 @@ impl Connection {
         {
             return self.dispatch_transform(app, request, blocked);
         }
+        if request.name == "plotium_figure_diagnose" {
+            return self.dispatch_diagnostic(app, request, blocked);
+        }
         if request.name != "plotium_render_preview" {
             let result = self.session.call_when_available(
                 app,
