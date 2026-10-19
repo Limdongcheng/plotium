@@ -131,6 +131,11 @@ impl AgentConnections {
                 .session
                 .set_allow_modify(app.settings.agent.access == AgentAccess::ReadAndModify);
             connection.synchronize_project(app);
+            if let Err(error) = connection.poll_diagnostic(app, blocked) {
+                app.session.status =
+                    format!("AI request failed ({}): {}", error.code, error.message);
+                self.error = Some(app.session.status.clone());
+            }
             if let Err(error) = connection.poll_preview(app) {
                 app.session.status =
                     format!("AI request failed ({}): {}", error.code, error.message);

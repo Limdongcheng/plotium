@@ -595,6 +595,8 @@ fn fail_automation(error: AutomationError) -> Status {
         AutomationError::Execution(_)
         | AutomationError::TableTransformCancelled
         | AutomationError::TableTransformBudget(_)
+        | AutomationError::DiagnosticCancelled
+        | AutomationError::DiagnosticBudget(_)
         | AutomationError::PreviewCancelled
         | AutomationError::PreviewBudget(_)
         | AutomationError::PreviewAsset(_)

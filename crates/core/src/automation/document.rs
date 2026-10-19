@@ -4,7 +4,7 @@ use crate::state::{CanvasDocument, ContentItem, ContentKind, Panel, PlotiumApp, 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-mod source;
+pub(super) mod source;
 
 pub const DOCUMENT_INSPECT: &str = "document.inspect";
 pub const KIND_PANEL: &str = "plotium.canvas.panel";

@@ -74,6 +74,8 @@ impl From<&AutomationError> for Failure {
             }
             AutomationError::TableTransformCancelled => "request_cancelled",
             AutomationError::TableTransformBudget(_) => "transform_budget_exceeded",
+            AutomationError::DiagnosticCancelled => "request_cancelled",
+            AutomationError::DiagnosticBudget(_) => "diagnostic_budget_exceeded",
             AutomationError::PreviewCancelled => "request_cancelled",
             AutomationError::PreviewBudget(_) => "preview_budget_exceeded",
             AutomationError::PreviewAsset(_) => "preview_asset_unavailable",
@@ -94,6 +96,7 @@ impl From<&AutomationError> for Failure {
 #[derive(Default)]
 pub struct Session {
     pub allow_modify: bool,
+    pub(crate) diagnostic: Option<crate::diagnostics::RetainedScan>,
     context: Option<plotium_core::state::ProjectContextId>,
     plans: HashMap<String, ToolPlan>,
     imports: HashMap<String, PreparedTableImport>,
@@ -290,6 +293,9 @@ impl Session {
             let (plan, snapshot) = self.prepare_transform_plan(app, arguments, blocked)?;
             let prepared = snapshot.prepare(&std::sync::atomic::AtomicBool::new(false))?;
             return self.finish_transform_plan(app, plan, prepared, blocked);
+        }
+        if name == "plotium_figure_diagnose" {
+            return self.call_diagnostic(app, arguments, blocked);
         }
         if name == "plotium_render_preview" {
             let (snapshot, run) = self.prepare_preview(app, arguments, blocked)?;
@@ -632,7 +638,7 @@ fn project_changed() -> Failure {
         "Project changed; read plotium_get_state and replan with the new project_context. Never reuse old targets or plans.",
     )
 }
-fn check_context(app: &PlotiumApp, arguments: &mut Value) -> Result<(), Failure> {
+pub(crate) fn check_context(app: &PlotiumApp, arguments: &mut Value) -> Result<(), Failure> {
     let context = arguments
         .as_object_mut()
         .and_then(|a| a.remove("expected_project_context"))
@@ -656,6 +662,7 @@ impl Session {
         if changed || app.session.ui.project_transition.is_some() {
             self.revoke_saves();
             self.revoke_exports();
+            self.diagnostic = None;
             self.plans.clear();
             self.imports.clear();
             self.transforms.clear();

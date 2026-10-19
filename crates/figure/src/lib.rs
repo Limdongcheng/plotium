@@ -175,8 +175,15 @@ const fn default_true() -> bool {
     true
 }
 
+/// Runtime provenance copied from the owning native binding, never allocated here.
+/// It is meaningful only together with the owning plot's stable target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeriesOrigin(pub u64);
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Series {
+    #[serde(skip)]
+    pub origin: Option<SeriesOrigin>,
     #[serde(default)]
     pub appearance: CurveAppearance,
     pub name: String,
@@ -256,6 +263,7 @@ pub enum SeriesKind {
 impl Series {
     pub fn line(name: impl Into<String>, points: Vec<[f64; 2]>) -> Self {
         Self {
+            origin: None,
             appearance: CurveAppearance::default(),
             name: name.into(),
             points,
@@ -267,6 +275,7 @@ impl Series {
 
     pub fn points(name: impl Into<String>, points: Vec<[f64; 2]>) -> Self {
         Self {
+            origin: None,
             appearance: CurveAppearance::default(),
             name: name.into(),
             points,
@@ -278,6 +287,7 @@ impl Series {
 
     pub fn sticks(name: impl Into<String>, points: Vec<[f64; 2]>) -> Self {
         Self {
+            origin: None,
             appearance: CurveAppearance::default(),
             name: name.into(),
             points,

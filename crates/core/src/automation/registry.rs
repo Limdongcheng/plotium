@@ -51,6 +51,7 @@ pub(super) fn validate_parameters(
         "project.get_blueprint" | "resources.inspect" | "render.preview" => {
             parse::<EmptyParams>(tool, value).map(drop)
         }
+        FIGURE_DIAGNOSE => parse::<FigureDiagnosticParams>(tool, value).map(drop),
         "render.preview_image" => parse::<ImagePreviewParams>(tool, value).map(drop),
         "document.inspect" => parse::<DocumentInspectParams>(tool, value).map(drop),
         "resources.search" => parse::<SearchParams>(tool, value).map(drop),
@@ -275,6 +276,12 @@ macro_rules! tool {
     };
 }
 
+impl V1Schema for FigureDiagnosticParams {
+    fn schema() -> serde_json::Value {
+        figure_diagnostic_schema()
+    }
+}
+
 impl V1Schema for ImagePreviewParams {
     fn schema() -> serde_json::Value {
         image_preview_schema()
@@ -324,6 +331,7 @@ impl V1Schema for TableRefreshParams {
 }
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!("figure.diagnose", "Observe figure layout", "Bounded native geometry observations with explicit coverage at a physical output size", FigureDiagnosticParams, [KIND_CANVAS], [CAP_RENDER], EffectLevel::ReadOnly, true),
         tool!("plot.series.append", "Append explicit curves", "Atomically append selected curves to an existing explicit plot", crate::state::CurveAppendParams, [KIND_CANVAS_OBJECT], [], EffectLevel::Reversible, true),
         tool!("table.patch", "Patch existing table cells", "Atomic typed cell patch by stable RowId and ColumnId", TablePatchParams, [KIND_DATASET], [], EffectLevel::Reversible, true),
         tool!("table.refresh", "Refresh a derived table", "Explicitly rerun a saved native recipe on current source revisions", TableRefreshParams, [KIND_DATASET], [], EffectLevel::Reversible, true),

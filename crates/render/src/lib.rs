@@ -4,6 +4,7 @@
 
 pub mod contour;
 mod curve_style;
+pub mod diagnostics;
 pub mod integral;
 #[cfg(feature = "screen")]
 mod screen_contour_cache;
@@ -734,3 +735,6 @@ mod tests;
 
 #[cfg(test)]
 mod display_tests;
+
+#[cfg(test)]
+mod diagnostics_tests;

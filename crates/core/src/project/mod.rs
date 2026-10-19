@@ -43,6 +43,7 @@ mod mass_spec_convert;
 mod nmr_snapshot;
 mod peaks2d;
 mod persistence;
+mod render_provenance;
 mod save;
 pub use save::*;
 mod pipeline_conv;

@@ -382,6 +382,7 @@ impl PlotiumApp {
         figure.x.max += x_shift;
         let semantic_colors = figure.series_colors_are_semantic;
         for series in &mut figure.series {
+            series.origin = Some(plotium_figure::SeriesOrigin(binding.id.get()));
             if let Some(label) = &binding.label {
                 series.name = label.clone();
             }

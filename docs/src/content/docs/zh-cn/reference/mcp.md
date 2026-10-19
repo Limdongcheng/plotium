@@ -53,7 +53,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 已认证状态查询、每五秒心跳、静态属性目录以及保存协调（预检、提交与
 `plotium_save_status`），以及导出预检／提交／状态查询均不生成审计记录。
 
-连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理、单元格补丁、已存配方显式刷新和
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、图面几何诊断、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理、单元格补丁、已存配方显式刷新和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 | 取值 |
@@ -83,7 +83,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 ## 不依赖名称发现结构
 
 先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
-十三个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+十四个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；资源列出某项能力，不代表此连接已开放该操作。
 这里可预检 `project.save`、`figure.export`、`resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
@@ -772,6 +772,92 @@ Series 候选批次最多访问 200 万剩余 curve-row；共享最多 32 个 pe
 
 执行结果未知时先重新发现当前 context、revision 和精确目标，不自动重放删除。
 提交后查看实际 PNG，再用原生 Undo/Redo、保存重开核对结果。
+
+## 按输出尺寸诊断图面几何
+
+可以说：“按 180 × 90 mm 检查出界、裁切、文字溢出、这两段说明的有意重叠，以及
+普通折线／散点与图例的潜在遮挡。不要修改内容；按返回 target 定位，并实际查看原生 PNG。”
+
+发现画布后直接调用 `plotium_figure_diagnose`，无需编辑计划：
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "canvas": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+  "output": {"size_mm":[180,90]},
+  "checks": ["bounds","clipping","text_overflow","content_overlap","legend_occlusion"],
+  "view": "both",
+  "limit": 100
+}
+```
+
+可用 `targets` 限定完整的 content 或 Series target；Series target 还包含所属 plot 的 frame 和 guide 上下文。省略即扫描画布，绝不使用 GUI
+选区。`content_overlap` 另需至少两个完整内容的 `overlap_targets`，比较可见且经过
+页面裁剪的 frame，不判断不透明像素。`view` 可取 `layout`、`issues`、`both`；覆盖行始终返回。
+
+`output.size_mm` 须为正数并保持画布宽高比（高度容差 0.001 mm）。与原生导出一致，
+它等比缩放既有页面，不重排布局；每个初始查询重新计算几何。结果使用
+`output_page_pt`：72 pt/inch，左上原点、X 向右、Y 向下。`output` 包含原生尺寸与
+尺度，文字、线宽和 bounds 一起缩放。panel-local frame 经原生 page-frame 服务换算。
+数据使用实际 plot 裁剪区；panel 边框**不是**所有内容的裁剪区。原生 raster frame
+和 `clip_children` 的裁剪另行列明。
+
+`ToolResult.value` 包含 `project_context`、`basis_revision`、`canvas`、`output`、
+`items`、`coverage`、`budget`、`truncated` 和 `continuation`。每个问题带完整原生
+`target`、所属对象内的 `component`、`code`、`severity`、说明及 bounds/clip/交集证据。
+将 `target` 直接用于 `plotium_document_inspect` 的 `view: "self"`；重名不影响定位。
+`guide.legend` 属于 plot，并非新资源。曲线冲突指向现有 Series，并通过
+`evidence.other_target` / `other_component` 关联所属 plot 的图例。
+
+- `out_of_canvas`、`partially_clipped`、`fully_clipped`、`curve_primitives_clipped`／`shape_clipped`
+  是信息性事实，包括有意的手动范围裁切；曲线证据只覆盖所列原生 run 的点范围。
+- `text_container_overflow` 是基于原生宽度／行距**估计**的警告，不是精确字形边界；
+  文字不会自动换行或缩小。
+- `content_frame_overlap` 是信息性事实，允许有意重叠。
+- `legend_occlusion_potential` 表示潜在视觉冲突，不表示数据必然不可见。逐段／逐点
+  检查实际投影、有效裁剪后的线与 marker，分批保留虚线相位，不使用整条曲线包围盒，
+  不抽样。线条包络与图例布局矩形是保守边界；圆角、半透明和抗锯齿可能有所不同。
+
+原生 guide 布局本身使用文字宽度估计。字体可用性沿用原生导出的字体发现；实际字形
+覆盖和跨后端 ink 边界仍未验证。图像视口几何使用头部尺寸、整数裁剪、旋转及 fit；
+是否成功解码、透明像素分布需看原生预览。首轮不覆盖非普通折线／散点的内部几何、
+误差棒裁剪／遮挡、科研派生标注及不透明像素遮挡；原生矩形、椭圆、直线和箭头的极值边界使用实际页面裁剪区；仍可观察其 frame/guide，覆盖
+结果会说明限制。不做审美评分、科研正确性或统计意义判断。
+
+**没有问题时也必须读 coverage。** 各目标区分 `complete`、`unsupported`、
+`unavailable`、`not_applicable`（如隐藏、空渲染数据或无图例）。整体 `partial`
+表示尚有分页；`limited` 表示遍历结束但存在未支持／不可用部分。遍历完成不会把估计
+变为精确测量。数量是扫描对象、源点和重叠对数，不是像素覆盖百分比。缺资产／字体、
+失效来源和排除的几何会明确报告，不当作“图面无问题”。
+
+`continuation` 非 null 时，仅用以下参数继续：
+
+```json
+{"expected_project_context":"PROJECT_CONTEXT","expected_revision":7,"cursor":"RETURNED_CURSOR"}
+```
+
+一次性 cursor 绑定原目标、输出、检查及分页配置，闲置 300 秒失效。新的初始查询
+替换旧扫描。完成所有分页才可说明覆盖；问题行为空也可能截断。每个桌面连接仅保留
+一个执行中 batch 和一个未读快照。原生 stdio facade 为诊断续页保留一个 transport，
+stdio 结束时关闭；其他工具仍使用原来的单次调用 transport，绝不重放。限制：200 个指定目标、200 个重叠目标／19,900
+对，每批 200 个对象和 1,000,000 个源点，每个 plot 最多 4,096 个渲染 run 与 polygon，1 MiB
+文字、64 MiB 估算快照 payload、16 MiB 已编码资产探测。默认每页 100 行、最多 200
+行，页面值 96 KiB、JSON-RPC 响应 256 KiB。这些是 payload／工作量限制，不是进程
+总内存上限。快照／文字超限返回 `diagnostic_budget_exceeded`，需缩小目标；batch／
+行数用尽则返回 `truncated: true` 和 cursor，不抽样。
+
+交付前重查 context、revision、busy 屏障和连接权限。编辑、项目变化、取消、停止连接
+及传输关闭会使相关工作失效；过期／已消费 cursor 返回 `expired_cursor`。
+遇到 `stale_revision` 或 `project_changed`，重新读状态并开始扫描，不混合新旧页。
+只读权限即可使用；对象、绑定、手动范围、几何、Undo 历史和 automation revision
+不变，但审计摘要按既有读操作政策标 dirty。不持久化诊断几何、问题、cursor 或 PNG 副本。
+
+按 `preview_request` 取得并实际查看原生 PNG。X 坐标转像素为
+`x * width_px / output.size_pt[0]`，Y 使用对应高度；核对其
+`render_revision` 与 `basis_revision` 一致。编辑器 zoom 不影响上述坐标。直接 core
+`figure.diagnose` 只返回一个有界 batch，不保留 cursor；MCP 查询提供继续读取。
+诊断不会自动修图。
 
 ## 读取实际画布图像
 

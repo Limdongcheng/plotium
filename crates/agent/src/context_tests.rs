@@ -96,6 +96,7 @@ fn queue_and_background_snapshot_cannot_complete_into_replacement_project() {
         name:"plotium_render_preview".into(),
         arguments: json!({"expected_project_context":context,"expected_revision":0,"target":target,"max_edge":320}),
         response, cancellation: cancellation.clone(),
+            transport: None,
     }, false).unwrap();
     let (send, requests) = mpsc::channel(2);
     connection.requests = requests;
@@ -105,6 +106,7 @@ fn queue_and_background_snapshot_cannot_complete_into_replacement_project() {
         arguments: json!({}),
         response,
         cancellation: CancellationToken::new(),
+        transport: None,
     })
     .unwrap();
     app.start_new_project();

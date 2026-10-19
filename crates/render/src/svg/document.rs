@@ -162,21 +162,7 @@ pub(crate) fn prepared_raster(raster: &DocumentRaster) -> Option<image::RgbaImag
         raster.pixel_size[1],
         raster.pixels.as_ref().to_vec(),
     )?;
-    let [left, top, right, bottom] = raster.crop;
-    if !raster.crop.into_iter().all(f32::is_finite)
-        || left < 0.0
-        || top < 0.0
-        || right > 1.0
-        || bottom > 1.0
-        || left >= right
-        || top >= bottom
-    {
-        return None;
-    }
-    let x0 = (left * source.width() as f32).floor() as u32;
-    let y0 = (top * source.height() as f32).floor() as u32;
-    let x1 = ((right * source.width() as f32).ceil() as u32).min(source.width());
-    let y1 = ((bottom * source.height() as f32).ceil() as u32).min(source.height());
+    let [x0, y0, x1, y1] = crop_pixels(raster.pixel_size, raster.crop)?;
     let cropped = image::imageops::crop_imm(
         &source,
         x0,
@@ -202,6 +188,28 @@ fn intersect(clip: Option<Rect>, frame: Rect) -> Option<Rect> {
     let right = clip.right().min(frame.right());
     let bottom = clip.bottom().min(frame.bottom());
     (right > left && bottom > top).then(|| Rect::new(left, top, right - left, bottom - top))
+}
+
+/// Integer crop edges used by native SVG raster preparation and observations.
+pub(crate) fn crop_pixels(size: [u32; 2], crop: [f32; 4]) -> Option<[u32; 4]> {
+    let [left, top, right, bottom] = crop;
+    if size.contains(&0)
+        || !crop.into_iter().all(f32::is_finite)
+        || left < 0.
+        || top < 0.
+        || right > 1.
+        || bottom > 1.
+        || left >= right
+        || top >= bottom
+    {
+        return None;
+    }
+    Some([
+        (left * size[0] as f32).floor() as u32,
+        (top * size[1] as f32).floor() as u32,
+        ((right * size[0] as f32).ceil() as u32).min(size[0]),
+        ((bottom * size[1] as f32).ceil() as u32).min(size[1]),
+    ])
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
 //! Output-space curve primitives shared by screen and vector backends.
-#[cfg(any(feature = "screen", all(windows, feature = "emf"), test))]
 use crate::Rect;
 use plotium_figure::{CurveAppearance, LineStyle, Marker, Series, SeriesKind};
 
@@ -75,8 +74,7 @@ pub(crate) fn dashed_segments(
     }
     out
 }
-#[cfg(any(feature = "screen", all(windows, feature = "emf"), test))]
-fn clip_segment(a: (f32, f32), b: (f32, f32), r: Rect) -> Option<(f64, f64)> {
+pub(crate) fn clip_segment(a: (f32, f32), b: (f32, f32), r: Rect) -> Option<(f64, f64)> {
     let dx = f64::from(b.0) - f64::from(a.0);
     let dy = f64::from(b.1) - f64::from(a.1);
     let mut lo = 0.0_f64;
