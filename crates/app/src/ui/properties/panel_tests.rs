@@ -212,6 +212,7 @@ fn mixed_curve_page(kinds: [plotium_core::state::CurveKind; 2]) -> (PlotiumApp, 
                 name: "same-name curves".into(),
                 canvas: None,
                 panel_name: None,
+                panel_frame_pt: None,
                 series: kinds
                     .into_iter()
                     .map(|kind| NewCurve {

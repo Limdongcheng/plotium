@@ -301,17 +301,17 @@ impl Session {
                     "Discover supported operations in connection_capabilities.editable_operations",
                 ));
             }
-            if is_native_curve_tool(&args.tool_id) {
+            if is_native_curve_tool(&args.tool_id) || args.tool_id == FIGURE_EDIT {
                 if !self.allow_modify {
                     return Err(Failure::new(
                         "permission_denied",
-                        "Switch to Read and modify before planning native curves",
+                        "Switch to Read and modify before planning native figure/curve edits",
                     ));
                 }
                 if args.ids.is_some() || args.targets.is_some() {
                     return Err(Failure::new(
                         "invalid_parameters",
-                        "Native curve edits carry their own exact targets or parent",
+                        "Native edits carry their own exact targets or parent",
                     ));
                 }
                 if self.plans.len() >= 32 {

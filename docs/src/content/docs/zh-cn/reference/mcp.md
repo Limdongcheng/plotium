@@ -46,7 +46,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 实际 agent 项目读取和执行保存运行记录，使项目进入未保存状态；握手、工具发现、
 已认证状态查询、每五秒心跳及静态属性目录查询均不生成记录。
 
-连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生单图创建、显式数值曲线绑定、受支持的表格处理和
+连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
 
 | 属性 ID | 目标 | 取值 |
@@ -75,8 +75,8 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
 数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
 这里可预检 `resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
-`data.import`／`data.transform` 模式、`plot.create` 及 `plot.series.bind`／`plot.series.materialize_default`。
-只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／处理预检和所有修改执行。
+`data.import`／`data.transform` 模式、`figure.edit`、`plot.create` 及 `plot.series.bind`／`plot.series.materialize_default`。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理预检和所有修改执行。
 
 使用返回的 revision 列举文档画布：
 
@@ -102,6 +102,9 @@ Series 发现与属性寻址一样，使用图对象的当前显示绑定。非�
 替代 Series 仍保存在项目中，但在重新激活前不列出、也不可寻址。当前绑定中由
 用户隐藏的 Series 仍会列出，`visible` 为 false。切换通道或显示模式后，须读取
 当前 revision，再发现当前有效目标。
+
+`encoding` 表示原生编码家族：`line` 同时包含折线和散点；`plot.create` 的
+`series_defaults[].kind` 返回创建时的具体类型。
 
 Series 详情包含可直接用于属性查询的完整 target、编码、可见性、显式标签，以及
 `source` 中的数据集和字段资源引用、所属数据集内的 `field_id`、可选 `item_id`、
@@ -440,13 +443,15 @@ GUI 保存重开保留原生绑定和单位；MCP 不开放保存和导出，新
   冻结原生默认尺寸，画布名称使用图对象名称。
 - 没有面板或图对象的已有画布：按 GUI 共用的原生空画布放置服务及已有
   布局设置、边距创建面板和图对象。不传 `canvas`。
+- 已有内容的画布：明确提供 `panel_frame_pt: [x,y,宽,高]`，以页面 pt 坐标
+  创建另一面板及图对象。已有面板、曲线和 loose 内容原位保留，允许重叠。
 - 该画布唯一的空、可见、未锁定且自由布局的面板：仅创建图对象，保留
-  面板的页坐标和尺寸。不传 `canvas` 或 `panel_name`。
+  面板的页坐标和尺寸。不传 `canvas`、`panel_name` 或 `panel_frame_pt`。
 
 `panel_name` 仅用于新建面板，省略时使用图对象名称。名称不得空白，最长
-1024 UTF-8 字节。本操作不向已有成图添加第二面板/图对象，也不重建已有
-内容。初始放置由原生服务决定，接口不要求 Agent 指定内部网格、留白或
-避让算法。
+1024 UTF-8 字节。`panel_frame_pt` 只设置新建面板：X/Y 为有限页面 pt，宽高
+为有限正数。省略时保留原有空画布原生放置约定；已有成图的画布必须提供
+明确 frame。不重排已有内容，也不将已有图重建为替代对象。
 
 `preflight.binding_plan.creation` 返回拟建完整目标 `canvas`、`panel`、
 `plot`、`created`，以及 `size_mm`、`panel_frame_pt`（页坐标）、`frame_pt`
@@ -466,6 +471,75 @@ plan。执行响应丢失后，先查询当前状态及预检返回的目标，�
 结果可在 GUI 选择和继续编辑。一次 Undo 只移除本次新建子树，保留已有父
 容器及导入数据；Redo 恢复同一身份。后续原生尺寸和布局调整保留图对象、
 Series 身份和来源绑定。编辑或 Undo/Redo 后先读取最新 revision。
+
+## 原子编辑页面、面板、文字与本地图片
+
+以 `parameters: {canvas: 完整画布目标, edits: [...]}` 预检 `figure.edit`，不传顶层
+`ids`／`targets`。完整带 `op` 标签的 schema 由
+`connection_capabilities.operation_constraints["figure.edit"].schema` 提供。
+一个批次按编辑顺序修改同一画布，合为一次 Undo／Redo：
+
+| `op` | 必需字段及含义 |
+| --- | --- |
+| `page` | 至少提供 `size_mm: [宽,高]`、`margin_mm: [上,右,下,左]`、`gutter_mm` 之一，均为 mm |
+| `panel_frame` | `target: 完整面板目标`、`frame_pt: [x,y,宽,高]`，页面 pt |
+| `panel_label` | `target`、`text`、`visible`；写入原生手动面板标签，保留位置和字号 |
+| `align` | `panels: [完整面板目标,...]`、`edge: left\|center\|right\|top\|middle\|bottom`；至少两个面板 |
+| `distribute` | `panels`、`axis: horizontal\|vertical`；至少三个面板 |
+| `grid` | `panels`、`rows`、`cols`；按所给目标顺序分配原生 Frame-basis 网格格子 |
+| `text_create` | `parent: 完整画布或面板目标`、`name`、`frame_pt`、`text`、`font_pt` |
+| `text_set` | `target: 完整文字目标`、`text`；可选 `font_pt` |
+| `image_create` | `parent`、`name`、`frame_pt`、`path: "/absolute/local/image.png"`（PNG 或 JPEG） |
+
+创建两张图后，可设置页面并排列明确选定的两个面板：
+
+```json
+{
+  "tool_id": "figure.edit",
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 3,
+  "parameters": {
+    "canvas": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+    "edits": [
+      {"op":"page","size_mm":[180,90],"margin_mm":[4,4,15,4],"gutter_mm":5},
+      {"op":"grid","panels":[{"resource":{"id":"CANVAS_UUID/panels/PANEL_A_UUID","kind":"plotium.canvas.panel","parent_id":"CANVAS_UUID","local_id":"PANEL_A_UUID"}},{"resource":{"id":"CANVAS_UUID/panels/PANEL_B_UUID","kind":"plotium.canvas.panel","parent_id":"CANVAS_UUID","local_id":"PANEL_B_UUID"}}],"rows":1,"cols":2}
+    ]
+  }
+}
+```
+
+将全部身份占位符换成实际发现的完整目标；名称不能代替身份。
+结果为 (4,4,83.5,71) 与 (92.5,4,83.5,71) mm。frame 原点在左上，X 向右、Y 向下，
+1 pt = 1/72 inch。面板 frame 复用 **Object Geometry／拖动编辑**语义：移动保留
+子内容局部坐标，改尺寸按比例缩放全部子内容 frame，不改曲线身份、绑定、样式、
+轴范围或字号。这不同于自由 Panel inspector 仅修改容器尺寸的行为。
+新文字／图片 frame 使用父面板局部 pt；父目标为画布时则使用页面 pt。
+
+Align 依据所选边界／中心；Distribute 在固定两端中心间等分中心位置，不等分边缘
+间隙。Grid 将已有原生格子算法与 authoring 尺寸 setter 组合用于明确子集，不表示
+GUI 已有子集 Grid 按钮；使用当前页面边距／gutter，不修改已保存的网格偏好或简化
+轴文字。仅改页面尺寸／边距不重排内容。非目标面板和 loose 内容原位保留，即使
+因此重叠或裁切，也不自动移动或缩字号。
+
+面板目标须同属此画布、互不重复、未锁定且自由布局；锁定子内容也拒绝面板编辑。
+明确指定的隐藏目标仍可寻址。精确页面／布局编辑须先在 GUI 关闭 Auto height。尺寸须有限且为正，页面每边 10–1000 mm；边距／gutter
+须非负并留出正空间。Grid 行列各 1–16、须容纳所有目标，且每格达到原生最小尺寸 1 pt。文字最多 16384 UTF-8
+字节、字号 1–72 pt；名称／手动标签最多 1024 字节且不得空白。每批 1–200 项，
+每次布局最多 200 个面板。
+
+图片预检仅读取明确指定的绝对路径普通文件：每批最多 8 张、每文件编码大小 1 MiB、
+每批编码合计 4 MiB，每张解码 RGBA8 最多 4 MiB。PNG/JPEG 探测和解码复用原生 I/O；
+预检冻结字节，提交后嵌入原生资产库，不依赖外部路径，相同编码资产复用。资产缺失、
+损坏或格式不支持使整批以 `invalid_parameters` 及明确资产错误拒绝。不扫描目录、
+访问网络或回写源文件。
+
+`preflight.figure_plan` 返回拟建 `created`／`modified` 完整目标及 `result` 中的页面
+尺寸、边距／gutter 和精确 `panel_frames`；执行在 `ToolResult.value` 返回该结果。
+预检不提交内容；非法目标、几何、资产或旧 revision 不留下半成品。预检及执行都要求
+Read and modify。失败执行也消费一次性计划；沿用 32 个计划及 256 KiB 响应限制。
+一次 Undo 恢复整批，Redo 恢复同一原生内容／资产身份。执行响应丢失后先检查拟建目标，
+不能盲目重复创建。可继续用普通 GUI Geometry、文字和图片 inspector 编辑，并查看
+实际 PNG；原生文字 frame 过小时可能裁切，布局不自动消除冲突。
 
 ## 读取实际画布图像
 
