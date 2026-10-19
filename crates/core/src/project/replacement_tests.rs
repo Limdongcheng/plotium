@@ -22,7 +22,8 @@ enum Interference {
 // The real serializer, admission, backup staging/rollback and TempPath drop run.
 fn partial_save(code: i32, backups: u8, external: bool, interference: Interference) -> FailedSave {
     let directory = tempfile::tempdir().unwrap();
-    let target = directory.path().join("project.plotium");
+    // Include a parent alias instead of relying on runner temp-directory spelling.
+    let target = directory.path().join(".").join("project.plotium");
     let backup = super::super::backup_path(&target, 0);
     std::fs::write(&target, b"original target").unwrap();
     if backups > 0 {
@@ -48,13 +49,30 @@ fn partial_save(code: i32, backups: u8, external: bool, interference: Interferen
     } else {
         prepare_project_save(&app, &target, false)
     };
+    // External preflight canonicalizes the parent (including Windows aliases).
+    // Follow the captured path, not the spelling originally supplied by the fixture.
+    let requested_target = target;
+    let target = request.path.clone();
+    let backup = super::super::backup_path(&target, 0);
+    if external {
+        let canonical_target = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("project.plotium");
+        assert_eq!(target.as_os_str(), canonical_target.as_os_str());
+    } else {
+        assert_eq!(target.as_os_str(), requested_target.as_os_str());
+    }
     let identity = request.identity().clone();
     let persisted_revision = request.persisted_revision().to_owned();
     let progress = request.progress();
     let candidate = Rc::new(RefCell::new(None));
     let captured = candidate.clone();
+    let captured_target = target.clone();
     REPLACE_TEST.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move |temp, target, backup| {
+            assert_eq!(target.as_os_str(), captured_target.as_os_str());
             *captured.borrow_mut() = Some(temp.to_owned());
             match code {
                 1176 if backup.is_none() => std::fs::remove_file(target).unwrap(),
@@ -91,7 +109,10 @@ fn partial_save(code: i32, backups: u8, external: bool, interference: Interferen
     ));
     assert!(app.doc.dirty);
     assert_eq!(app.session.project_context, context);
-    assert_eq!(app.doc.project_path.as_ref(), Some(&target));
+    assert_eq!(
+        app.doc.project_path.as_deref().map(Path::as_os_str),
+        Some(requested_target.as_os_str())
+    );
     assert_eq!(
         app.doc.project_revision.as_deref(),
         Some("original revision")
@@ -102,6 +123,7 @@ fn partial_save(code: i32, backups: u8, external: bool, interference: Interferen
         let receipt = app.session.external_saves.receipt(id).unwrap();
         assert_eq!(receipt.status, crate::state::ExternalSaveStatus::Completed);
         assert_eq!(receipt.phase, Some(SavePhase::NotInstalled));
+        assert_eq!(receipt.path.as_os_str(), target.as_os_str());
         assert!(!receipt.state_applied);
         assert!(receipt.message.contains(&message));
         assert_eq!(
@@ -135,7 +157,12 @@ fn assert_retained_snapshot(save: &FailedSave) {
         Some(save.persisted_revision.as_str())
     );
     assert!(save.message.contains(&save.candidate.display().to_string()));
-    assert!(save.message.contains(&save.target.display().to_string()));
+    assert!(
+        save.message.contains(&save.target.display().to_string()),
+        "expected target {}; message: {}",
+        save.target.display(),
+        save.message
+    );
 }
 
 #[test]
@@ -177,7 +204,12 @@ fn partial_1177_preserves_all_recovery_files_without_overwriting_new_target() {
             })
             .unwrap();
         assert_eq!(std::fs::read(&staged).unwrap(), b"previous backup");
-        assert!(save.message.contains(&staged.display().to_string()));
+        assert!(
+            save.message.contains(&staged.display().to_string()),
+            "expected staged backup {}; message: {}",
+            staged.display(),
+            save.message
+        );
         assert!(save.message.contains(&save.backup.display().to_string()));
         assert_retained_snapshot(&save);
     }
@@ -230,7 +262,12 @@ fn partial_1177_retains_candidate_if_previous_backup_rollback_fails() {
         })
         .unwrap();
     assert_eq!(std::fs::read(&staged).unwrap(), b"previous backup");
-    assert!(save.message.contains(&staged.display().to_string()));
+    assert!(
+        save.message.contains(&staged.display().to_string()),
+        "expected staged backup {}; message: {}",
+        staged.display(),
+        save.message
+    );
     assert!(save.message.contains("could not finish restoring"));
     assert_retained_snapshot(&save);
 }
