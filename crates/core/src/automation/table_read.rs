@@ -154,7 +154,7 @@ pub(super) fn table_metadata(dataset: &Dataset) -> Result<Value, AutomationError
         "type_source":c.metadata.get("import.type_source").cloned().unwrap_or(json!("unknown")),"unit_source":c.metadata.get("import.unit_source").cloned().unwrap_or(json!("unknown"))})).collect::<Vec<_>>();
     Ok(
         json!({"dataset_id":dataset.resource_id(),"table_id":revision.table_id,"table_revision":revision.id,"snapshot_fingerprint":revision.snapshot.fingerprint,"fields":fields,"columns":columns,"total_rows":revision.snapshot.row_count,
-        "diagnostics":revision.snapshot.metadata.get("space.nmrtist.plotium.import.diagnostics"),"inference":revision.snapshot.metadata.get("space.nmrtist.plotium.import.inference")}),
+        "analyses":{"curve_fit_count":table.curve_fit_analyses.len(),"curve_fit_bindings":table.series_bindings.iter().filter(|b|b.fit.is_some()).count()},"diagnostics":revision.snapshot.metadata.get("space.nmrtist.plotium.import.diagnostics"),"inference":revision.snapshot.metadata.get("space.nmrtist.plotium.import.inference")}),
     )
 }
 pub(super) fn execute_table_read(
@@ -175,6 +175,10 @@ pub(super) fn execute_table_read(
             metadata["provenance"] =
                 super::table_provenance::dataset_metadata(&app.doc.datasets[index]);
         }
+        metadata["freshness"] = json!(super::table_update::connection_table_freshness(
+            app,
+            p.dataset_id
+        ));
         metadata
     } else {
         let p: TableReadRowsParams =
@@ -222,7 +226,7 @@ pub(super) fn execute_table_read(
         }
         let next = p.offset + rows.len() as u64;
         json!({"dataset_id":p.dataset_id,"table_id":t.typed_state.envelope.revision.table_id,"table_revision":p.table_revision,"revision":before,
-            "column_ids":column_ids,"offset":p.offset,"requested_rows":p.limit,"returned_rows":rows.len(),"total_rows":page.total_rows,"next_offset":if next<page.total_rows{Some(next)}else{None},"end":next==page.total_rows,"rows":rows})
+            "freshness":super::table_update::connection_table_freshness(app, p.dataset_id),"column_ids":column_ids,"offset":p.offset,"requested_rows":p.limit,"returned_rows":rows.len(),"total_rows":page.total_rows,"next_offset":if next<page.total_rows{Some(next)}else{None},"end":next==page.total_rows,"rows":rows})
     };
     let result = super::tool_executors::readonly_value(&plan.request.tool_id, before, value);
     if serde_json::to_vec(&result)

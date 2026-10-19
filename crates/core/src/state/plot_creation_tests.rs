@@ -497,3 +497,135 @@ fn explicit_new_panel_on_existing_plot_preserves_first_and_ids_through_undo_redo
         ))
     );
 }
+
+#[test]
+fn append_selected_cross_source_curves_preserves_existing_identity_style_and_range() {
+    let mut app = fixture();
+    let p = params(&app);
+    app.commit_curve_bindings(plan(&app, &p)).unwrap();
+    let table = materialized_float_series_table(
+        (
+            "x_s".into(),
+            "ms".into(),
+            vec![Some(0.), Some(1000.), Some(2000.)],
+        ),
+        vec![FloatSeries {
+            name: "y_mA".into(),
+            unit: "A".into(),
+            values: vec![Some(0.002), Some(0.004), Some(0.008)],
+            uncertainty: None,
+            fit: None,
+        }],
+        "plotium.test.append",
+    )
+    .unwrap();
+    let mut table = table;
+    table.name = app.doc.datasets[0].as_table().unwrap().name.clone();
+    app.doc.datasets.push(Dataset::Table(Box::new(table)));
+    let dataset = &app.doc.datasets[1];
+    let r = &dataset.as_table().unwrap().typed_state.envelope.revision;
+    let added_source = TableCurveSource {
+        dataset_id: dataset.resource_id(),
+        field_id: dataset.default_field_id().unwrap(),
+        table_id: r.table_id,
+        table_revision: r.id,
+        x_column_id: r.snapshot.schema.columns[0].id,
+        y_column_id: r.snapshot.schema.columns[1].id,
+        y_error_column_id: None,
+    };
+    let object = app.doc.canvases[0].objects[0].id;
+    let owner = TargetRef::resource(canvas_object_ref(app.doc.canvases[0].resource_id, object));
+    let plot = app.doc.canvases[0].objects[0].plot_mut().unwrap();
+    plot.axis_overrides.x_range = Some(AxisRange::new(0., 3.));
+    plot.viewport.view_x = AxisRange::new(0., 3.);
+    let before = plot.clone();
+    let geometry = format!(
+        "{:?}{:?}",
+        app.doc.canvases[0].panels, app.doc.canvases[0].objects[0].frame
+    );
+    let p = CurveAppendParams {
+        plot: owner.clone(),
+        series: vec![NewCurve {
+            kind: CurveKind::Line,
+            source: added_source.clone(),
+        }],
+    };
+    let plan = app
+        .plan_append_curves(DocumentRevision(app.doc.automation_revision), &p)
+        .unwrap();
+    let appended = plan.appended.clone();
+    assert_eq!(
+        plan.bindings[1].source.dataset_id,
+        app.doc.datasets[1].resource_id()
+    );
+    app.commit_curve_bindings(plan).unwrap();
+    let after = app.doc.canvases[0].objects[0].plot().unwrap().clone();
+    assert_eq!(after.binding.series[0], before.binding.series[0]);
+    assert_eq!(after.binding.coordinates, before.binding.coordinates);
+    assert_eq!(after.axis_overrides, before.axis_overrides);
+    assert_eq!(after.viewport.view_x, before.viewport.view_x);
+    assert_eq!(
+        after.figure().series[1].points,
+        vec![[0., 2.], [1., 4.], [2., 8.]]
+    );
+    assert_eq!(
+        app.series_target(0, object, after.binding.series[1].id)
+            .unwrap(),
+        appended[0]
+    );
+    assert_eq!(
+        geometry,
+        format!(
+            "{:?}{:?}",
+            app.doc.canvases[0].panels, app.doc.canvases[0].objects[0].frame
+        )
+    );
+    app.undo();
+    assert_eq!(
+        app.doc.canvases[0].objects[0].plot().unwrap().binding,
+        before.binding
+    );
+    app.redo();
+    assert_eq!(
+        app.doc.canvases[0].objects[0].plot().unwrap().binding,
+        after.binding
+    );
+    app.undo();
+    let newer = app
+        .plan_append_curves(DocumentRevision(app.doc.automation_revision), &p)
+        .unwrap();
+    assert_ne!(newer.appended, appended);
+    app.commit_curve_bindings(newer).unwrap();
+    assert!(app.curve_target(&appended[0]).is_err());
+    let before = app.doc.canvases[0].objects[0].plot().unwrap().clone();
+    let revision = app.doc.automation_revision;
+    for bad in [
+        source_with_bad_column(&added_source),
+        source_with_bad_revision(&added_source),
+        source(&app, 3, 4, None),
+    ] {
+        let mut mixed = p.clone();
+        mixed.series.push(NewCurve {
+            kind: CurveKind::Scatter,
+            source: bad,
+        });
+        assert!(
+            app.plan_append_curves(DocumentRevision(revision), &mixed)
+                .is_err()
+        );
+        let now = app.doc.canvases[0].objects[0].plot().unwrap();
+        assert_eq!(now.binding, before.binding);
+        assert_eq!(now.next_series_id, before.next_series_id);
+        assert_eq!(app.doc.automation_revision, revision);
+    }
+}
+fn source_with_bad_column(source: &TableCurveSource) -> TableCurveSource {
+    let mut s = source.clone();
+    s.y_column_id = ColumnId::new();
+    s
+}
+fn source_with_bad_revision(source: &TableCurveSource) -> TableCurveSource {
+    let mut s = source.clone();
+    s.table_revision = RevisionId::new();
+    s
+}

@@ -37,7 +37,7 @@ impl Connection {
                 .arguments
                 .get("tool_id")
                 .and_then(serde_json::Value::as_str)
-                == Some("data.transform")
+                .is_some_and(plotium_core::automation::is_table_operation)
         {
             return self.dispatch_transform(app, request, blocked);
         }

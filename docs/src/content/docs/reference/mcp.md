@@ -37,7 +37,7 @@ WSL access are outside this interface.
 
 Edits use Plotium's normal **Undo** and **Redo**. **Read only** prevents further
 edit execution, including pending plans. Table reads and property preflight remain
-available; import, native binding and creation and transform preflight require Read and modify.
+available; import, native binding and creation and transform/patch/refresh preflight require Read and modify.
 The selected permission persists until you change it.
 
 Project queries and plan creation require both `expected_revision` and
@@ -54,7 +54,7 @@ unsaved; handshakes, tool listing, authenticated status, five-second heartbeats 
 the static property catalog do not.
 
 The connection supports CSV/TSV data-only import, native table queries, canvas previews,
-document structure, native plot creation and page/panel/text/local-image authoring, explicit numeric curve bindings, supported table transforms and resource queries, renaming datasets,
+document structure, native plot creation and page/panel/text/local-image authoring, explicit numeric curve bindings, supported table transforms, cell patches, explicit saved-recipe refreshes and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target | Value |
@@ -86,8 +86,8 @@ also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
 does not make that operation callable through this connection. Only
 `resource.rename`, `properties.set`, `properties.reset` and the restricted
-`data.import` / `data.transform` modes, `figure.edit`, `plot.create` and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
-and existing property preflight, but refuses import/binding/creation/figure-edit/transform preflight and all edit execution.
+`data.import` / `data.transform` modes, `table.patch`, `table.refresh`, `figure.edit`, `plot.create` and `plot.series.append` / `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
+and existing property preflight, but refuses import/binding/creation/figure-edit/transform/patch/refresh preflight and all edit execution.
 
 Use the returned revision to list the document's canvases:
 
@@ -383,9 +383,141 @@ responses are limited to 256 KiB; the prepared output summary is limited to
 `connection_capabilities.limits.table_transform`. Budget failure returns
 `transform_budget_exceeded`; cancellation returns `request_cancelled`. Neither
 leaves a derived table or a successful execution result. Plan again after fixing
-the input or budget. Refresh and source-data patching are separate operations
-and are not exposed by this interface.
+the input or budget. Use the separate cell-patch and explicit refresh operations below for subsequent updates.
 
+
+## Patch cells, then explicitly refresh derived tables
+
+Use `table.patch` with exactly one DatasetId in top-level `ids`, no `targets`,
+and the current table revision. Copy RowIds and ColumnIds from table reads;
+page offsets, row numbers and names are not cell identities. For example:
+
+```json
+{
+  "tool_id": "table.patch",
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 12,
+  "ids": ["DATASET_UUID"],
+  "parameters": {
+    "table_revision": "TABLE_REVISION_UUID",
+    "edits": [{
+      "row_id": "RETURNED_ROW_UUID",
+      "column_id": "RETURNED_COLUMN_UUID",
+      "value": {"kind": "float64", "value": 2.5}
+    }]
+  }
+}
+```
+
+Values use the tagged `kind`/`value` representation returned by table reads.
+Use decimal strings for Int64 and nanosecond temporal values, a JSON number or
+`"NaN"`/`"+Inf"`/`"-Inf"` for Float64, and `{"kind":"null"}` for a missing cell.
+Types and nullability must match exactly; a Float64 patch cannot silently widen
+an Int64 column. Categorical values address existing level indices. Extension
+values and live calculated region tables are not editable through this operation.
+
+A batch accepts 1–1000 distinct cells and at most 64 KiB of parameters. An absent
+row/column, duplicate cell, invalid type or stale revision rejects the entire
+patch. It cannot insert/delete rows, change schema, reimport files or write to the
+original CSV/TSV. Preparation produces `update: {status:"prepared", output,
+before_table_revision, changed}`; nothing is applied until execution. A no-op
+returns `changed:false` without advancing the document revision or adding Undo.
+
+Table metadata, row pages and Series sources include
+`freshness: {status, refreshable, reason, sources, mcp_refreshable, mcp_refresh_reason}`.
+`refreshable` reports native refresh capability; `mcp_refreshable` additionally checks
+the connection's supported recipe subset, not the current permission mode. Dataset
+resource metadata exposes these as `table_refreshable`, `table_mcp_refreshable` and
+`table_mcp_refresh_reason`, alongside `table_freshness` and its reason. `source` means no saved derived recipe; `current` means recorded input
+revisions still match; `stale` means a direct or upstream input changed;
+`unavailable` means sources or a supported recipe are missing. The data browser
+marks affected relational tables **Out of date**, and their sheets explain why.
+Stored results remain readable and drawable, with this explicit freshness state.
+Editing a table invalidates its stored curve-fit analyses; Undo restores them.
+A stale derived table's analyses describe its old result, not current source data.
+
+Refresh only when requested. Plan `table.refresh` with `ids:["DERIVED_DATASET_UUID"]`
+and `parameters:{"table_revision":"CURRENT_DERIVED_REVISION"}`. It reruns the
+persisted single-source `snapshot_read`/`project`/`filter`/`stable_sort`/`computed_column`
+recipe, with the same expression and complexity limits as data-only transforms,
+using current source snapshots and the existing reference executor/lineage path.
+Other native recipes, including Pivot, are rejected by MCP refresh with a reason;
+the native GUI/core refresh capabilities are unchanged. Before adoption, the output
+must retain TableId and the column schema, including ColumnIds, types and units;
+every output RowId must belong to the current input. A mismatch rejects the whole
+refresh without changing tables, plot bindings or Undo. Refresh stale upstream tables first;
+missing sources or recipes report a reason instead of recomputing unrelated data.
+Existing manual cell edits on a derived table are rebased by stable RowId; missing
+or ambiguous identities block the whole refresh, never fall back to row position.
+Repeated refreshes retain those edits. `include_provenance:true` returns both the
+current `operation` and the effective `refresh_recipe` through edit/rebase history.
+
+Optional `memory_limit_bytes` resolves the explicit value, then the saved recipe
+budget, then 512 MiB; valid range is 1–536870912. This remains the executor's
+materialized-result estimate, not a peak-memory limit. Patches, transforms and
+refreshes share one background preflight, four prepared candidates and a 512 MiB
+reservation limit; each patch reserves 64 KiB. Prepared summaries are at most
+128 KiB and complete responses at most 256 KiB. Discover schemas and limits in
+`operation_constraints` and `limits.table_update`.
+
+Both operations require **Read and modify** for preparation and execution.
+Permission, document/table revisions and current inputs are rechecked before a
+candidate can be adopted. Cancellation, project changes, connection stop or stale
+inputs discard uncommitted work. Execute consumes the plan even when rejected.
+After a lost response, inspect actual state; do not replay the submitted operation.
+
+Each patch or refresh is one independent Undo/Redo step. DatasetId, TableId,
+ColumnId, existing RowId and native plot/Series identities remain intact; filters
+can change which existing rows are present. Revisions and source mappings change,
+while authored colors, axis ranges and panel frames stay untouched. Freshness is
+computed from saved provenance and current revisions, so Undo/Redo restores the
+corresponding freshness as well as values. Native sheet editing and refresh use
+the same typed revision-adoption service.
+
+## Add a derived curve to an existing plot
+
+Use `plot.series.append` when a newly calculated table should appear beside the
+existing curves, without replacing a plot. In the GUI, select the explicit plot,
+open **Data → Add curve**, choose the source table, X/Y and optional Y-error
+columns, then press **Append curve**. The old default-field **Add series** control
+keeps its existing behavior for non-explicit plots.
+
+For MCP, omit top-level `ids`/`targets` and provide the exact whole plot target:
+
+```json
+{
+  "expected_project_context": "<current context>",
+  "expected_revision": 23,
+  "tool_id": "plot.series.append",
+  "parameters": {
+    "plot": {"resource": {"id": "<canvas-id>/<content-id>", "kind": "plotium.canvas.object", "parent_id": "<canvas-id>", "local_id": "<content-id>"}},
+    "series": [{"kind": "line", "source": {
+      "dataset_id": "<derived-dataset-id>", "field_id": 0,
+      "table_id": "<derived-table-id>", "table_revision": "<derived-revision>",
+      "x_column_id": "<x-column-id>", "y_column_id": "<signal-x2-column-id>",
+      "y_error_column_id": null
+    }}]
+  }
+}
+```
+
+Copy targets, FieldId and all table/column IDs from discovery; labels are not
+identity. The target must already have explicit coordinates. A batch adds
+1–200 selected line/scatter curves, with at most 200 total curves in that plot.
+The shared binding validator checks every source revision, complete curve data,
+errors and units before one atomic commit. Compatible source units convert to
+the plot's existing coordinate units; incompatible batches fail without adding
+any curve. The binding service's 2,000,000 curve-row and pending-plan limits and
+256 KiB response limit also apply, including existing curves in the affected plot.
+
+`preflight.binding_plan.appended` contains the proposed new Series targets;
+`bindings` includes the unchanged existing and newly appended bindings. Execute
+adopts those frozen IDs. One Undo removes the additions; Redo restores them.
+Retired IDs are not reused by a different append after Undo. Existing Series
+styles, coordinate meaning, authored axis ranges, plot/Panel identity and frames
+remain unchanged. Preparation and execution require Read and modify; context,
+revisions and permission use the same one-use-plan lifecycle as binding edits.
+After response loss, inspect the proposed targets before making another plan.
 
 ## Rebind an existing curve without changing another plot
 

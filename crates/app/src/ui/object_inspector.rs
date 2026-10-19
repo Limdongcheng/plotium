@@ -3,6 +3,7 @@
 
 mod axes;
 mod chart_gallery;
+mod curve_append;
 mod curve_binding;
 mod data;
 mod edits;

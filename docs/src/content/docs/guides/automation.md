@@ -231,6 +231,7 @@ Use plain language in your AI client. For example:
   caption and my local PNG/JPEG, then show a preview. Leave other panels alone.”
   Specify the target panels and absolute image paths. Continue editing each
   native plot, text item and image in Plotium; Undo restores an entire layout batch.
+- **Update data:** “Change only this source cell, show which derived tables are out of date, then refresh this table’s saved recipe. Keep my colors, axis ranges and layout.” Patch and refresh have separate Undo steps.
 - **Create a plot:** “Import the CSV at `/absolute/path/experiment.csv`. Use time
   as X and current as Y, with units s and mA. Create an editable line plot and
   show me a preview.” Replace the path with your file's absolute path and state
@@ -240,7 +241,8 @@ The connection can import CSV/TSV tables, read table values, inspect project
 structure, preview canvases, create multiple native line or scatter panels,
 set page/panel geometry, align/distribute/grid explicitly chosen panels, add
 editable text and local PNG/JPEG images, change a curve's
-source columns, derive tables with supported native plans, and rename datasets,
+source columns, derive tables with supported native plans, patch existing cells,
+explicitly refresh saved recipes, and rename datasets,
 canvases or objects. Display edits cover exact-curve color, width, stroke style, markers, visibility
 and legend text; axis titles, display units and auto/manual ranges; plot-local
 tick, axis-title and legend sizes; and the existing contour/document font controls. Processing parameters, fitting and other

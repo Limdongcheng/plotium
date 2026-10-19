@@ -4,10 +4,11 @@ use crate::state::{CurveBindingEdit, CurveEditPlan, MaterializeCurveEdit, Plotiu
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub const CURVE_APPEND: &str = "plot.series.append";
 pub const CURVE_BIND: &str = "plot.series.bind";
 pub const CURVE_MATERIALIZE: &str = "plot.series.materialize_default";
 pub fn is_curve_binding_tool(id: &str) -> bool {
-    matches!(id, CURVE_BIND | CURVE_MATERIALIZE)
+    matches!(id, CURVE_BIND | CURVE_MATERIALIZE | CURVE_APPEND)
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +25,16 @@ fn invalid(tool: &str, e: impl Into<String>) -> AutomationError {
         tool_id: tool.into(),
         message: e.into(),
     }
+}
+pub fn curve_append_schema() -> Value {
+    let mut plot = document_inspect_schema()["properties"]["target"].clone();
+    plot["properties"]
+        .as_object_mut()
+        .expect("local target schema")
+        .remove("component");
+    plot["properties"]["resource"]["properties"]["kind"] = json!({"const":KIND_CANVAS_OBJECT});
+    let series = plot_create_schema()["properties"]["series"].clone();
+    json!({"type":"object","additionalProperties":false,"required":["plot","series"],"properties":{"plot":plot,"series":series},"description":"Append selected explicit curves to one existing explicit-coordinate plot (200 total max). New Series IDs are frozen in binding_plan.appended. Existing curves/styles/coordinates/ranges/frames remain unchanged; one Undo removes only the appended curves. Omit top-level ids/targets."})
 }
 pub fn curve_binding_schema(materialize: bool) -> Value {
     let uuid = json!({"type":"string","format":"uuid"});
@@ -88,7 +99,14 @@ pub(super) fn prepare(
         }
         Ok(())
     };
-    if tool == CURVE_BIND {
+    if tool == CURVE_APPEND {
+        let p: crate::state::CurveAppendParams = registry::parse(tool, request.parameters.clone())?;
+        for curve in &p.series {
+            check_source_revision(app, tool, &curve.source)?;
+        }
+        app.plan_append_curves(request.expected_revision, &p)
+            .map_err(|e| invalid(tool, e))
+    } else if tool == CURVE_BIND {
         let p: CurveBindParams = registry::parse(tool, request.parameters.clone())?;
         for e in &p.edits {
             check_source_revision(app, tool, &e.source)?;
@@ -118,7 +136,15 @@ pub(super) fn prepare(
     }
 }
 pub(super) fn freeze(request: &ToolRequest) -> Result<FrozenTargetSet, AutomationError> {
-    let targets = if request.tool_id == CURVE_BIND {
+    let targets = if request.tool_id == CURVE_APPEND {
+        vec![
+            registry::parse::<crate::state::CurveAppendParams>(
+                &request.tool_id,
+                request.parameters.clone(),
+            )?
+            .plot,
+        ]
+    } else if request.tool_id == CURVE_BIND {
         registry::parse::<CurveBindParams>(&request.tool_id, request.parameters.clone())?
             .edits
             .into_iter()

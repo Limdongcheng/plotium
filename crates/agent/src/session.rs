@@ -87,7 +87,7 @@ pub struct Session {
     context: Option<plotium_core::state::ProjectContextId>,
     plans: HashMap<String, ToolPlan>,
     imports: HashMap<String, PreparedTableImport>,
-    transforms: HashMap<String, PreparedTableTransform>,
+    transforms: HashMap<String, PreparedTableOperation>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,7 +232,7 @@ impl Session {
                 ExecutionAuthority::Read
             };
             return Ok(json!(if let Some(prepared) = transform {
-                execute_prepared_table_transform(app, plan, prepared, authority)?
+                execute_prepared_table_operation(app, plan, prepared, authority)?
             } else if let Some(prepared) = prepared {
                 execute_prepared_table_import(app, plan, prepared, authority)?
             } else {
@@ -251,7 +251,10 @@ impl Session {
             return self.finish_import_plan(app, plan, prepared, blocked);
         }
         if name == "plotium_plan"
-            && arguments.get("tool_id").and_then(Value::as_str) == Some("data.transform")
+            && arguments
+                .get("tool_id")
+                .and_then(Value::as_str)
+                .is_some_and(is_table_operation)
         {
             let (plan, snapshot) = self.prepare_transform_plan(app, arguments, blocked)?;
             let prepared = snapshot.prepare(&std::sync::atomic::AtomicBool::new(false))?;

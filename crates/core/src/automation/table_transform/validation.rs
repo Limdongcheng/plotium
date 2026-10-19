@@ -35,10 +35,11 @@ pub(super) fn validate_params(p: &TableTransformParams) -> Result<(), Automation
     if p.memory_limit_bytes == 0 || p.memory_limit_bytes > TABLE_TRANSFORM_MEMORY {
         return Err(invalid("memory_limit_bytes must be 1–536870912."));
     }
-    p.plan.validate().map_err(|e| invalid(e.to_string()))?;
-    let mut count = 0;
-    relation(&p.plan.root, 1, &mut count)?;
-    Ok(())
+    validate_plan(&p.plan)
+}
+pub(super) fn validate_plan(plan: &RelPlanV1) -> Result<(), AutomationError> {
+    plan.validate().map_err(|e| invalid(e.to_string()))?;
+    relation(&plan.root, 1, &mut 0)
 }
 fn node(depth: usize, count: &mut usize) -> Result<(), AutomationError> {
     *count += 1;

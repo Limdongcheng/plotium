@@ -19,6 +19,8 @@ pub struct TableTransformJob {
 
 pub struct TableRefreshJob {
     dataset: DatasetId,
+    context: super::ProjectContextId,
+    revision: u64,
     epoch: u64,
     started_at: Instant,
     cancel: Arc<AtomicBool>,
@@ -185,6 +187,8 @@ impl crate::state::PlotiumApp {
         });
         self.session.table_refresh_job = Some(TableRefreshJob {
             dataset: dataset_id,
+            context: self.session.project_context,
+            revision: self.doc.automation_revision,
             epoch: self.session.dataset_epoch,
             started_at: Instant::now(),
             cancel,
@@ -211,20 +215,29 @@ impl crate::state::PlotiumApp {
             .table_refresh_job
             .take()
             .expect("job checked above");
-        if job.epoch != self.session.dataset_epoch {
+        if job.epoch != self.session.dataset_epoch
+            || job.context != self.session.project_context
+            || job.revision != self.doc.automation_revision
+        {
             self.session.status =
-                "Datasets changed while refreshing; the result was discarded.".into();
+                "Project or data changed while refreshing; the result was discarded.".into();
+            return true;
+        }
+        if job.cancel.load(Ordering::Relaxed) {
+            self.session.status = "Table refresh cancelled.".into();
             return true;
         }
         match result {
             Ok(after) => {
                 let revision = after.envelope.revision.id;
-                self.execute_action(crate::actions::Action::SetTypedTableState {
-                    dataset: job.dataset,
-                    before: Box::new(job.before),
-                    after: Box::new(after),
-                });
-                self.session.status = format!("Refreshed table revision {revision}.");
+                self.session.status = match self.commit_table_revision(
+                    job.dataset,
+                    job.before.envelope.revision.id,
+                    after,
+                ) {
+                    Ok(()) => format!("Refreshed table revision {revision}."),
+                    Err(error) => format!("Table refresh blocked: {error}"),
+                };
             }
             Err(_) if job.cancel.load(Ordering::Relaxed) => {
                 self.session.status = "Table refresh cancelled.".into();
@@ -329,11 +342,7 @@ impl crate::state::PlotiumApp {
         let refreshed = refresh_typed_plan(&derived, &refs, memory_limit_bytes, &BTreeSet::new())
             .map_err(|error| error.to_string())?;
         let revision = refreshed.envelope.revision.id;
-        self.execute_action(crate::actions::Action::SetTypedTableState {
-            dataset: dataset_id,
-            before: Box::new(derived),
-            after: Box::new(refreshed),
-        });
+        self.commit_table_revision(dataset_id, derived.envelope.revision.id, refreshed)?;
         self.session.status = format!("Refreshed table revision {revision}.");
         Ok(())
     }
@@ -462,5 +471,158 @@ mod tests {
         assert!(app.session.table_transform_job.is_none());
         assert_eq!(app.doc.datasets.len(), 1);
         assert!(app.session.status.contains("discarded"));
+    }
+
+    fn bound_pivot_fixture(bind_x_to_generated: bool) -> crate::state::PlotiumApp {
+        use crate::state::{
+            DatasetLineage, DerivationKind, TableDataset, TableSeriesBinding,
+            materialized_float_column,
+        };
+        use plotium_data::*;
+        let input = TypedTableState::materialized(
+            vec![
+                materialized_float_column("x", "s", [Some(0.), Some(1.), Some(2.)]),
+                materialized_float_column("y", "mA", [Some(1.), Some(2.), Some(4.)]),
+                (
+                    ColumnSchema::new("channel", LogicalType::Utf8),
+                    ColumnChunk::all_valid(ColumnValues::Utf8(vec!["signal".into(); 3])),
+                ),
+            ],
+            vec![],
+            "plotium.test.native-pivot.v1",
+        )
+        .unwrap();
+        let source = TableDataset::from_typed(input);
+        let r = &source.typed_state.envelope.revision;
+        let columns = &r.snapshot.schema.columns;
+        let plan = RelPlanV1::new(Relation::Pivot {
+            input: Box::new(Relation::SnapshotRead(SnapshotRead {
+                table: r.table_id,
+                revision: r.id,
+                fingerprint: r.snapshot.fingerprint,
+            })),
+            groups: vec![columns[0].id],
+            names_from: columns[2].id,
+            values_from: columns[1].id,
+            aggregate: AggregateFunction::SumV1,
+        });
+        let typed = execute_typed_plan(
+            plan,
+            &[&source.typed_state],
+            TableId::new(),
+            16777216,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        let mut derived = TableDataset::from_typed(typed);
+        let columns = &derived
+            .typed_state
+            .envelope
+            .revision
+            .snapshot
+            .schema
+            .columns;
+        derived.x_binding = Some(columns[usize::from(bind_x_to_generated)].id);
+        derived.series_bindings = columns
+            .iter()
+            .map(|column| TableSeriesBinding {
+                value_column: column.id,
+                uncertainty_column: None,
+                fit: None,
+            })
+            .collect();
+        derived.lineage = Some(DatasetLineage::new(
+            DerivationKind::RelationalTransform,
+            [source.resource_id],
+        ));
+        let mut app = crate::state::PlotiumApp::new_with_settings(Default::default());
+        app.start_new_project();
+        app.doc.datasets = vec![
+            Dataset::Table(Box::new(source)),
+            Dataset::Table(Box::new(derived)),
+        ];
+        app
+    }
+
+    fn assert_saved_native_table(app: &crate::state::PlotiumApp, path: &std::path::Path) {
+        crate::project::save_project(app, path, false).unwrap();
+        let loaded = crate::project::load_project(path).unwrap();
+        let before = app.doc.datasets[1].as_table().unwrap();
+        let after = loaded.doc.datasets[1].as_table().unwrap();
+        assert_eq!(after.resource_id, before.resource_id);
+        assert_eq!(after.typed_state.envelope, before.typed_state.envelope);
+        assert_eq!(after.x_binding, before.x_binding);
+        assert!(after.series_bindings == before.series_bindings);
+    }
+
+    fn native_pivot_refresh_roundtrip(background: bool) {
+        for bind_x_to_generated in [false, true] {
+            let mut app = bound_pivot_fixture(bind_x_to_generated);
+            let before = app.doc.datasets[1].as_table().unwrap().clone();
+            let dir = std::env::temp_dir().join(format!(
+                "plotium-r9-native-refresh-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir(&dir).unwrap();
+            // A schema-valid, saveable native table with dataset-level bindings,
+            // not a plot-owned explicit binding or an unbound from_typed table.
+            assert_saved_native_table(&app, &dir.join("before.plotium"));
+            assert!(!app.can_undo());
+            if background {
+                let input = app.doc.datasets[0].resource_id();
+                app.start_table_refresh(1, vec![input], 16777216).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while app.session.table_refresh_job.is_some() && Instant::now() < deadline {
+                    app.poll_table_transform();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(app.session.table_refresh_job.is_none());
+                assert!(app.session.status.starts_with("Refreshed table revision"));
+            } else {
+                app.refresh_derived_table(1, &[0], 16777216).unwrap();
+            }
+            // Refresh generates new Pivot value columns. Adoption must retire
+            // their obsolete dataset bindings before ordinary project saving.
+            assert_saved_native_table(&app, &dir.join("after.plotium"));
+            let after = app.doc.datasets[1].as_table().unwrap().clone();
+            assert_ne!(
+                after.typed_state.envelope.revision.snapshot.schema.columns[1].id,
+                before.typed_state.envelope.revision.snapshot.schema.columns[1].id
+            );
+            assert_eq!(after.series_bindings.len(), 1);
+            assert!(after.series_bindings[0] == before.series_bindings[0]);
+            assert_eq!(
+                after.x_binding,
+                if bind_x_to_generated {
+                    None
+                } else {
+                    before.x_binding
+                }
+            );
+            app.undo();
+            let undone = app.doc.datasets[1].as_table().unwrap();
+            assert_eq!(undone.typed_state.envelope, before.typed_state.envelope);
+            assert_eq!(undone.x_binding, before.x_binding);
+            assert!(undone.series_bindings == before.series_bindings);
+            assert!(!app.can_undo());
+            assert_saved_native_table(&app, &dir.join("undo.plotium"));
+            app.redo();
+            let redone = app.doc.datasets[1].as_table().unwrap();
+            assert_eq!(redone.typed_state.envelope, after.typed_state.envelope);
+            assert_eq!(redone.x_binding, after.x_binding);
+            assert!(redone.series_bindings == after.series_bindings);
+            assert_saved_native_table(&app, &dir.join("redo.plotium"));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_pivot_refresh_preserves_saveable_bindings_and_undo() {
+        native_pivot_refresh_roundtrip(false);
+    }
+
+    #[test]
+    fn background_native_pivot_refresh_preserves_saveable_bindings_and_undo() {
+        native_pivot_refresh_roundtrip(true);
     }
 }

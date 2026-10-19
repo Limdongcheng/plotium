@@ -49,6 +49,7 @@ pub(super) fn data_sheet_window(app: &mut PlotiumApp, ctx: &egui::Context) {
             })
         })
         .collect::<Vec<_>>();
+    let freshness = app.doc.table_freshness(app.doc.datasets[di].resource_id());
     let title = format!("Data sheet — {}", app.doc.datasets[di].display_name());
     let available = ctx.content_rect().size();
     let maximum = egui::vec2(
@@ -62,6 +63,10 @@ pub(super) fn data_sheet_window(app: &mut PlotiumApp, ctx: &egui::Context) {
         .max_size(maximum)
         .open(&mut open)
         .show(ctx, |ui| {
+            if matches!(freshness.status, plotium_core::state::TableFreshnessState::Stale | plotium_core::state::TableFreshnessState::Unavailable) && app.doc.datasets[di].as_table().is_some() {
+                ui.colored_label(ui.visuals().warn_fg_color, &freshness.reason);
+                ui.separator();
+            }
             if let Some(elapsed) = app.table_transform_progress() {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -109,11 +114,20 @@ pub(super) fn data_sheet_window(app: &mut PlotiumApp, ctx: &egui::Context) {
         });
     if let Some(delta) = commit {
         let typed_diagnostic = delta.typed_diagnostic.clone();
-        app.execute_action(Action::edit_table(
-            app.doc.datasets[di].resource_id(),
-            delta,
-        ));
-        app.session.status = typed_diagnostic.unwrap_or_else(|| "Edited data table.".to_owned());
+        app.session.status = if let Some(error) = typed_diagnostic {
+            error
+        } else if let Some(after) = delta.typed_state(true) {
+            match app.commit_table_revision(
+                app.doc.datasets[di].resource_id(),
+                delta.before_revision,
+                after,
+            ) {
+                Ok(()) => "Edited data table.".to_owned(),
+                Err(error) => error,
+            }
+        } else {
+            "The cell edit could not be prepared.".to_owned()
+        };
     }
     if let Some(request) = transform
         && let Err(error) = app.start_table_transform(

@@ -9,12 +9,12 @@ pub(super) fn metadata(table: &TableDataset) -> Value {
     if operation.plan.is_none() {
         return Value::Null;
     }
-    json!({"operation":operation,"source_datasets":table.lineage.as_ref().map(|l| &l.sources),
+    json!({"operation":operation,"refresh_recipe":crate::state::table_recipe_revision(&table.typed_state).ok().map(|r| &r.operation),"source_datasets":table.lineage.as_ref().map(|l| &l.sources),
         "row_sources_supported":same_row_source(table),
         "row_sources_contract":"For supported single-source project/filter/stable_sort/computed_column plans, output RowId is the original input RowId. include_provenance returns pinned source revision and native input position per row."})
 }
 fn same_row_source(table: &TableDataset) -> bool {
-    let operation = &table.typed_state.envelope.revision.operation;
+    let operation = effective_operation(table);
     if operation.inputs.len() != 1 {
         return false;
     }
@@ -43,8 +43,8 @@ pub(super) fn row_sources(
     offset: u64,
     rows: &[RowId],
 ) -> Result<Vec<Value>, AutomationError> {
-    let op = &table.typed_state.envelope.revision.operation;
-    if op.plan.is_none() {
+    let op = effective_operation(table);
+    if op.plan.is_none() || table.lineage.is_none() {
         return Ok(vec![json!([]); rows.len()]);
     }
     if !same_row_source(table) {
@@ -107,4 +107,10 @@ pub(super) fn row_sources(
 // persisted lineage edge rather than being silently rebound to another table.
 pub(super) fn dataset_metadata(dataset: &Dataset) -> Value {
     dataset.as_table().map_or(Value::Null, metadata)
+}
+
+fn effective_operation(table: &TableDataset) -> &plotium_data::RevisionOperation {
+    crate::state::table_recipe_revision(&table.typed_state)
+        .map(|r| &r.operation)
+        .unwrap_or(&table.typed_state.envelope.revision.operation)
 }

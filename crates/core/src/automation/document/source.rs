@@ -40,6 +40,10 @@ pub(super) fn describe(app: &PlotiumApp, series: &SeriesBinding) -> Value {
         out["status"] = json!("incompatible_encoding");
     }
     if let Dataset::Table(table) = dataset {
+        out["freshness"] = json!(crate::automation::table_update::connection_table_freshness(
+            app,
+            src.resource
+        ));
         if let Some(columns) = src.columns() {
             out["binding_mode"] = json!("table_explicit");
             out["per_plot_explicit_binding_supported"] = json!(true);

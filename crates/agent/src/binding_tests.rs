@@ -138,7 +138,7 @@ fn binding_schema_uses_exact_embedded_targets_without_changing_old_selectors() {
         .find(|t| t.name == "plotium_plan")
         .unwrap();
     let schema = serde_json::to_value(&plan.input_schema).unwrap();
-    assert_eq!(schema["oneOf"].as_array().unwrap().len(), 8);
+    assert_eq!(schema["oneOf"].as_array().unwrap().len(), 11);
     let constraints = crate::capabilities::manifest(false);
     assert_eq!(
         constraints["operation_constraints"][CURVE_BIND]["currently_permitted"],
@@ -220,5 +220,85 @@ fn binding_real_http_mcp_plans_executes_and_returns_native_preview() {
             .series[0]
             .points[1],
         [1., 3.]
+    );
+}
+
+#[test]
+fn append_schema_permissions_context_and_frozen_series_identity() {
+    let mut app = fixture();
+    let mut session = crate::Session::default();
+    session.allow_modify = true;
+    let a = args(&app, 1);
+    let plan = session.call(&mut app, "plotium_plan", a.clone()).unwrap();
+    session
+        .call(
+            &mut app,
+            "plotium_execute",
+            json!({"plan_id":plan["plan_id"]}),
+        )
+        .unwrap();
+    let a = args(&app, 2);
+    let owner = TargetRef::resource(canvas_object_ref(
+        app.doc.canvases[0].resource_id,
+        app.doc.canvases[0].objects[0].id,
+    ));
+    let mut append = json!({"expected_project_context":app.session.project_context,"expected_revision":app.doc.automation_revision,"tool_id":CURVE_APPEND,"parameters":{"plot":owner,"series":[{"kind":"line","source":a["parameters"]["edits"][0]["source"]}]}});
+    session.allow_modify = false;
+    assert_eq!(
+        session
+            .call(&mut app, "plotium_plan", append.clone())
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+    session.allow_modify = true;
+    let plan = session
+        .call(&mut app, "plotium_plan", append.clone())
+        .unwrap();
+    let proposed = plan["preflight"]["binding_plan"]["appended"][0].clone();
+    assert!(!proposed.is_null());
+    let result = session
+        .call(
+            &mut app,
+            "plotium_execute",
+            json!({"plan_id":plan["plan_id"]}),
+        )
+        .unwrap();
+    assert_eq!(result["value"]["appended"][0], proposed);
+    let actual = app
+        .series_target(
+            0,
+            app.doc.canvases[0].objects[0].id,
+            app.doc.canvases[0].objects[0]
+                .plot()
+                .unwrap()
+                .binding
+                .series[1]
+                .id,
+        )
+        .unwrap();
+    assert_eq!(json!(actual), proposed);
+    append["expected_revision"] = json!(app.doc.automation_revision);
+    let plan = session.call(&mut app, "plotium_plan", append).unwrap();
+    app.session.project_context = ProjectContextId::default();
+    assert_eq!(
+        session
+            .call(
+                &mut app,
+                "plotium_execute",
+                json!({"plan_id":plan["plan_id"]})
+            )
+            .unwrap_err()
+            .code,
+        "project_changed"
+    );
+    assert_eq!(
+        app.doc.canvases[0].objects[0]
+            .plot()
+            .unwrap()
+            .binding
+            .series
+            .len(),
+        2
     );
 }
