@@ -107,3 +107,59 @@ pub(super) fn range(
     }
     ui.weak(unit.as_deref().unwrap_or("data units"));
 }
+
+/// Both coordinates travel as one property write and one gesture.
+pub(super) fn position(
+    row: &Row,
+    current: Option<[f64; 2]>,
+    pending: &mut Option<Pending>,
+    gesture: &mut Option<(PropertyId, GestureEdge)>,
+    ui: &mut Ui,
+) {
+    if row.mixed() {
+        for (label, value) in [("Auto", None), ("Custom", Some([1., 0.]))] {
+            if ui.selectable_label(false, label).clicked() {
+                *pending = Some(Pending::Write(
+                    row.presentation.id,
+                    PropertyValue::NormalizedPosition(value),
+                ));
+            }
+        }
+        return;
+    }
+    let mut custom = current.is_some();
+    if ui.checkbox(&mut custom, "Custom").changed() {
+        *pending = Some(Pending::Write(
+            row.presentation.id,
+            PropertyValue::NormalizedPosition(custom.then_some(current.unwrap_or([1., 0.]))),
+        ));
+    }
+    let mut position = current.unwrap_or([1., 0.]);
+    let mut changed = false;
+    for (axis, value) in position.iter_mut().enumerate() {
+        let response = ui
+            .add_enabled(
+                custom,
+                hide_value(
+                    DragValue::new(value)
+                        .speed(0.005)
+                        .range(0.0..=1.0)
+                        .max_decimals(4),
+                    row.mixed(),
+                ),
+            )
+            .on_hover_text(if axis == 0 {
+                "Horizontal origin in available plot travel"
+            } else {
+                "Vertical origin in available plot travel (downward)"
+            });
+        note_gesture(row, &response, gesture);
+        changed |= response.changed();
+    }
+    if changed {
+        *pending = Some(Pending::Write(
+            row.presentation.id,
+            PropertyValue::NormalizedPosition(Some(position)),
+        ));
+    }
+}

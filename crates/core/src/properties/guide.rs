@@ -14,6 +14,7 @@ use plotium_figure::{GuideLayout, GuidePlacement, GuideVisibility};
 pub const VISIBILITY: PropertyId = PropertyId("object.guides.visibility");
 pub const PLACEMENT: PropertyId = PropertyId("object.guides.placement");
 pub const LAYOUT: PropertyId = PropertyId("object.guides.layout");
+pub const POSITION: PropertyId = PropertyId("object.guides.position");
 pub const TITLE: PropertyId = PropertyId("object.guides.title");
 
 pub const AUTO: &str = "auto";
@@ -68,6 +69,18 @@ pub(crate) const DEFINITIONS: &[PropertyDefinition] = &[
         &["legend direction", "horizontal legend", "vertical legend"],
     ),
     PropertyDefinition {
+        id: POSITION,
+        scope_kind: ScopeKind::Object,
+        value_schema: ValueSchema::NormalizedPosition,
+        access: PropertyAccess::ReadWrite,
+        applicability: OBJECT,
+        default_policy: DefaultPolicy::Fixed(PropertyValue::NormalizedPosition(None)),
+        tier: Tier::Advanced,
+        copies: ValueCopies::PerTarget,
+        canonical_label: "Legend origin",
+        canonical_aliases: &["normalized legend position"],
+    },
+    PropertyDefinition {
         id: TITLE,
         scope_kind: ScopeKind::Object,
         value_schema: ValueSchema::Text,
@@ -116,6 +129,9 @@ impl PropertyProvider for GuideProvider {
     ) -> Result<ResolvedProperty, PropertyError> {
         let definition = property_definition(address.definition)?;
         let (_, plot) = plot_for(app, address, definition)?;
+        if definition.id == POSITION {
+            require_legend(plot, true)?;
+        }
         Ok(ResolvedProperty {
             address: address.clone(),
             value: AggregateValue::Uniform(value_of(definition.id, plot)?),
@@ -135,8 +151,32 @@ impl PropertyProvider for GuideProvider {
     ) -> Result<(), PropertyError> {
         let definition = property_definition(address.definition)?;
         let (canvas, object) = require_plot_object_target(app, &address.target, definition)?;
+        if definition.id == POSITION {
+            let (_, plot) = plot_for(app, address, definition)?;
+            let clearing = matches!(
+                operation,
+                EditOp::Reset | EditOp::Set(PropertyValue::NormalizedPosition(None))
+            );
+            require_legend(plot, clearing)?;
+        }
         let overrides = transaction.axis_overrides(app, canvas, object)?;
         match (definition.id, operation) {
+            (POSITION, EditOp::Set(PropertyValue::NormalizedPosition(position))) => {
+                if let Some([x, y]) = position {
+                    if ![x, y]
+                        .iter()
+                        .all(|v| v.is_finite() && (0.0..=1.0).contains(*v))
+                    {
+                        return Err(PropertyError::InvalidValue {
+                            property: POSITION,
+                            message: "origin requires two finite numbers in 0..=1".into(),
+                        });
+                    }
+                    overrides.set_legend_position([*x as f32, *y as f32]);
+                } else {
+                    overrides.reset_guide_placement();
+                }
+            }
             (VISIBILITY, EditOp::Set(PropertyValue::Enum(value))) => {
                 overrides.guide_visibility = match *value {
                     AUTO => None,
@@ -147,8 +187,7 @@ impl PropertyProvider for GuideProvider {
             }
             (PLACEMENT, EditOp::Set(PropertyValue::Enum(value))) => match *value {
                 AUTO => {
-                    overrides.guide_placement = None;
-                    overrides.legend_position = None;
+                    overrides.reset_guide_placement();
                 }
                 INSIDE => {
                     overrides.guide_placement = Some(GuidePlacement::Inside);
@@ -163,8 +202,8 @@ impl PropertyProvider for GuideProvider {
                     overrides.legend_position = None;
                 }
                 CUSTOM => {
-                    overrides.guide_placement = Some(GuidePlacement::Inside);
-                    overrides.legend_position.get_or_insert([1.0, 0.0]);
+                    let position = overrides.legend_position.unwrap_or([1.0, 0.0]);
+                    overrides.set_legend_position(position);
                 }
                 _ => return Err(invalid_enum(definition, value)),
             },
@@ -180,10 +219,7 @@ impl PropertyProvider for GuideProvider {
                 overrides.guide_title = Some(value.clone());
             }
             (VISIBILITY, EditOp::Reset) => overrides.guide_visibility = None,
-            (PLACEMENT, EditOp::Reset) => {
-                overrides.guide_placement = None;
-                overrides.legend_position = None;
-            }
+            (PLACEMENT | POSITION, EditOp::Reset) => overrides.reset_guide_placement(),
             (LAYOUT, EditOp::Reset) => overrides.guide_layout = None,
             (TITLE, EditOp::Reset) => overrides.guide_title = None,
             (_, EditOp::Step(_)) => {
@@ -245,6 +281,9 @@ fn value_of(id: PropertyId, plot: &PlotObject) -> Result<PropertyValue, Property
             GuideLayout::Horizontal => "horizontal",
         })),
         TITLE => Ok(PropertyValue::Text(plot.figure().guide_title.clone())),
+        POSITION => Ok(PropertyValue::NormalizedPosition(
+            plot.figure().legend_position.map(|p| p.map(f64::from)),
+        )),
         _ => Err(PropertyError::UnknownProperty(id.as_str().to_owned())),
     }
 }
@@ -256,6 +295,8 @@ fn has_override(id: PropertyId, plot: &PlotObject) -> Result<bool, PropertyError
             || plot.axis_overrides.legend_position.is_some()),
         LAYOUT => Ok(plot.axis_overrides.guide_layout.is_some()),
         TITLE => Ok(plot.axis_overrides.guide_title.is_some()),
+        POSITION => Ok(plot.axis_overrides.legend_position.is_some()
+            || plot.axis_overrides.guide_placement.is_some()),
         _ => Err(PropertyError::UnknownProperty(id.as_str().to_owned())),
     }
 }
@@ -264,6 +305,7 @@ fn default_value(id: PropertyId) -> Result<PropertyValue, PropertyError> {
     match id {
         VISIBILITY | PLACEMENT | LAYOUT => Ok(PropertyValue::Enum(AUTO)),
         TITLE => Ok(PropertyValue::Text(String::new())),
+        POSITION => Ok(PropertyValue::NormalizedPosition(None)),
         _ => Err(PropertyError::UnknownProperty(id.as_str().to_owned())),
     }
 }
@@ -277,4 +319,40 @@ fn invalid_enum(definition: &'static PropertyDefinition, value: &str) -> Propert
         property: definition.id,
         message: format!("{} does not support {value}", definition.canonical_label),
     }
+}
+
+/// Presence is independent of visibility; a hidden guide can still be positioned.
+fn require_legend(plot: &PlotObject, allow_retained: bool) -> Result<(), PropertyError> {
+    if plotium_render::legend_entry_count(plot.figure()) > 0
+        || (allow_retained && plot.axis_overrides.legend_position.is_some())
+    {
+        Ok(())
+    } else {
+        Err(PropertyError::NotApplicable(
+            "This plot has no categorical legend content".into(),
+        ))
+    }
+}
+
+pub fn is_guide_property(id: PropertyId) -> bool {
+    matches!(id, VISIBILITY | PLACEMENT | LAYOUT | TITLE | POSITION)
+}
+
+/// Read-only native geometry, also usable by non-MCP presentation consumers.
+pub fn geometry(
+    app: &PlotiumApp,
+    address: &PropertyAddress,
+) -> Result<plotium_render::GuideGeometry, PropertyError> {
+    let definition = property_definition(address.definition)?;
+    let (canvas, object) = require_plot_object_target(app, &address.target, definition)?;
+    let content = app.doc.canvases[canvas]
+        .object(object)
+        .ok_or_else(|| PropertyError::UnknownTarget(address.target.describe()))?;
+    let plot = content
+        .plot()
+        .ok_or_else(|| PropertyError::UnknownTarget(address.target.describe()))?;
+    Ok(plotium_render::guide_geometry(
+        plot.figure(),
+        [content.frame.width, content.frame.height],
+    ))
 }

@@ -154,6 +154,10 @@ pub(crate) fn aggregate_property_summary(readouts: &[PropertyReadout]) -> Option
 
 fn value_summary(value: &PropertyValue) -> String {
     match value {
+        PropertyValue::NormalizedPosition(value) => value.map_or_else(
+            || "No custom origin".into(),
+            |[x, y]| format!("[{x:.4}, {y:.4}]"),
+        ),
         PropertyValue::AxisRange(value) => format!("{value}"),
         PropertyValue::Bool(value) => value.to_string(),
         PropertyValue::Text(value) => value.clone(),
