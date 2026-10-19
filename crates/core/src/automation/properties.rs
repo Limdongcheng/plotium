@@ -23,6 +23,8 @@ use crate::properties::{
 use crate::state::PlotiumApp;
 use serde::{Deserialize, Serialize};
 
+#[path = "property_guide.rs"]
+mod guides;
 #[path = "property_range.rs"]
 mod range;
 
@@ -186,7 +188,7 @@ fn inspect(
         let resolved = app
             .resolve_property(address)
             .map_err(|error| AutomationError::Execution(error.to_string()))?;
-        readings.push(reading(&resolved)?);
+        readings.push(reading(app, &resolved)?);
     }
     let mut targets = skipped_from_plan(plan);
     targets.extend(set.applicable_targets.iter().map(|address| TargetResult {
@@ -362,6 +364,9 @@ fn decode_value(
         message: format!("{}: {message}", definition.id),
     };
     match definition.value_schema {
+        ValueSchema::NormalizedPosition => guides::decode(value)
+            .map(PropertyValue::NormalizedPosition)
+            .map_err(invalid),
         ValueSchema::AxisRange => range::decode(value)
             .map(PropertyValue::AxisRange)
             .map_err(invalid),
@@ -520,6 +525,8 @@ struct ReadingDto {
     disabled_reason: Option<&'static str>,
     modified: bool,
     schema: ResolvedSchemaDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guide_geometry: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -533,6 +540,7 @@ enum AggregateValueDto {
 #[derive(Serialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 enum PropertyValueDto {
+    NormalizedPosition(Option<[f64; 2]>),
     AxisRange(range::AxisRangeDto),
     Bool(bool),
     Text(String),
@@ -547,6 +555,9 @@ enum PropertyValueDto {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResolvedSchemaDto {
+    NormalizedPosition {
+        input_schema: serde_json::Value,
+    },
     AxisRange {
         unit: Option<String>,
         view: [f64; 2],
@@ -600,7 +611,7 @@ struct EnumVariantDto {
     canonical_label: &'static str,
 }
 
-fn reading(resolved: &ResolvedProperty) -> Result<ReadingDto, AutomationError> {
+fn reading(app: &PlotiumApp, resolved: &ResolvedProperty) -> Result<ReadingDto, AutomationError> {
     Ok(ReadingDto {
         target: resolved.address.target.clone(),
         value: aggregate_dto(&resolved.value),
@@ -616,6 +627,7 @@ fn reading(resolved: &ResolvedProperty) -> Result<ReadingDto, AutomationError> {
         },
         modified: resolved.is_modified(),
         schema: schema_dto(&resolved.schema),
+        guide_geometry: guides::geometry(app, &resolved.address)?,
     })
 }
 
@@ -631,6 +643,7 @@ fn aggregate_dto(value: &AggregateValue<PropertyValue>) -> AggregateValueDto {
 
 fn value_dto(value: &PropertyValue) -> PropertyValueDto {
     match value {
+        PropertyValue::NormalizedPosition(value) => PropertyValueDto::NormalizedPosition(*value),
         PropertyValue::AxisRange(value) => PropertyValueDto::AxisRange(value.into()),
         PropertyValue::Bool(value) => PropertyValueDto::Bool(*value),
         PropertyValue::Text(value) => PropertyValueDto::Text(value.clone()),
@@ -643,6 +656,9 @@ fn value_dto(value: &PropertyValue) -> PropertyValueDto {
 
 fn schema_dto(schema: &ResolvedSchema) -> ResolvedSchemaDto {
     match schema {
+        ResolvedSchema::NormalizedPosition => ResolvedSchemaDto::NormalizedPosition {
+            input_schema: guides::input_schema(),
+        },
         ResolvedSchema::AxisRange {
             unit,
             view,

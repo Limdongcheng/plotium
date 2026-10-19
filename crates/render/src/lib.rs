@@ -391,6 +391,8 @@ pub(crate) fn heatmap_cells(proj: &Projector<'_>, grid: &HeatmapGrid) -> Vec<(Re
     cells
 }
 
+mod guide_geometry;
+pub use guide_geometry::{GuideGeometry, guide_geometry, legend_entry_count};
 mod legend_content;
 use legend_content::{LegendMark, legend_entries};
 

@@ -78,6 +78,11 @@ canvases and canvas objects, and these display properties only:
 | `object.axes.x_display_unit / object.axes.y_display_unit` | Object | compatible code from property inspection |
 | `object.axes.x_range / object.axes.y_range` | Object | auto or manual range object |
 | `object.figure.typography.tick_pt / object.figure.typography.label_pt / object.figure.typography.legend_pt` | Object | 1–72 pt |
+| `object.guides.visibility` | Object | `auto`, `show`, `hide` |
+| `object.guides.placement` | Object | `auto`, `inside`, `outside_right`, `outside_bottom`, `custom` |
+| `object.guides.layout` | Object | `auto`, `vertical`, `horizontal` |
+| `object.guides.title` | Object | string |
+| `object.guides.position` | Object | `[x,y]` in [0,1], or `null` |
 | `series.contour.line_width` | Object + Series | 0.05–10 pt |
 | `series.contour.count` | Object + Series | 1–256 |
 | `document.figure.typography.tick_pt / document.figure.typography.label_pt` | document | 1–72 pt |
@@ -901,6 +906,85 @@ Only one preview renders per connection; another returns `busy`. Other existing
 tools remain available while rendering. Cancellation or stopping the connection
 prevents image delivery; stopping or switching projects discards the old job.
 
+## Position a plot's legend precisely
+
+Guide properties use `ids:[PLOT_OBJECT_ID]`, not Series components. Discover the
+object by its full canvas/object identity; plot names need not be unique. Use
+`properties.set` with one key/value, review its plan, then execute the returned
+one-use plan ID:
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 7,
+  "tool_id": "properties.set",
+  "ids": ["CANVAS_UUID/OBJECT_ID"],
+  "parameters": {"key":"object.guides.position","value":[0,1]}
+}
+```
+
+`position` accepts exactly two finite numbers in [0,1], or `null`. It places the
+legend box's top-left origin within the space in which that complete box can
+move inside the axes' plotting rectangle. x increases rightward, y downward:
+`origin = plot_origin + [x,y] * max(plot_size - legend_size, 0)`. These are not
+screen pixels, page fractions or data coordinates. [0,0] is top-left; [1,1]
+aligns bottom-right when the legend fits. The renderer recomputes this mapping
+when the output size, legend content or layout changes.
+
+The native properties and their necessary coupling are:
+
+- `visibility`: `auto`, `show`, `hide`. Auto shows a categorical legend with at
+  least two native entries; Show permits one; Hide hides guides, not data.
+- `placement`: `auto`, `inside`, `outside_right`, `outside_bottom`, `custom`.
+  Custom retains an existing origin or starts at [1,0], and sets Inside.
+  Every other placement clears the custom origin.
+- `position`: [x,y] sets Inside/custom. `null`, position reset, placement Auto
+  and placement reset clear both origin and placement overrides, matching GUI
+  double-click. A read of `null` means no custom origin; consult placement for
+  the actual mode, which may be outside.
+- `layout`: `auto`, `vertical`, `horizontal`, retaining native layout behavior.
+- `title`: text; blank/whitespace clears its override using native normalization.
+
+Visibility/layout/title reset only their own overrides. Position changes and
+resets retain these fields, font size, bindings, curve styles and manual axis
+ranges. Guides still use native entry merging; six curves need not produce six
+entries when their native legend identities merge. The four existing properties
+retain their color-scale behavior. Free two-dimensional positioning applies to
+categorical legend content, independent of guide visibility. Retained origins
+without content remain readable/resettable, but new coordinates require legend
+content; they do not reposition a colorbar independently.
+
+Guide inspection adds `guide_geometry` to applicable readings. It returns
+`coordinate_space:"object_local_pt"`, `scale:1`, `plot_rect`, nullable
+`legend_rect`/`color_scale_rect` (x/y/width/height), `entry_count`, nullable
+`available_travel_pt`, `effective_position`, `fits_plot` (two size-fit booleans),
+and `not_rendered_reason` (`hidden`, `no_entries`, `auto_single_entry`, or null).
+`measurement_basis:"renderer_layout_text_width_estimate"` names the same layout
+boxes used by rendering, not exact glyph bounds. Object/parent visibility and
+clipping are not evaluated here. Effective position is the
+resolved origin relative to available travel, without clamping outside placements;
+a zero-travel axis reports zero. Guide-hidden or automatically omitted legends return null geometry
+and the reason, while the property value retains the configured origin.
+
+An oversized legend is not silently shrunk. Its unavailable travel axes are zero,
+`fits_plot` reports false, and the effective position can differ from the requested
+origin. Size fit does not promise absence of clipping or curve overlap; inspect
+the native PNG and final exports. This observation is limited to guide layout,
+not a whole-figure diagnostic.
+
+Guide writes validate every explicit target before committing; an existing but
+inapplicable target rejects the whole batch with `invalid_parameters`, unlike
+the unchanged skip policy of older properties. Duplicate IDs are processed once.
+One request changes one property across at most 200 IDs with one Undo/Redo step;
+titles are limited to 16,384 UTF-8 bytes, structured responses to 256 KiB
+(`response_too_large`), and the existing shared limit is 32 pending plans.
+Malformed/out-of-range values fail with `invalid_parameters`. Inspection reports
+inapplicable targets. Read-only connections can inspect/preflight but execute
+requires reversible-modify permission. Context/revision changes, revocation,
+busy and expired-plan failures retain the normal single-use contract. Inspection
+may add an audit record and mark dirty, without changing automation revision or
+Undo history. Discover these rules in `connection_capabilities.guide_contract`.
+
 ## Change display without rebuilding the plot
 
 Use the exact target returned in `creation.series_defaults[].target`, or discover
@@ -943,7 +1027,8 @@ Range values distinguish these operations:
   bounds in the stated compatible unit. `unit:null` is only for unknown coordinate
   units. A known unit cannot be introduced onto an unknown-unit plot.
 - Resetting **all** axis settings is a separate native operation, not a side
-  effect of Auto. `properties.reset` resets only the named property.
+  effect of Auto. Axis reset clears only the named override; guide origin/placement
+  coupling follows the rules above.
 
 Display units use compatible codes returned by property inspection, such as `s` → `ms` or `mA` → `A`.
 The plot retains R4's coordinate-unit contract: source data, manual range storage,

@@ -177,3 +177,36 @@ fn content_image_replacement_uses_public_schema_and_discloses_native_attributes(
         assert!(ops.iter().any(|v| v["properties"]["op"]["const"] == op));
     }
 }
+
+#[test]
+fn content_and_guide_capabilities_remain_discoverable_together() {
+    let (mut a, _) = fixture();
+    for allow_modify in [false, true] {
+        let mut s = crate::Session::default();
+        s.allow_modify = allow_modify;
+        let state = s.call(&mut a, "plotium_get_state", json!({})).unwrap();
+        let caps = &state["connection_capabilities"];
+        let edit = &caps["operation_constraints"][FIGURE_EDIT];
+        assert_eq!(edit["currently_permitted"], allow_modify);
+        assert_eq!(edit["schema"], figure_edit_schema());
+        let ops = edit["schema"]["properties"]["edits"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
+        for op in ["content_frame", "image_replace"] {
+            assert!(ops.iter().any(|v| v["properties"]["op"]["const"] == op));
+            assert!(edit["result_contract"].as_str().unwrap().contains(op));
+        }
+        assert_eq!(caps["guide_contract"]["limits"]["targets"], 200);
+        assert_eq!(caps["guide_contract"]["limits"]["title_utf8_bytes"], 16384);
+        assert!(
+            caps["guide_contract"]["coordinates"]
+                .as_str()
+                .unwrap()
+                .contains("plot_size - legend_size")
+        );
+        let properties = caps["supported_properties"].as_array().unwrap();
+        for key in ["visibility", "placement", "layout", "title", "position"] {
+            assert!(properties.contains(&json!(format!("object.guides.{key}"))));
+        }
+    }
+}

@@ -36,6 +36,7 @@ use plotium_core::state::SettingsCategory;
 use plotium_core::state::WorkflowTab;
 
 pub const PRESENTATIONS: &[PropertyPresentation] = &[
+    object_entry(guide::POSITION, "Origin", GUIDE_HOME),
     object_entry(
         plotium_core::properties::line_display::COLOR,
         "Color",

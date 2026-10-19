@@ -195,6 +195,9 @@ fn control(
         return;
     };
     match (&row.representative.schema, value) {
+        (ResolvedSchema::NormalizedPosition, PropertyValue::NormalizedPosition(current)) => {
+            display::position(row, *current, pending, gesture, ui);
+        }
         (ResolvedSchema::AxisRange { .. }, PropertyValue::AxisRange(current)) => {
             display::range(row, current, pending, gesture, ui)
         }
@@ -710,6 +713,10 @@ fn hide_value(drag: DragValue<'_>, hidden: bool) -> DragValue<'_> {
 
 fn describe<'a>(row: &Row, value: &'a PropertyValue) -> Cow<'a, str> {
     match value {
+        PropertyValue::NormalizedPosition(value) => Cow::Owned(match value {
+            Some([x, y]) => format!("[{x:.4}, {y:.4}]"),
+            None => "No custom origin".into(),
+        }),
         PropertyValue::AxisRange(value) => Cow::Owned(format!("{value}")),
         PropertyValue::Bool(value) => Cow::Borrowed(if *value { "on" } else { "off" }),
         PropertyValue::Text(value) => Cow::Borrowed(value),

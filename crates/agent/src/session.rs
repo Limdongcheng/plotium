@@ -1,6 +1,7 @@
 //! Desktop-thread capability boundary. No project state crosses the bridge.
 use std::collections::HashMap;
 mod export;
+mod guides;
 #[cfg(test)]
 mod plan_budget_tests;
 pub(crate) mod save;
@@ -36,6 +37,11 @@ pub const PROPERTIES: &[PropertyId] = &[
     properties::plot_display::TICK_PT,
     properties::plot_display::LABEL_PT,
     properties::plot_display::LEGEND_PT,
+    properties::guide::VISIBILITY,
+    properties::guide::PLACEMENT,
+    properties::guide::LAYOUT,
+    properties::guide::TITLE,
+    properties::guide::POSITION,
 ];
 
 #[derive(Clone, Debug)]
@@ -411,7 +417,9 @@ impl Session {
                 args.expected_revision,
             );
             request.targets = targets;
+            guides::validate_request(&mut request)?;
             let plan = plan_tool(app, request)?;
+            guides::validate_plan(&plan)?;
             if args.tool_id == "resource.rename"
                 && plan.frozen_targets.targets.iter().any(|r| {
                     !matches!(
@@ -433,6 +441,7 @@ impl Session {
             }
             let id = format!("{}:{}", app.session.project_context, uuid::Uuid::new_v4());
             let result = json!({"plan_id": id, "preflight": plan});
+            guides::check_response(&result, &plan.request.parameters)?;
             self.plans.insert(id, plan);
             return Ok(result);
         }
@@ -490,10 +499,18 @@ impl Session {
                 let args: InspectProperty = decode(arguments)?;
                 let parameters = json!({"key": args.key});
                 check_property(&parameters)?;
-                let mut request = request(TOOL_INSPECT, parameters, vec![], args.expected_revision);
+                let mut request = request(
+                    TOOL_INSPECT,
+                    parameters.clone(),
+                    vec![],
+                    args.expected_revision,
+                );
                 request.targets = selector(args.ids, args.targets)?;
+                guides::validate_request(&mut request)?;
                 let plan = plan_tool(app, request)?;
-                return Ok(json!(execute_tool(app, plan, ExecutionAuthority::Read)?));
+                let result = json!(execute_tool(app, plan, ExecutionAuthority::Read)?);
+                guides::check_response(&result, &parameters)?;
+                return Ok(result);
             }
             _ => return Err(Failure::new("unsupported_operation", "Unknown tool")),
         };
