@@ -155,6 +155,15 @@ impl PlotiumApp {
                     }
                 }
             },
+            Action::DeleteFigureTargets { change } => {
+                if let Some(page) = self
+                    .doc
+                    .canvas_index(change.canvas)
+                    .map(|ci| &self.doc.canvases[ci])
+                {
+                    change.retain_allocators(page);
+                }
+            }
             _ => {}
         }
     }

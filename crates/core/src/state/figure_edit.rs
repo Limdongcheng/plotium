@@ -15,6 +15,15 @@ pub struct FigureEditParams {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FigureEdit {
+    ContentDelete {
+        target: TargetRef,
+    },
+    PanelDelete {
+        target: TargetRef,
+    },
+    SeriesDelete {
+        target: TargetRef,
+    },
     Page {
         size_mm: Option<[f32; 2]>,
         margin_mm: Option<[f32; 4]>,
@@ -92,11 +101,15 @@ pub struct FigureEditPlan {
     pub canvas: TargetRef,
     pub modified: Vec<TargetRef>,
     pub created: Vec<TargetRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted: Vec<TargetRef>,
+    #[serde(skip)]
+    pub(super) deletion: Option<Box<crate::actions::DeletionChange>>,
     pub result: Value,
     #[serde(skip)]
-    candidate: Option<Box<CanvasDocument>>,
+    pub(super) candidate: Option<Box<CanvasDocument>>,
     #[serde(skip)]
-    assets: Vec<AssetRecord>,
+    pub(super) assets: Vec<AssetRecord>,
 }
 impl std::fmt::Debug for FigureEditPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -109,6 +122,7 @@ impl PartialEq for FigureEditPlan {
             && self.canvas == b.canvas
             && self.modified == b.modified
             && self.created == b.created
+            && self.deleted == b.deleted
             && self.result == b.result
     }
 }
@@ -267,6 +281,9 @@ impl PlotiumApp {
             .iter()
             .find(|c| params.canvas == TargetRef::resource(c.resource_id.into()))
             .ok_or("Discover an exact whole-canvas target.")?;
+        if params.edits.iter().any(|e| e.deletion_target().is_some()) {
+            return self.plan_figure_deletion(revision, params, original);
+        }
         if original.auto_height
             && params.edits.iter().any(|e| {
                 !matches!(
@@ -288,6 +305,11 @@ impl PlotiumApp {
         let mut content_edits = Vec::new();
         for (edit_index, edit) in params.edits.iter().enumerate() {
             match edit {
+                FigureEdit::ContentDelete { .. }
+                | FigureEdit::PanelDelete { .. }
+                | FigureEdit::SeriesDelete { .. } => {
+                    return Err("Deletion must use a deletion-only batch.".into());
+                }
                 FigureEdit::Page {
                     size_mm,
                     margin_mm,
@@ -503,6 +525,8 @@ impl PlotiumApp {
             modified,
             created,
             result,
+            deleted: vec![],
+            deletion: None,
             candidate: Some(Box::new(page)),
             assets,
         })
@@ -510,6 +534,12 @@ impl PlotiumApp {
     pub fn commit_figure_edit(&mut self, plan: FigureEditPlan) -> Result<(), String> {
         if plan.expected_revision.0 != self.doc.automation_revision {
             return Err("Document revision is stale.".into());
+        }
+        if let Some(mut change) = plan.deletion {
+            change.recheck_selection(self)?;
+            return self
+                .try_execute_action(Action::DeleteFigureTargets { change })
+                .map_err(|e| e.to_string());
         }
         let page = plan
             .candidate

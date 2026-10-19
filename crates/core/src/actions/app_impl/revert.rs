@@ -324,6 +324,13 @@ impl PlotiumApp {
                 }
                 self.set_selection(selection_before.clone());
             }
+            Action::DeleteFigureTargets { change } => {
+                if let Some(ci) = self.doc.canvas_index(change.canvas) {
+                    self.set_panel_state(ci, &change.before);
+                    self.doc.canvases[ci].x_viewport_links = change.links(true).to_vec();
+                    change.restore_selection(self, ci, true);
+                }
+            }
             Action::SetObjectText {
                 canvas,
                 object,

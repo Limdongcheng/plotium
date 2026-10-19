@@ -3,6 +3,34 @@
 use super::*;
 
 impl PlotiumApp {
+    /// Capture raw native deletions at their actual point in a composite, so
+    /// existing callers gain complete Undo without changing their entry point.
+    pub(super) fn apply_history_action(
+        &mut self,
+        action: &mut Action,
+    ) -> Result<(), ActionApplyError> {
+        match action {
+            Action::Composite(children) => {
+                for index in 0..children.len() {
+                    if let Err(error) = self.apply_history_action(&mut children[index]) {
+                        for child in children[..index].iter().rev() {
+                            self.revert_action(child);
+                        }
+                        return Err(error);
+                    }
+                }
+                Ok(())
+            }
+            Action::DeleteObject { canvas, object, .. } => {
+                *action =
+                    Action::capture_object_deletion(self, *canvas, object.id).ok_or_else(|| {
+                        ActionApplyError::StaleTarget("native deletion target".into())
+                    })?;
+                self.apply_action(action)
+            }
+            _ => self.apply_action(action),
+        }
+    }
     /// Apply an action's `after` state to the live document without touching
     /// history. Callers that record the step themselves — a paused processing
     /// commit, a coalesced gesture — use this and then record once.
@@ -280,6 +308,18 @@ impl PlotiumApp {
             }
             Action::DeleteObject { canvas, object, .. } => {
                 self.remove_object_value(*canvas, object.id);
+            }
+            Action::DeleteFigureTargets { change } => {
+                change
+                    .validate(self)
+                    .map_err(ActionApplyError::InvalidValue)?;
+                let ci = self
+                    .doc
+                    .canvas_index(change.canvas)
+                    .expect("validated deletion canvas");
+                self.set_panel_state(ci, &change.after);
+                self.doc.canvases[ci].x_viewport_links = change.links(false).to_vec();
+                change.restore_selection(self, ci, false);
             }
             Action::SetObjectText {
                 canvas,

@@ -414,28 +414,15 @@ impl Action {
         }
     }
 
+    /// Defer relationship capture until application, after any earlier composite edits.
     pub fn delete_object(app: &PlotiumApp, canvas: usize, id: ObjectId) -> Option<Self> {
-        let c = app.doc.canvases.get(canvas)?;
-        let index = c.objects.iter().position(|o| o.id == id)?;
-        let delete = Self::DeleteObject {
+        let page = app.doc.canvases.get(canvas)?;
+        let index = page.objects.iter().position(|object| object.id == id)?;
+        Some(Self::DeleteObject {
             canvas,
             index,
-            object: Box::new(c.objects[index].clone()),
+            object: Box::new(page.objects[index].clone()),
             selection_before: app.session.ui.selection.clone(),
-        };
-        let before = c.x_viewport_links.clone();
-        let mut after = before.clone();
-        after.retain_mut(|group| {
-            group.members.retain(|member| *member != id);
-            group.members.len() >= 2
-        });
-        Some(if before == after {
-            delete
-        } else {
-            Self::Composite(vec![
-                Self::set_x_viewport_links(canvas, before, after),
-                delete,
-            ])
         })
     }
 
