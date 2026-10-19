@@ -343,6 +343,8 @@ pub struct PlannedTarget {
 #[serde(deny_unknown_fields)]
 pub struct ToolPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_plan: Option<crate::state::FigureEditPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_plan: Option<crate::state::CurveEditPlan>,
     pub request: ToolRequest,
     pub frozen_targets: FrozenTargetSet,

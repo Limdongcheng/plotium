@@ -355,3 +355,6 @@ mod context_tests;
 mod precise_display_tests;
 #[cfg(test)]
 mod rendezvous_tests;
+
+#[cfg(test)]
+mod figure_edit_tests;

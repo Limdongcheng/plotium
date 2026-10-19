@@ -57,6 +57,7 @@ pub(super) fn validate_parameters(
         "data.preview" => parse::<PreviewParams>(tool, value).map(drop),
         "results.compare" => parse::<CompareParams>(tool, value).map(drop),
         PLOT_CREATE => parse::<crate::state::PlotCreateParams>(tool, value).map(drop),
+        FIGURE_EDIT => parse::<crate::state::FigureEditParams>(tool, value).map(drop),
         CURVE_BIND => parse::<CurveBindParams>(tool, value).map(drop),
         CURVE_MATERIALIZE => parse::<CurveMaterializeParams>(tool, value).map(drop),
         "resource.rename" => parse::<RenameParams>(tool, value).map(drop),
@@ -298,8 +299,14 @@ impl V1Schema for crate::state::PlotCreateParams {
         plot_create_schema()
     }
 }
+impl V1Schema for crate::state::FigureEditParams {
+    fn schema() -> serde_json::Value {
+        figure_edit_schema()
+    }
+}
 fn descriptors() -> Vec<ToolDescriptor> {
     vec![
+        tool!("figure.edit", "Edit native figure layout and content", "Atomic page, explicit Panel layout, text and local image authoring", crate::state::FigureEditParams, [KIND_CANVAS], [], EffectLevel::Reversible, true),
         tool!("plot.create", "Create native single plot", "Atomically create a native single plot and required containers using explicit table curves", crate::state::PlotCreateParams,
             [KIND_DOCUMENT,KIND_CANVAS,KIND_PANEL], [], EffectLevel::Reversible, true),
         tool!(

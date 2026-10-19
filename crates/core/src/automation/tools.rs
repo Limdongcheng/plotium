@@ -56,7 +56,14 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
     } else {
         None
     };
-    let frozen_targets = if request.tool_id == PLOT_CREATE {
+    let figure_plan = if request.tool_id == FIGURE_EDIT {
+        Some(super::figure_edit::prepare(app, &request)?)
+    } else {
+        None
+    };
+    let frozen_targets = if request.tool_id == FIGURE_EDIT {
+        super::figure_edit::freeze(&request)?
+    } else if request.tool_id == PLOT_CREATE {
         super::plot_creation::freeze(&request)?
     } else if is_curve_binding_tool(&request.tool_id) {
         super::curve_bindings::freeze(&request)?
@@ -102,6 +109,7 @@ pub fn plan_tool(app: &PlotiumApp, request: ToolRequest) -> Result<ToolPlan, Aut
         .filter(|target| target.status == TargetCompatibility::Compatible)
         .count();
     Ok(ToolPlan {
+        figure_plan,
         binding_plan,
         request,
         frozen_targets,
@@ -400,6 +408,7 @@ pub(super) fn execute_planned_tool(
         "resource.rename" => execute_rename(app, &plan)?,
         "figure.apply_theme" => execute_theme(app, &plan)?,
         PLOT_CREATE => super::plot_creation::execute(app, &plan)?,
+        FIGURE_EDIT => super::figure_edit::execute(app, &plan)?,
         CURVE_BIND | CURVE_MATERIALIZE => super::curve_bindings::execute(app, &plan)?,
         "processing.apply_scheme" => execute_scheme(app, &plan)?,
         TABLE_COLUMNS | TABLE_READ_ROWS => super::table_read::execute_table_read(app, &plan)?,

@@ -34,6 +34,7 @@ fn params(app: &PlotiumApp) -> PlotCreateParams {
             size_mm: [120., 80.],
         }),
         panel_name: None,
+        panel_frame_pt: None,
         series: vec![NewCurve {
             kind: CurveKind::Line,
             source: source(app, 0, 1, Some(2)),
@@ -104,6 +105,9 @@ fn invalid_sources_units_errors_and_stale_revisions_leave_no_containers_or_histo
     let app = fixture();
     let good = params(&app);
     let mut cases = Vec::new();
+    let mut p = good.clone();
+    p.panel_frame_pt = Some([0., 0., 0., 100.]);
+    cases.push(p);
     let mut p = good.clone();
     p.series[0].source.y_column_id = ColumnId::new();
     cases.push(p);
@@ -457,4 +461,39 @@ fn undo_redo_new_canvas_retains_ids_minted_by_later_undone_gui_content() {
         identity.canvas
     );
     assert_ne!(app.doc.canvases[0].allocate_object_id(), old_id);
+}
+
+#[test]
+fn explicit_new_panel_on_existing_plot_preserves_first_and_ids_through_undo_redo() {
+    let mut app = fixture();
+    let p = params(&app);
+    let planned = plan(&app, &p);
+    app.commit_curve_bindings(planned).unwrap();
+    let before = app.doc.canvases[0].clone();
+    let mut p = params(&app);
+    p.parent = TargetRef::resource(before.resource_id.into());
+    p.canvas = None;
+    p.panel_frame_pt = Some([260., 10., 230., 200.]);
+    p.series[0].kind = CurveKind::Scatter;
+    let planned = plan(&app, &p);
+    let created = planned.creation.as_ref().unwrap().clone();
+    app.commit_curve_bindings(planned).unwrap();
+    let c = &app.doc.canvases[0];
+    assert_eq!(c.panels[0], before.panels[0]);
+    assert_eq!(c.objects[0].frame, before.objects[0].frame);
+    assert_eq!(
+        c.objects[0].plot().unwrap().binding,
+        before.objects[0].plot().unwrap().binding
+    );
+    assert_eq!(c.panels.len(), 2);
+    app.undo();
+    assert_eq!(app.doc.canvases[0].panels, before.panels);
+    app.redo();
+    assert_eq!(
+        created.plot,
+        TargetRef::resource(canvas_object_ref(
+            before.resource_id,
+            app.doc.canvases[0].objects[1].id
+        ))
+    );
 }

@@ -63,7 +63,10 @@ mod curve_binding;
 mod curve_candidate;
 mod curve_extract;
 mod curve_service;
+mod figure_edit;
+mod figure_edit_image;
 mod plot_creation;
+pub use figure_edit::*;
 pub use plot_creation::*;
 mod dataset_trace;
 mod datasets;
@@ -290,3 +293,6 @@ mod plot_creation_tests;
 
 #[cfg(test)]
 mod display_tests;
+
+#[cfg(test)]
+mod figure_edit_tests;

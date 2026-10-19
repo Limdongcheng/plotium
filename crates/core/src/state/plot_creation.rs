@@ -40,6 +40,7 @@ pub struct PlotCreateParams {
     pub name: String,
     pub canvas: Option<NewPlotCanvas>,
     pub panel_name: Option<String>,
+    pub panel_frame_pt: Option<[f32; 4]>,
     pub series: Vec<NewCurve>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,6 +88,13 @@ impl PlotiumApp {
         let new_panel = existing_panel.is_none();
         let frame = if let Some(id) = existing_panel {
             page.panel(id).expect("resolved panel").frame
+        } else if let Some([x, y, w, h]) = params.panel_frame_pt {
+            ObjectFrame {
+                x,
+                y,
+                width: w,
+                height: h,
+            }
         } else {
             // Use the same native empty-page placement as GUI drag-tiling. The protocol
             // carries creation intent, not a second grid/margin/avoidance algorithm.
@@ -167,7 +175,12 @@ impl PlotiumApp {
         let mut object = CanvasObject {
             id: object_id,
             name: params.name.clone(),
-            frame: ObjectFrame::new(0., 0., frame.width, frame.height),
+            frame: ObjectFrame {
+                x: 0.,
+                y: 0.,
+                width: frame.width,
+                height: frame.height,
+            },
             locked: false,
             visible: true,
             kind: CanvasObjectKind::Plot(Box::new(PlotObject::new(
@@ -258,6 +271,7 @@ impl PlotiumApp {
                     before_panel
                 }),
                 new_panel,
+                additional_panel: params.panel_frame_pt.is_some(),
                 next_label_slot: page.next_panel_label_slot,
             }
         };
@@ -303,18 +317,24 @@ impl PlotiumApp {
             if !canvas_match && panel_match.is_none() {
                 continue;
             }
-            if page.objects.iter().any(|o| o.plot().is_some()) {
+            if params.panel_frame_pt.is_none() && page.objects.iter().any(|o| o.plot().is_some()) {
                 return Err(
                     "Create a single plot in an empty canvas/panel, not a second plot.".into(),
                 );
             }
             if canvas_match {
-                if !page.panels.is_empty() {
+                if params.panel_frame_pt.is_none() && !page.panels.is_empty() {
                     return Err(
                         "Canvas already has a panel; target that empty panel explicitly.".into(),
                     );
                 }
                 return Ok((page.clone(), None, false));
+            }
+            if params.panel_frame_pt.is_some() {
+                return Err(
+                    "panel_frame_pt creates a new Panel on a canvas, not an existing Panel resize."
+                        .into(),
+                );
             }
             let panel = panel_match.expect("matched parent");
             if page.panels.len() != 1

@@ -27,6 +27,7 @@ fn fixture() -> PlotiumApp {
             name: name.into(),
             canvas: None,
             panel_name: None,
+            panel_frame_pt: None,
             series: vec![
                 NewCurve {
                     kind: CurveKind::Line,
@@ -454,6 +455,7 @@ fn r6_affine_and_domain_unit_range_inputs_retain_native_meaning() {
             name: "Units".into(),
             canvas: None,
             panel_name: None,
+            panel_frame_pt: None,
             series: vec![NewCurve {
                 kind: CurveKind::Line,
                 source,

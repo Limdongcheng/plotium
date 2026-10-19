@@ -54,7 +54,7 @@ unsaved; handshakes, tool listing, authenticated status, five-second heartbeats 
 the static property catalog do not.
 
 The connection supports CSV/TSV data-only import, native table queries, canvas previews,
-document structure, native single-plot creation, explicit numeric curve bindings, supported table transforms and resource queries, renaming datasets,
+document structure, native plot creation and page/panel/text/local-image authoring, explicit numeric curve bindings, supported table transforms and resource queries, renaming datasets,
 canvases and canvas objects, and these display properties only:
 
 | Property ID | Target | Value |
@@ -86,8 +86,8 @@ also lists their input schemas. Resource descriptors describe **core** data and
 rendering capabilities; a capability such as `figure.export` or `data.transform`
 does not make that operation callable through this connection. Only
 `resource.rename`, `properties.set`, `properties.reset` and the restricted
-`data.import` / `data.transform` modes, `plot.create` and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
-and existing property preflight, but refuses import/binding/creation/transform preflight and all edit execution.
+`data.import` / `data.transform` modes, `figure.edit`, `plot.create` and `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
+and existing property preflight, but refuses import/binding/creation/figure-edit/transform preflight and all edit execution.
 
 Use the returned revision to list the document's canvases:
 
@@ -116,6 +116,9 @@ Inactive channel or display-mode alternatives remain stored but are not listed o
 addressable until reactivated. Authored hidden Series in the active binding are
 still listed with `visible: false`. After switching channels or display modes,
 fetch the current revision and discover the active targets again.
+
+`encoding` names the native encoding family: `line` includes both line and scatter
+curves; `plot.create` reports the authored subtype in `series_defaults[].kind`.
 
 A Series detail includes its complete property-compatible target, encoding,
 visibility, explicit label, and `source`: dataset and field resource references,
@@ -515,14 +518,18 @@ The exact `parent` determines which objects are new:
 - Existing canvas without a panel or plot: create panel and plot using native
   GUI empty-page placement and the canvas's existing layout settings/margins.
   Do not supply `canvas` options.
+- Existing canvas with content: supply `panel_frame_pt: [x,y,width,height]` to
+  create another panel and plot at that exact page-relative pt frame. Existing
+  panels, curves and loose content stay in place; overlap is allowed.
 - Its sole empty, visible, unlocked free-layout panel: create only the plot,
-  preserving the panel's page position and size. Omit `canvas` and `panel_name`.
+  preserving the panel's page position and size. Omit `canvas`, `panel_name` and `panel_frame_pt`.
 
 `panel_name` optionally names a newly created panel; otherwise it uses the plot
-name. Names must be nonblank and at most 1024 UTF-8 bytes. This operation cannot
-create a second panel/plot on an existing plotted canvas or rebuild existing
-content. Placement is a native service decision, not an agent-supplied grid,
-whitespace or collision algorithm.
+name. Names must be nonblank and at most 1024 UTF-8 bytes. `panel_frame_pt`
+sets only a newly created panel: X/Y are finite page pt, width/height are finite
+and positive. Omission retains the original empty-page native placement contract;
+an already plotted canvas requires the explicit frame. Existing content is never
+retiled or rebuilt into a replacement plot.
 
 `preflight.binding_plan.creation` returns proposed complete targets in
 `canvas`, `panel`, `plot` and `created`, plus `size_mm`, `panel_frame_pt`
@@ -548,6 +555,88 @@ and editable in the GUI. One Undo removes the created subtree but keeps existing
 parents and imported data; Redo restores the same IDs. Existing native resize
 and layout controls retain plot/Series identities and source bindings. Fetch a
 fresh revision after any edit or Undo/Redo.
+
+## Author page layout, text and local images atomically
+
+Plan `figure.edit` with `parameters: {canvas: EXACT_CANVAS_TARGET, edits: [...]}`;
+omit top-level `ids`/`targets`. Discover the complete tagged edit schema in
+`connection_capabilities.operation_constraints["figure.edit"].schema`.
+One batch changes one canvas, in supplied edit order, with one Undo/Redo:
+
+| `op` | Required fields and meaning |
+| --- | --- |
+| `page` | At least one of `size_mm: [width,height]`, `margin_mm: [top,right,bottom,left]`, `gutter_mm`; all in mm |
+| `panel_frame` | `target: EXACT_PANEL_TARGET`, `frame_pt: [x,y,width,height]` in page pt |
+| `panel_label` | `target`, `text`, `visible`; writes a native manual panel label, preserving its position/font |
+| `align` | `panels: [EXACT_PANEL_TARGET,...]`, `edge: left\|center\|right\|top\|middle\|bottom`; at least two panels |
+| `distribute` | `panels`, `axis: horizontal\|vertical`; at least three panels |
+| `grid` | `panels`, `rows`, `cols`; native Frame-basis cells in supplied target order |
+| `text_create` | `parent: EXACT_CANVAS_OR_PANEL_TARGET`, `name`, `frame_pt`, `text`, `font_pt` |
+| `text_set` | `target: EXACT_TEXT_TARGET`, `text`; optional `font_pt` |
+| `image_create` | `parent`, `name`, `frame_pt`, `path: "/absolute/local/image.png"` (PNG or JPEG) |
+
+For example, after creating two plots, set their page and selected-panel grid:
+
+```json
+{
+  "tool_id": "figure.edit",
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 3,
+  "parameters": {
+    "canvas": {"resource":{"id":"CANVAS_UUID","kind":"plotium.canvas"}},
+    "edits": [
+      {"op":"page","size_mm":[180,90],"margin_mm":[4,4,15,4],"gutter_mm":5},
+      {"op":"grid","panels":[{"resource":{"id":"CANVAS_UUID/panels/PANEL_A_UUID","kind":"plotium.canvas.panel","parent_id":"CANVAS_UUID","local_id":"PANEL_A_UUID"}},{"resource":{"id":"CANVAS_UUID/panels/PANEL_B_UUID","kind":"plotium.canvas.panel","parent_id":"CANVAS_UUID","local_id":"PANEL_B_UUID"}}],"rows":1,"cols":2}
+    ]
+  }
+}
+```
+
+Replace all identity placeholders with discovered complete targets, not names. The resulting frames are (4,4,83.5,71) and (92.5,4,83.5,71) mm.
+A frame uses a top-left origin, X rightwards and Y downwards; 1 pt = 1/72 inch.
+Panel frames use the existing **Object Geometry/drag authoring** semantics:
+moving preserves child-local coordinates; resizing scales all child-local frames
+proportionally, without changing curve IDs, bindings, styles, axis ranges or fonts.
+This differs from the free Panel inspector's container-only dimensions.
+New text/image frames are parent-local pt, or page pt for a canvas parent.
+
+Align uses the selected bounding edges/centres. Distribution equalizes centres
+between fixed endpoints, not edge gaps. Grid composes the existing native cell
+algorithm with the authoring resize setter for an explicit subset; it does not
+claim an existing GUI subset-grid button. Grid uses the current page margins and
+gutter, but does not change saved grid preferences or simplify axes. Page size
+and margin edits alone never rearrange content. Non-target panels and loose
+content remain in place, including any resulting overlap or clipping.
+
+All panel targets must be distinct, on this canvas, unlocked and free-layout;
+locked children reject a panel edit. Hidden explicit targets remain addressable. Turn off native Auto height before
+exact page/layout authoring.
+Dimensions must be finite/positive; page size is 10–1000 mm, margins/gutter are
+nonnegative and must leave positive space. Grid is 1–16 rows/columns with enough
+cells for every target; each cell must reach the native 1 pt minimum. Text permits 16384 UTF-8 bytes and 1–72 pt fonts; names
+and manual labels permit 1024 bytes (nonblank). A batch permits 1–200 edits and
+at most 200 panels per layout operation.
+
+Image preflight reads only explicitly named absolute regular files: at most 8
+images, 1 MiB encoded per file, 4 MiB encoded per batch, and 4 MiB decoded RGBA8
+per image. PNG/JPEG probing and decoding reuse native image I/O; bytes are frozen
+in the plan and embedded in the native asset store at commit. Identical encoded
+assets are shared, not linked to the external path. Missing/damaged assets or
+unsupported formats reject the entire batch with `invalid_parameters` and a
+specific asset error. There is no directory scan, network fetch or source write.
+
+`preflight.figure_plan` reports proposed `created`/`modified` targets and `result`
+with page dimensions, margins/gutter and exact `panel_frames`. Execute returns
+that result in `ToolResult.value`. Preflight commits nothing; invalid targets,
+geometry, assets or a stale revision leave no partial objects. Both planning and
+execution require Read and modify. Plans are single-use, including failed
+execution; the 32-plan and 256 KiB response limits apply. One Undo restores the
+whole batch; Redo restores the same native content and asset IDs. After a lost
+execute response, inspect the proposed targets before making another create call.
+
+Use the ordinary GUI Object Geometry, text and image inspectors to continue
+editing. Preview the actual canvas PNG after layout changes; native text frames
+can clip long text, and layout never silently shrinks fonts or resolves collisions.
 
 ## Read the actual canvas image
 

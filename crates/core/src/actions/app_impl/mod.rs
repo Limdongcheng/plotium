@@ -13,10 +13,18 @@ use validate::{ValidationShape, validate_action};
 impl PlotiumApp {
     fn set_panel_state(&mut self, canvas_index: usize, state: &PanelState) {
         if let Some(canvas) = self.doc.canvases.get_mut(canvas_index) {
-            canvas.objects.clone_from(&state.objects);
+            let mut objects = state.objects.clone();
+            // Restoring/reordering content must not reuse a curve id retired after this snapshot.
+            for object in &mut objects {
+                if let Some(current) = canvas.object(object.id) {
+                    native_plot::retain_series_allocator(object, current);
+                }
+            }
+            canvas.objects = objects;
             canvas.panels.clone_from(&state.panels);
             canvas.groups.clone_from(&state.groups);
-            canvas.next_object_id = state.next_object_id;
+            // Undo must not reuse identities minted by a later, now-undone edit.
+            canvas.next_object_id = canvas.next_object_id.max(state.next_object_id);
             canvas.next_group_id = state.next_group_id;
             canvas.next_panel_label_slot = state.next_panel_label_slot;
             // Apply, undo and redo must render plots at their restored content sizes.
@@ -263,7 +271,11 @@ impl PlotiumApp {
 
     fn set_page_layout_value(&mut self, canvas: usize, layout: PageLayout) {
         if let Some(c) = self.doc.canvases.get_mut(canvas) {
-            c.layout = layout;
+            // Layout history restores authored geometry, not the non-Undo grid overlay.
+            c.layout = PageLayout {
+                show_grid: c.layout.show_grid,
+                ..layout
+            };
         }
     }
 

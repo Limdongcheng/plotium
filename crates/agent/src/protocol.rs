@@ -113,7 +113,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
         ("plotium_resources_inspect", "Read descriptors for explicit stable resource IDs.", json!({"expected_revision": revision, "ids": ids}), json!(["expected_revision", "ids"])),
         ("plotium_properties_list", "List supported display property definitions: schema, units, scope and static applicability. Does not create a run record.", json!({}), json!([])),
         ("plotium_properties_inspect", "Read property values, defaults, bounds and applicability.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "key": key}), json!(["expected_revision", "key"])),
-        ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": crate::capabilities::EDIT_OPERATIONS}, "parameters": {"type": "object", "description": "Core arguments: rename {name}; properties.set {key,value}; properties.reset {key}; data.import {mode:table_data_only,paths,header?,format?,schema?,schema_path?}; plot.series.bind {edits:[{target,source:{dataset_id,field_id,table_id,table_revision,x_column_id,y_column_id,y_error_column_id}}]}; plot.series.materialize_default {edits:[{target,retain_y_column_id,table_revision}]}. plot.create {parent:TargetRef,name,canvas?:{name,size_mm},panel_name?,series:[{kind:line|scatter,source:TableCurveSource}]}. data.transform {mode:table_data_only,name,plan:RelPlanV1,memory_limit_bytes?} requires one DatasetId in ids. Import, creation and binding edits omit top-level ids/targets. Full schemas are in get_state.connection_capabilities.operation_constraints."}}), json!(["expected_revision", "tool_id", "parameters"])),
+        ("plotium_plan", "Preflight a supported edit on resource IDs or exact series targets. Returns a one-use opaque plan_id; at most 32 pending plans.", json!({"expected_revision": revision, "ids": ids, "targets": targets, "tool_id": {"enum": crate::capabilities::EDIT_OPERATIONS}, "parameters": {"type": "object", "description": "Core arguments: rename {name}; properties.set {key,value}; properties.reset {key}; data.import {mode:table_data_only,paths,header?,format?,schema?,schema_path?}; plot.series.bind {edits:[{target,source:{dataset_id,field_id,table_id,table_revision,x_column_id,y_column_id,y_error_column_id}}]}; plot.series.materialize_default {edits:[{target,retain_y_column_id,table_revision}]}. plot.create {parent:TargetRef,name,canvas?:{name,size_mm},panel_name?,series:[{kind:line|scatter,source:TableCurveSource}]}. data.transform {mode:table_data_only,name,plan:RelPlanV1,memory_limit_bytes?} requires one DatasetId in ids. figure.edit {canvas:TargetRef,edits:[{op:page|panel_frame|panel_label|align|distribute|grid|text_create|text_set|image_create,...}]} uses exact targets inside edits; discover complete schema in operation_constraints. Import, figure, creation and binding edits omit top-level ids/targets. Full schemas are in get_state.connection_capabilities.operation_constraints."}}), json!(["expected_revision", "tool_id", "parameters"])),
         ("plotium_execute", "Submit a saved plan once. Requires current desktop write permission and unchanged revision. Undo is available in Plotium.", json!({"plan_id": {"type": "string"}}), json!(["plan_id"])),
     ].into_iter().map(|(name, description, properties, required)| {
         let mut schema = json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
@@ -127,9 +127,10 @@ pub(crate) fn definitions() -> Vec<Tool> {
             }
         }
         if name == "plotium_plan" {
-            schema["oneOf"][0]["properties"] = json!({"tool_id":{"not":{"enum":["data.import","plot.series.bind","plot.series.materialize_default","plot.create"]}}});
-            schema["oneOf"][1]["properties"] = json!({"tool_id":{"not":{"enum":["data.import","plot.series.bind","plot.series.materialize_default","plot.create"]}}});
+            schema["oneOf"][0]["properties"] = json!({"tool_id":{"not":{"enum":["data.import","plot.series.bind","plot.series.materialize_default","plot.create","figure.edit"]}}});
+            schema["oneOf"][1]["properties"] = json!({"tool_id":{"not":{"enum":["data.import","plot.series.bind","plot.series.materialize_default","plot.create","figure.edit"]}}});
             schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"data.import"},"parameters":plotium_core::automation::table_import_schema()}}));
+            schema["oneOf"].as_array_mut().expect("local alternatives").push(json!({"required":["tool_id","parameters"],"not":{"anyOf":[{"required":["ids"]},{"required":["targets"]}]},"properties":{"tool_id":{"const":"figure.edit"},"parameters":plotium_core::automation::figure_edit_schema()}}));
             let transform = plotium_core::automation::table_transform_schema();
             schema["$defs"] = transform["$defs"].clone();
             schema["oneOf"][0]["properties"]["tool_id"]["not"]["enum"].as_array_mut().expect("local exclusions").push(json!("data.transform"));
@@ -237,7 +238,7 @@ mod tests {
             assert_eq!(schema["oneOf"][1]["required"], json!(["targets"]));
             assert_eq!(schema["oneOf"][1]["not"], json!({"required":["ids"]}));
             if tool.name == "plotium_plan" {
-                assert_eq!(schema["oneOf"].as_array().unwrap().len(), 7);
+                assert_eq!(schema["oneOf"].as_array().unwrap().len(), 8);
                 assert_eq!(
                     schema["oneOf"][2]["properties"]["parameters"]["properties"]["mode"]["const"],
                     "table_data_only"

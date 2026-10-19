@@ -12,6 +12,7 @@ pub enum NativePlotInsertion {
         object: Box<CanvasObject>,
         panel: Box<Panel>,
         new_panel: bool,
+        additional_panel: bool,
         next_label_slot: u64,
     },
 }

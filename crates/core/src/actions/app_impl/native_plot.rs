@@ -22,6 +22,7 @@ impl PlotiumApp {
                 object,
                 panel,
                 new_panel,
+                additional_panel,
                 ..
             } => {
                 let ci = self.doc.canvas_index(*canvas).ok_or_else(|| {
@@ -29,14 +30,16 @@ impl PlotiumApp {
                 })?;
                 let mut page = self.doc.canvases[ci].clone();
                 if page.object(object.id).is_some()
-                    || page.objects.iter().any(|o| o.plot().is_some())
+                    || (!additional_panel && page.objects.iter().any(|o| o.plot().is_some()))
                 {
                     return Err(ActionApplyError::StaleTarget(
                         "Parent canvas already contains a plot.".into(),
                     ));
                 }
                 if *new_panel {
-                    if !page.panels.is_empty() {
+                    if (!additional_panel && !page.panels.is_empty())
+                        || page.panel(panel.id).is_some()
+                    {
                         return Err(ActionApplyError::StaleTarget(
                             "Choose an empty canvas without panels.".into(),
                         ));
@@ -94,6 +97,7 @@ impl PlotiumApp {
                 panel,
                 new_panel,
                 next_label_slot,
+                ..
             } => {
                 let ci = self.doc.canvas_index(*canvas).expect("validated parent");
                 let page = &mut self.doc.canvases[ci];
@@ -195,7 +199,7 @@ impl PlotiumApp {
     }
 }
 
-fn retain_series_allocator(saved: &mut CanvasObject, live: &CanvasObject) {
+pub(super) fn retain_series_allocator(saved: &mut CanvasObject, live: &CanvasObject) {
     if let (Some(saved), Some(live)) = (saved.plot_mut(), live.plot()) {
         saved.next_series_id = saved.next_series_id.max(live.next_series_id);
     }

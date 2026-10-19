@@ -14,7 +14,7 @@ pub fn plot_create_schema() -> Value {
     let name = json!({"type":"string","minLength":1,"maxLength":1024,"description":"Nonblank name, at most 1024 UTF-8 bytes; names are labels, not identity."});
     let mut parent = target;
     parent["description"] = json!(
-        "Exact whole document, empty canvas without panels, or its sole empty visible unlocked free-layout panel. Creation never uses selection and cannot add a second plot/panel."
+        "Exact whole document, empty canvas without panels, or its sole empty visible unlocked free-layout panel. Creation never uses selection. An explicit panel_frame_pt on an existing canvas creates an additional Panel without moving existing content."
     );
     parent["properties"]["resource"]["properties"]["kind"] =
         json!({"enum":[KIND_DOCUMENT,KIND_CANVAS,KIND_PANEL]});
@@ -25,6 +25,7 @@ pub fn plot_create_schema() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["parent","name","series"],"properties":{
         "parent":parent,"name":name,
         "canvas":{"type":"object","additionalProperties":false,"required":["name","size_mm"],"description":"Only for document parent. Omit to use the plot name and native default size, frozen in preflight.","properties":{"name":name,"size_mm":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"number","minimum":10,"maximum":1000},"description":"[width,height] in mm."}}},
+        "panel_frame_pt":{"type":"array","minItems":4,"maxItems":4,"items":{"type":"number"},"description":"New Panel [x,y,width,height] in page-relative pt, finite positive width/height. Required to add a second Panel to an existing canvas. Omit for existing empty-Panel parent and native empty-page placement."},
         "panel_name":{"type":"string","minLength":1,"maxLength":1024,"description":"Only for a newly created panel; defaults to plot name."},
         "series":{"type":"array","minItems":1,"maxItems":200,"items":{"type":"object","additionalProperties":false,"required":["kind","source"],"properties":{"kind":{"enum":["line","scatter"]},"source":source}}}
     }})

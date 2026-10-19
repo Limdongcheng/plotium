@@ -226,13 +226,20 @@ Use plain language in your AI client. For example:
   and labels. Do not change anything.” Your client must support receiving images.
 - **Adjust a line:** “Find the curve named Current, check its line width, then
   change only that curve to 1.5 pt.” This requires **Read and modify** access.
+- **Arrange a figure:** “Make this page 180 × 90 mm, arrange these two panels
+  horizontally with 4 mm margins and a 5 mm gutter, label them a/b, add the
+  caption and my local PNG/JPEG, then show a preview. Leave other panels alone.”
+  Specify the target panels and absolute image paths. Continue editing each
+  native plot, text item and image in Plotium; Undo restores an entire layout batch.
 - **Create a plot:** “Import the CSV at `/absolute/path/experiment.csv`. Use time
   as X and current as Y, with units s and mA. Create an editable line plot and
   show me a preview.” Replace the path with your file's absolute path and state
   the columns and units you want.
 
 The connection can import CSV/TSV tables, read table values, inspect project
-structure, preview canvases, create line or scatter plots, change a curve's
+structure, preview canvases, create multiple native line or scatter panels,
+set page/panel geometry, align/distribute/grid explicitly chosen panels, add
+editable text and local PNG/JPEG images, change a curve's
 source columns, derive tables with supported native plans, and rename datasets,
 canvases or objects. Display edits cover exact-curve color, width, stroke style, markers, visibility
 and legend text; axis titles, display units and auto/manual ranges; plot-local
