@@ -1,7 +1,9 @@
 //! Modal and floating application windows grouped by responsibility.
 
 mod canvas_settings;
+mod external_export;
 mod external_save;
+pub(super) use external_export::external_export_window;
 mod panel_note_edit;
 mod project;
 pub(super) use external_save::external_save_window;

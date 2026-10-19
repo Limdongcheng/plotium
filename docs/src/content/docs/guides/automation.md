@@ -170,7 +170,7 @@ kept in the project; run it from [the command line](/reference/cli/) and the
 same record is written to a file. A batch from **Current Project** leaves no
 such record — it is an ordinary edit, in the document and on the undo stack.
 
-Anything that writes files outside the project — exporting figures, for
+Native workflow operations that write outside the project — exporting figures, for
 instance — is also listed under **Help → Operation and Diagnostic History**,
 with each file's path, size and SHA-256 checksum. An export that fails partway
 still names the files it had already written, so nothing reaches disk
@@ -246,8 +246,7 @@ explicitly refresh saved recipes, and rename datasets,
 canvases or objects. Display edits cover exact-curve color, width, stroke style, markers, visibility
 and legend text; axis titles, display units and auto/manual ranges; plot-local
 tick, axis-title and legend sizes; and the existing contour/document font controls. Processing parameters, fitting and other
-computations beyond supported table transforms, other import formats and
-exporting are not available through this connection. Use Plotium's interface for
+computations beyond supported table transforms, other import formats are not available through this connection. Use Plotium's interface for
 those tasks. There is no built-in chat window.
 
 To save, ask “Save this desktop project to `/absolute/path/figure.plotium`.”
@@ -255,6 +254,26 @@ Review the exact path in Plotium's **Allow AI to save this project?** prompt;
 existing files also need explicit replacement confirmation. Saving has separate,
 one-use authorization, is not undoable, and finishes only when the agent receives
 a completed save receipt. Later edits and reads may still be unsaved.
+
+### Deliver the editable project and final figures
+
+Have the agent import CSV/TSV and check explicit units, then create line-with-error
+and scatter panels, native text and PNG/JPEG images. Ask it to actually inspect
+the preview before making one local correction. Derive a new curve, then append
+it to the existing plot. You can take over colors, axis ranges and panel positions
+in the GUI; ask the agent to patch a precise source cell, inspect stale derived
+data, then explicitly refresh it. Use Undo/Redo to check patch and refresh
+separately while retaining your design.
+
+Save and reopen the `.plotium` file in the GUI to check that curves, text and
+images remain editable. Then ask: “Export this 180 × 90 mm canvas to
+`/absolute/path/figure.svg`, matching PDF and 300 DPI PNG. Do not overwrite files.”
+Review paths in **Allow AI to export this figure?** and approve; replacing existing
+outputs needs another explicit checkbox. Have the agent read every file's final
+receipt and actually open the results, rather than treating queued work as success.
+The PNG should be 2126 × 1063 pixels. Export does not replace the project or mark
+it saved. MCP export results live in this process's export receipts; after
+reconnecting inspect the original receipt instead of replaying unknown calls.
 
 ### Control access and review changes
 

@@ -59,7 +59,7 @@ Never reuse old targets or plans. Executions bind the context of their saved pla
 Real agent project reads and executions save run records and mark the project as
 unsaved. Handshakes, tool listing, authenticated status, five-second heartbeats,
 the static property catalog and save coordination (planning, submission and
-`plotium_save_status`) do not add audit records.
+`plotium_save_status`), and export planning/submission/status do not add audit records.
 
 The connection supports CSV/TSV data-only import, native table queries, canvas previews,
 document structure, native plot creation and page/panel/text/local-image authoring, explicit numeric curve bindings, supported table transforms, cell patches, explicit saved-recipe refreshes and resource queries, renaming datasets,
@@ -82,20 +82,20 @@ canvases and canvas objects, and these display properties only:
 | `series.contour.count` | Object + Series | 1–256 |
 | `document.figure.typography.tick_pt / document.figure.typography.label_pt` | document | 1–72 pt |
 
-Processing parameters, preferences, other import formats, other computation, exports, built-in chat
+Processing parameters, preferences, other import formats, other computation, built-in chat
 are outside this interface.
 
 ## Discover structure without relying on names
 
 Start with `plotium_get_state {}`. Its `connection_capabilities` describes this
-connection's twelve tools, input schemas, result contracts, supported operations,
+connection's thirteen tools, input schemas, result contracts, supported operations,
 property IDs, limits and current execution permission. Standard MCP `tools/list`
 also lists their input schemas. Resource descriptors describe **core** data and
-rendering capabilities; a capability such as `figure.export` or `data.transform`
+rendering capabilities; a capability listed on a resource
 does not make that operation callable through this connection. Only
-`project.save`, `resource.rename`, `properties.set`, `properties.reset` and the restricted
+`project.save`, `figure.export`, `resource.rename`, `properties.set`, `properties.reset` and the restricted
 `data.import` / `data.transform` modes, `table.patch`, `table.refresh`, `figure.edit`, `plot.create` and `plot.series.append` / `plot.series.bind` / `plot.series.materialize_default` below can be planned here. Read-only access allows table reads
-and existing property preflight, but refuses import/binding/creation/figure-edit/transform/patch/refresh preflight and all reversible edit execution. Saving uses its own per-request desktop authorization, also in Read only mode.
+and existing property preflight, but refuses import/binding/creation/figure-edit/transform/patch/refresh preflight and all reversible edit execution. Saving and exporting use separate per-request desktop authorization, also in Read only mode.
 
 Use the returned revision to list the document's canvases:
 
@@ -605,7 +605,7 @@ are checked before one atomic commit and one Undo. There is no partial success
 or skipped invalid target. Read-only connections reject binding preflight and
 execution. Failed or stale execution consumes the plan; discover current state
 and plan again. GUI save/reopen preserves the native bindings and units; MCP
-`project.save` requires separate desktop approval; exports are not exposed. Use `plot.create` below to create a new plot.
+`project.save` requires separate desktop approval; SVG/PDF/PNG exports require their own desktop approval. Use `plot.create` below to create a new plot.
 
 ## Create a native single plot from an imported table
 
@@ -898,7 +898,7 @@ retain their existing project-wide scope.
 After editing, get a fresh revision and request `plotium_render_preview` for the
 returned canvas. Inspect its PNG and `render_revision`, then use GUI Undo/Redo to
 check the same native objects. MCP `project.save` requires separate desktop
-authorization; exporting through MCP is not yet available.
+authorization; exporting requires its own desktop authorization.
 
 ## Inspect and edit an exact curve
 
@@ -1071,3 +1071,93 @@ restart or `unknown_save`, inspect the target and freshly opened project instead
 of assuming success or failure. Stable stdio configuration continues to work;
 reopening/restarting still requires fresh state, target discovery and plans.
 Connection recovery is not evidence of a successful save.
+
+
+## Export a captured canvas as SVG, PDF and PNG
+
+Use `figure.export` with one exact whole-canvas TargetRef and no top-level
+`ids`/`targets`. The native exporters preserve the canvas background, complete
+page, curves, absolute Y-error amplitudes, native text and embedded images.
+There is no trimming, theme application or project modification. Keep the
+editable `.plotium` project as well as these delivery formats.
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 48,
+  "tool_id": "figure.export",
+  "parameters": {
+    "canvas": {"resource":{"id":"CANVAS_ID","kind":"plotium.canvas"}},
+    "size_mm": [180,90],
+    "dpi": 300,
+    "outputs": [
+      {"format":"svg","path":"/absolute/path/figure.svg"},
+      {"format":"pdf","path":"/absolute/path/figure.pdf"},
+      {"format":"png","path":"/absolute/path/figure.png"}
+    ]
+  }
+}
+```
+
+`size_mm` defaults to the native page size. An explicit size uniformly scales
+the whole figure and must retain its aspect ratio (0.001 mm height tolerance);
+it does not resize the editable page. `dpi` defaults to 300, accepts 1–2400 and
+only controls PNG. Each PNG axis is rounded to the nearest integer from the
+native physical points / 72 × DPI × uniform size scale, with a minimum of one
+pixel. A 180 × 90 mm page at 300 DPI is **2126 × 1063 pixels**. SVG/PDF retain
+physical page dimensions. Text uses the native generic sans-serif family;
+a machine without usable system fonts returns a font error. SVG font appearance
+on another machine depends on that machine's available sans-serif fonts.
+
+There are 1–8 outputs per batch. Each absolute path needs its matching lowercase
+extension and an existing parent directory; targets must be regular non-symlink
+files or absent. Duplicate resolved output paths are refused. Preflight returns
+`export_id`, physical/pixel size and an error or resolved target for each file.
+A bad directory does not hide the other files' results. `overwrite` defaults to
+false: an existing target reports `overwrite_not_requested` and remains untouched.
+Set `overwrite:true` only when replacement is intended; this still grants no
+write permission.
+
+Submit the one-use plan through `plotium_execute`. Valid files await Plotium's
+**Allow AI to export this figure?** prompt, listing the exact canvas, revision,
+size and paths. Review it and press **Allow export**. Existing files additionally
+require the unchecked **Replace the listed existing output files** checkbox.
+**Deny** installs nothing. **Read and modify** is not export authorization;
+Read only may request fresh, separate export consent. All-invalid batches finish
+with per-file errors without asking for consent.
+
+Poll `plotium_export_status {"export_id":"EXPORT_ID"}` without context/revision.
+It is non-auditing, works while rendering, and returns `export`, current context,
+current revision and `matches_current_project`. Batch status is
+`awaiting_authorization`, `rendering` or `completed`. Each `files[]` entry has
+format, exact path, overwrite requirement, `status`, `error_code`, `message`
+and installed byte count. File status is `pending`, `succeeded`, `failed` or
+`unknown` (worker failed; inspect that path before deciding what to do).
+Completion does not imply every file succeeded. Missing/corrupt images, fonts,
+changed targets, permission denial and rendering/budget errors are reported
+without replacing that output. Successful files in the same batch remain.
+
+Rendering runs off-thread on the canvas/assets captured after desktop consent,
+bound to the original `project_context`, `canvas` and `render_revision`. Later
+edits do not change that snapshot. Project transition, connection Stop or access
+change revokes pending installation permission. Each file's atomic permission
+admission precedes its installation: revocation before admission blocks it;
+an already admitted file may finish and must be checked in the receipt. Old
+completion never changes the new project's document, save path, dirty state or
+status. Unique owned sibling staging and atomic no-clobber creation preserve
+unapproved files. Existing-file metadata is checked just before replacement;
+this is not a cross-process compare-and-swap, so avoid concurrent writers.
+Export success means installed output, not the native save's durable-commit
+phase; Undo cannot remove or restore exported files.
+
+Limits: one running batch, 32 shared pending plans, 4096 bytes per path, PNG
+16,384 pixels per edge and 16,777,216 pixels total; referenced embedded assets
+16 MiB, decoded asset RGBA 64 MiB, SVG 8 MiB and encoded output 64 MiB per file.
+No external asset lookup or placeholder substitution occurs. Limits and the
+complete schema are discoverable in `connection_capabilities`.
+
+The last 16 export receipts survive reconnects and project changes in this
+desktop process, not application exit. After response loss query the original
+`export_id`; do not resubmit the export. After restart or `unknown_export`,
+inspect the exact output files first. Reopen the editable project, fetch fresh
+state and targets, then make a new plan only for a newly intended operation.

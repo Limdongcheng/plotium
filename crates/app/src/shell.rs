@@ -25,6 +25,9 @@ fn poll_background_work(
     save_job: &mut Option<ManualProjectSaveJob>,
     ctx: &egui::Context,
 ) {
+    if app.poll_external_export() {
+        ctx.request_repaint_after(Duration::from_millis(50));
+    }
     app.poll_compute();
     if app.poll_data_import() {
         ctx.request_repaint_after(Duration::from_millis(16));

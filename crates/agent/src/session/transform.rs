@@ -24,7 +24,7 @@ impl Session {
             .values()
             .map(PreparedTableOperation::reserved_bytes)
             .sum();
-        if self.plans.len() + self.saves.len() >= 32
+        if self.pending_plan_count() >= 32
             || self.transforms.len() >= TABLE_TRANSFORM_PREPARED
             || reserved.saturating_add(reservation) > TABLE_TRANSFORM_MEMORY
         {

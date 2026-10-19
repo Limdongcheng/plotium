@@ -127,8 +127,9 @@ impl AgentConnections {
             self.failed(app, message);
         }
         if let Some(connection) = &mut self.connection {
-            connection.session.allow_modify =
-                app.settings.agent.access == AgentAccess::ReadAndModify;
+            connection
+                .session
+                .set_allow_modify(app.settings.agent.access == AgentAccess::ReadAndModify);
             connection.synchronize_project(app);
             if let Err(error) = connection.poll_preview(app) {
                 app.session.status =
@@ -233,8 +234,9 @@ impl AgentConnections {
             self.stop();
         }
         if let Some(connection) = &mut self.connection {
-            connection.session.allow_modify =
-                app.settings.agent.access == AgentAccess::ReadAndModify;
+            connection
+                .session
+                .set_allow_modify(app.settings.agent.access == AgentAccess::ReadAndModify);
         }
     }
     fn poll_installation(&mut self, app: &mut PlotiumApp) {

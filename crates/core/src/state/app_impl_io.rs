@@ -119,6 +119,8 @@ impl PlotiumApp {
             .external_saves
             .revoke("Project changed; inspect the old save receipt before any new request.");
         loaded.session.external_saves = std::mem::take(&mut self.session.external_saves);
+        self.session.external_exports.revoke();
+        loaded.session.external_exports = std::mem::take(&mut self.session.external_exports);
         *self = loaded;
         // Project loading constructs a fresh app, but app preferences outlive
         // document swaps. In particular, a value whose disk flush failed must
@@ -620,7 +622,8 @@ fn export_error_code(error: &crate::export::ExportError) -> DiagnosticCode {
         | crate::export::ExportError::Pdf(_)
         | crate::export::ExportError::Image(_)
         | crate::export::ExportError::Io(_)
-        | crate::export::ExportError::Raster(_) => DiagnosticCode::ExportFailed,
+        | crate::export::ExportError::Raster(_)
+        | crate::export::ExportError::MissingFont => DiagnosticCode::ExportFailed,
     }
 }
 
@@ -636,6 +639,7 @@ fn export_error_kind(error: &crate::export::ExportError) -> &'static str {
         crate::export::ExportError::Image(_) => "image_encoding",
         crate::export::ExportError::Io(_) => "io",
         crate::export::ExportError::Raster(_) => "rasterization",
+        crate::export::ExportError::MissingFont => "font",
     }
 }
 

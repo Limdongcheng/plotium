@@ -301,5 +301,7 @@ mod display_tests;
 #[cfg(test)]
 mod figure_edit_tests;
 
+mod external_export;
+pub use external_export::{ExportFileReceipt, ExportReceipt, ExportStatus, ExternalExports};
 mod external_save;
 pub use external_save::{ExternalSaveStatus, ExternalSaves, SaveReceipt};

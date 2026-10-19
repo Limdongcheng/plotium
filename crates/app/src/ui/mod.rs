@@ -116,6 +116,7 @@ pub fn render(
     // repaints everything at `disabled_alpha`, washing the chrome out against
     // the window clear colour). This flag only gates the global shortcuts.
     let modal_open = app.session.external_saves.pending().is_some()
+        || app.session.external_exports.pending().is_some()
         || input_blocked
         || app.session.ui.processing_scheme_dialog.is_some()
         || app.session.ui.processing_template_dialog.is_some()
@@ -207,6 +208,7 @@ pub fn render(
     data_sheet_window(app, &ctx);
     save_project_window(app, &ctx);
     external_save_window(app, &ctx);
+    external_export_window(app, &ctx);
     export_options_window(app, &ctx);
     data_export_dialog::data_export_window(app, &ctx);
     file_dialogs::table_import_preview_window(app, &ctx);

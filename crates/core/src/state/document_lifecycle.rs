@@ -59,6 +59,7 @@ impl PlotiumApp {
     }
 
     pub fn request_project_transition(&mut self, target: ProjectTransition) {
+        self.session.external_exports.revoke();
         self.session
             .external_saves
             .revoke("Project transition requested; save authorization revoked.");

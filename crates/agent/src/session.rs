@@ -1,5 +1,8 @@
 //! Desktop-thread capability boundary. No project state crosses the bridge.
 use std::collections::HashMap;
+mod export;
+#[cfg(test)]
+mod plan_budget_tests;
 pub(crate) mod save;
 mod table;
 mod transform;
@@ -90,6 +93,8 @@ pub struct Session {
     imports: HashMap<String, PreparedTableImport>,
     transforms: HashMap<String, PreparedTableOperation>,
     saves: HashMap<String, save::SavePlan>,
+    exports: HashMap<String, export::ExportPlan>,
+    export_permits: Vec<plotium_core::export::ExportAuthorization>,
     save_permits: Vec<plotium_core::project::SaveAuthorization>,
 }
 #[derive(Deserialize)]
@@ -181,6 +186,11 @@ pub fn property_catalog() -> Value {
     json!({"properties": PROPERTIES.iter().filter_map(|id| property_definition_description(*id)).collect::<Vec<_>>()})
 }
 impl Session {
+    fn pending_plan_count(&self) -> usize {
+        // Import/table-operation maps hold payloads for entries already in plans.
+        self.plans.len() + self.saves.len() + self.exports.len()
+    }
+
     pub fn call(
         &mut self,
         app: &mut PlotiumApp,
@@ -199,6 +209,9 @@ impl Session {
         blocked: bool,
     ) -> Result<Value, Failure> {
         let changed = self.synchronize_context(app);
+        if name == "plotium_export_status" {
+            return self.export_status(app, arguments);
+        }
         if name == "plotium_save_status" {
             return self.save_status(app, arguments);
         }
@@ -221,6 +234,9 @@ impl Session {
                 && context != app.session.project_context.to_string()
             {
                 return Err(project_changed());
+            }
+            if let Some(plan) = self.exports.remove(&args.plan_id) {
+                return self.execute_export(app, &args.plan_id, plan, blocked);
             }
             if let Some(plan) = self.saves.remove(&args.plan_id) {
                 return self.execute_save(app, &args.plan_id, plan, blocked);
@@ -302,11 +318,14 @@ impl Session {
             )?;
             return Ok(
                 json!({"project_context": app.session.project_context, "revision": app.doc.automation_revision, "project": result.value,
-                "selection": selection, "connection_capabilities": crate::capabilities::manifest(self.allow_modify), "permissions": {"allow_reversible_modify": self.allow_modify,"save":"per_request_desktop_authorization"}, "save_state":{"current_path":app.doc.project_path,"persisted_revision":app.doc.project_revision,"dirty":app.doc.dirty,"edit_generation":app.doc.edit_generation,"receipts":app.session.external_saves.receipts().collect::<Vec<_>>()}}),
+                "selection": selection, "connection_capabilities": crate::capabilities::manifest(self.allow_modify), "permissions": {"allow_reversible_modify": self.allow_modify,"save":"per_request_desktop_authorization","export":"per_request_desktop_authorization"}, "save_state":{"current_path":app.doc.project_path,"persisted_revision":app.doc.project_revision,"dirty":app.doc.dirty,"edit_generation":app.doc.edit_generation,"receipts":app.session.external_saves.receipts().collect::<Vec<_>>()}}),
             );
         }
         if name == "plotium_plan" {
             let args: Plan = decode(arguments)?;
+            if args.tool_id == "figure.export" {
+                return self.plan_export(app, args);
+            }
             if args.tool_id == "project.save" {
                 return self.plan_save(app, args);
             }
@@ -329,7 +348,7 @@ impl Session {
                         "Native edits carry their own exact targets or parent",
                     ));
                 }
-                if self.plans.len() + self.saves.len() >= 32 {
+                if self.pending_plan_count() >= 32 {
                     return Err(Failure::new(
                         "plan_limit",
                         "Execute a pending plan before preparing another",
@@ -406,7 +425,7 @@ impl Session {
                     "Only datasets, canvases and canvas objects may be renamed",
                 ));
             }
-            if self.plans.len() + self.saves.len() >= 32 {
+            if self.pending_plan_count() >= 32 {
                 return Err(Failure::new(
                     "plan_limit",
                     "32 plans are pending; execute a plan or restart the connection",
@@ -619,6 +638,7 @@ impl Session {
             .is_some_and(|id| id != app.session.project_context);
         if changed || app.session.ui.project_transition.is_some() {
             self.revoke_saves();
+            self.revoke_exports();
             self.plans.clear();
             self.imports.clear();
             self.transforms.clear();

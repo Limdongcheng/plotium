@@ -51,7 +51,7 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 
 实际 agent 项目读取和执行保存运行记录，使项目进入未保存状态；握手、工具发现、
 已认证状态查询、每五秒心跳、静态属性目录以及保存协调（预检、提交与
-`plotium_save_status`）均不生成审计记录。
+`plotium_save_status`），以及导出预检／提交／状态查询均不生成审计记录。
 
 连接支持 CSV/TSV 仅数据导入、原生表格查询、画布预览、文档结构、原生建图及页面／面板／文字／本地图片编辑、显式数值曲线绑定、受支持的表格处理、单元格补丁、已存配方显式刷新和
 资源查询、数据集／画布／画布对象重命名，以及以下显示属性：
@@ -73,17 +73,17 @@ claude mcp add --transport stdio --scope user plotium -- /ABSOLUTE/USER/DATA/bin
 | `series.contour.count` | 图对象＋Series | 1–256 |
 | `document.figure.typography.tick_pt / document.figure.typography.label_pt` | document | 1–72 pt |
 
-此接口暂不支持处理参数、应用偏好、其他格式导入、其他计算、导出及内置聊天。
+此接口暂不支持处理参数、应用偏好、其他格式导入、其他计算及内置聊天。
 
 ## 不依赖名称发现结构
 
 先用 `{}` 调用 `plotium_get_state`。其 `connection_capabilities` 描述当前连接的
-十二个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
+十三个工具、输入 schema、结果约定、支持的操作、属性 ID、输出限制和当前执行权限。
 标准 MCP `tools/list` 也提供工具输入 schema。资源描述中的能力属于 **core** 的
-数据和渲染语义；出现 `figure.export` 或 `data.transform` 不代表此连接已开放该操作。
-这里可预检 `project.save`、`resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
+数据和渲染语义；资源列出某项能力，不代表此连接已开放该操作。
+这里可预检 `project.save`、`figure.export`、`resource.rename`、`properties.set`、`properties.reset`，以及下述受限的
 `data.import`／`data.transform` 模式、`table.patch`、`table.refresh`、`figure.edit`、`plot.create` 及 `plot.series.append`／`plot.series.bind`／`plot.series.materialize_default`。
-只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理／补丁／刷新预检和所有可撤销修改执行；保存使用下文独立的逐次桌面授权。
+只读权限允许表格查询及既有属性预检，但拒绝导入／绑定／创建／版式编辑／处理／补丁／刷新预检和所有可撤销修改执行；保存和导出使用下文各自独立的逐次桌面授权，只读也可请求。
 
 使用返回的 revision 列举文档画布：
 
@@ -509,7 +509,7 @@ X/Y 缺失也不忽略非法误差。误差表示非负绝对幅度，不从列�
 曲线计划共享同样的行预算，完整响应最多 256 KiB。全部目标、列、单位、行和
 revision 检查通过后才一次原子提交、一次 Undo，不部分成功、不跳过无效目标。
 只读连接拒绝绑定预检和执行。失败或过期执行也消费计划，须重读状态并重新规划。
-GUI 保存重开保留原生绑定和单位；MCP `project.save` 需桌面单独批准；导出尚未开放，新建图使用下文的 `plot.create`。
+GUI 保存重开保留原生绑定和单位；MCP `project.save` 需桌面单独批准；SVG/PDF/PNG 导出需另行桌面批准，新建图使用下文的 `plot.create`。
 
 ## 从已导入表格创建原生单图
 
@@ -755,7 +755,7 @@ Read and modify。失败执行也消费一次性计划；沿用 32 个计划及 
 已有文档级字号仍保持项目范围。
 
 修改后读取新 revision，再为实际画布调用 `plotium_render_preview`，查看 PNG 并
-核对 `render_revision`；用 GUI Undo/Redo 检查同一原生对象。MCP 保存需单独的桌面授权；导出仍未开放。
+核对 `render_revision`；用 GUI Undo/Redo 检查同一原生对象。MCP 保存需单独的桌面授权；导出另需独立桌面授权。
 
 ## 查询并修改一条明确曲线
 
@@ -903,3 +903,74 @@ worker 原子确认授权并进入安装后，停止不保证取消这次原文�
 先查询原 `save_id`，不要重放已提交调用。应用重启或 `unknown_save` 时，检查目标和
 新打开的项目，不自行假定成功或失败。稳定 stdio 配置继续可用；重开／重启后仍须
 重新读取状态、发现目标并规划。连接恢复不是保存成功的证据。
+
+
+## 将捕获画布导出为 SVG、PDF 和 PNG
+
+用 `figure.export` 指定一张准确的完整画布 TargetRef，不带顶层 `ids`／`targets`。
+复用原生导出器，保留背景、完整页面、曲线、绝对 Y 误差幅度、原生文字和嵌入图片；
+不裁切、不套主题、不改项目。成品之外仍须保留可编辑 `.plotium` 项目。
+
+```json
+{
+  "expected_project_context": "PROJECT_CONTEXT",
+  "expected_revision": 48,
+  "tool_id": "figure.export",
+  "parameters": {
+    "canvas": {"resource":{"id":"CANVAS_ID","kind":"plotium.canvas"}},
+    "size_mm": [180,90],
+    "dpi": 300,
+    "outputs": [
+      {"format":"svg","path":"/absolute/path/figure.svg"},
+      {"format":"pdf","path":"/absolute/path/figure.pdf"},
+      {"format":"png","path":"/absolute/path/figure.png"}
+    ]
+  }
+}
+```
+
+`size_mm` 默认原生页面尺寸；显式尺寸等比缩放整图，须保留宽高比（高度误差容许
+0.001 mm），不改变可编辑页面。`dpi` 默认 300，范围 1–2400，仅控制 PNG。
+每轴按原生物理 pt / 72 × DPI × 等比缩放系数四舍五入，最小 1 像素；
+180 × 90 mm、300 DPI 得到 **2126 × 1063 像素**。SVG/PDF 保留物理页尺寸。
+文字使用原生通用 sans-serif 字族；无可用系统字体时报错。SVG 在另一台机器的
+字形取决于当地可用 sans-serif 字体。
+
+每批 1–8 个输出，绝对路径须带匹配的小写扩展名，父目录已存在；目标必须是普通
+非符号链接文件或尚不存在。重复的解析后输出路径拒绝。预检返回 `export_id`、
+物理／像素尺寸，以及逐文件准确目标或错误；坏目录不会掩盖其他文件的结果。
+`overwrite` 默认 false，已有目标报告 `overwrite_not_requested` 并保留原字节。
+确需替换时显式设 `overwrite:true`，这仍不授予写入权限。
+
+用 `plotium_execute` 提交一次性计划。有效文件等待 Plotium 的
+**Allow AI to export this figure?** 提示，其中列出画布、revision、尺寸及路径。
+核对后点击 **Allow export**；已有文件还必须勾选默认未勾选的
+**Replace the listed existing output files**。**Deny** 不安装任何输出。
+**Read and modify** 不等于导出授权；只读可请求新的独立导出授权。
+全无效批次直接逐文件报错，不弹授权窗。
+
+用 `plotium_export_status {"export_id":"EXPORT_ID"}` 查询，不带 context/revision，
+渲染中也可查询且不生成审计。返回 `export`、当前 context/revision 和
+`matches_current_project`。批次状态为 `awaiting_authorization`、`rendering`、
+`completed`；`files[]` 每项包含格式、准确路径、覆盖要求、`status`、`error_code`、
+`message` 和已安装字节数。文件状态为 `pending`、`succeeded`、`failed` 或
+`unknown`（worker 失败，先检查该路径再决定下一步）。批次完成不等于全部成功。
+缺失／损坏图片、字体、目标变化、权限拒绝和渲染／预算错误会准确报告且不替换
+该输出；同批此前成功文件保留。
+
+渲染在后台使用桌面批准后捕获的画布／资产，绑定原 `project_context`、`canvas`
+和 `render_revision`，后续编辑不改变快照。切项目、停止连接或修改访问权限会撤销
+待安装权限。逐文件原子权限准入先于实际安装：准入前撤销阻止安装；已准入文件
+仍可能完成，须查回执。旧完成不改变新项目的文档、保存路径、dirty 或状态。
+独占唯一同目录暂存及原子不覆盖创建保护未授权文件；已有目标在实际替换前复验
+元数据，但并非跨进程 compare-and-swap，应避免并发写相同路径。
+导出成功表示输出已安装，不等于原生项目保存的持久提交阶段；Undo 不删除或还原磁盘文件。
+
+预算：一个运行批次，共享待执行计划最多 32 个；路径最多 4096 字节；PNG 单边
+16,384、总计 16,777,216 像素；引用的嵌入资产 16 MiB、解码后 RGBA 64 MiB、
+SVG 8 MiB、逐文件编码结果 64 MiB。不查找外部资产、不替换成占位图。
+完整 schema 和限制可从 `connection_capabilities` 发现。
+
+桌面进程保留最近 16 批导出回执，跨重连及项目切换有效，退出应用即丢失。
+响应丢失后先查原 `export_id`，不重放导出。重启或 `unknown_export` 时先检查
+准确输出文件。重开可编辑项目后重新读取状态、发现目标；仅为新意图重新规划。
